@@ -3,6 +3,7 @@
 //! ways of showing what is here: every action and every safety rule lives in
 //! this crate, so neither can be gone around.
 
+pub mod activity;
 pub mod android;
 pub mod backup;
 pub mod club;

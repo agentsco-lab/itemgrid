@@ -571,3 +571,10 @@ pub fn port_without_system() -> bool {
         })
     })
 }
+
+/// A phone this computer has backed up, on the USB in a way adb and fastboot
+/// do not see (Android without USB debugging, or starting): its serial.
+pub fn on_usb_quietly() -> Option<String> {
+    let dirs = std::fs::read_dir(crate::backup::root()).ok()?;
+    dirs.flatten().filter_map(|e| e.file_name().into_string().ok()).find(|s| crate::ramboot::usb_serial_present(s))
+}

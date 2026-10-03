@@ -10,8 +10,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use cradle_core::{screenshot, status, Mode, Seen};
+use cradle_core::{screenshot, status, Mode};
 use gtk::{gdk, gio, glib};
+
+mod card;
+mod journey;
 
 const APP_ID: &str = "lab.agentsco.Cradle";
 const REFRESH_S: u32 = 5;
@@ -50,6 +53,23 @@ const CSS: &str = "
   margin: -6px 10px 0 10px;
   background: radial-gradient(ellipse at center, alpha(black, 0.55) 0%, alpha(black, 0.0) 70%);
 }
+.duo-mode {
+  background: alpha(black, 0.62);
+  color: white;
+  border-radius: 14px;
+  padding: 10px 16px;
+  font-weight: 700;
+}
+.duo-mode.moving { animation: duo-breathe 1.8s ease-in-out infinite; }
+@keyframes duo-breathe { 0% { opacity: 0.55; } 50% { opacity: 1; } 100% { opacity: 0.55; } }
+.mode-card {
+  border-radius: 18px;
+  padding: 18px 20px;
+  background: alpha(currentColor, 0.05);
+  border: 1px solid alpha(currentColor, 0.10);
+}
+.mode-card.moving image { animation: duo-breathe 1.8s ease-in-out infinite; }
+.mode-title { font-weight: 800; font-size: 1.2em; }
 ";
 
 fn main() -> glib::ExitCode {
@@ -58,12 +78,57 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
+/// Where the phone is, as Cradle sees it.
+#[derive(Clone, Default, PartialEq)]
+enum Place {
+    /// Linux up, over ssh at this host.
+    Linux(String),
+    Fastboot(String),
+    Recovery(String),
+    /// Android with USB debugging on.
+    Android(String),
+    /// On the USB, but neither adb nor fastboot answers: Android starting,
+    /// or without USB debugging.
+    Quiet(String),
+    /// The port's kernel with no system on userdata (after a return to
+    /// Android, a plain restart): Halium's initramfs on the USB.
+    NoSystem,
+    #[default]
+    Gone,
+}
+
+impl Place {
+    fn serial(&self) -> Option<&str> {
+        match self {
+            Place::Fastboot(s) | Place::Recovery(s) | Place::Android(s) | Place::Quiet(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// This window's job as it goes.
+struct OwnJob {
+    kind: &'static str,
+    lines: Vec<String>,
+    started: std::time::Instant,
+    ended: Option<Option<String>>,
+}
+
 /// What the window knows between looks.
 #[derive(Default)]
 struct State {
     host: Option<String>,
-    /// An update or a reboot under way: no looks meanwhile.
+    place: Place,
+    /// When the phone was last seen anywhere: a phone gone a moment is
+    /// restarting, not unplugged.
+    last_seen: Option<std::time::Instant>,
+    /// A job of this window's under way: no looks meanwhile.
     busy: bool,
+    job: Option<OwnJob>,
+    /// A job of the command line's under way: no looks meanwhile either.
+    elsewhere: bool,
+    /// The end of a job (its time) already put away.
+    dismissed: Option<u64>,
     /// The phone's screens were taken once since it came: not again on each
     /// look (a frame takes seconds).
     pictured: bool,
@@ -76,19 +141,28 @@ struct Ui {
     /// The phone's page, or the page asking for it.
     pages: gtk::Stack,
     switcher: adw::ViewSwitcher,
-    away: adw::StatusPage,
     screens: [gtk::Picture; 2],
+    /// Over the Duo drawn: how the phone looks when it is not in Linux.
+    duo_mode: gtk::Box,
+    duo_mode_label: gtk::Label,
     name: gtk::Label,
     join: gtk::Button,
     serial: RefCell<String>,
     name_sub: gtk::Label,
     battery: gtk::Label,
     software: gtk::Label,
+    /// The job under way, told.
+    card: Rc<card::Card>,
+    /// Where the phone is when it is not in Linux, and what can be done.
+    mode: gtk::Box,
+    mode_icon: gtk::Image,
+    mode_title: gtk::Label,
+    mode_text: gtk::Label,
+    mode_buttons: gtk::Box,
+    /// What needs Linux: the sections and the facts.
+    linux_only: gtk::Box,
     actions: gtk::Box,
-    progress: gtk::ListBox,
-    backup_progress: gtk::ListBox,
     slots: gtk::ListBox,
-    slots_progress: gtk::ListBox,
     backups: gtk::ListBox,
     facts: gtk::Grid,
     storage: gtk::DrawingArea,
@@ -105,13 +179,16 @@ struct Ui {
     state: RefCell<State>,
 }
 
+/// A phone not seen for this long is away; before that, restarting.
+const GONE_AFTER_S: u64 = 90;
+
 fn build(app: &adw::Application) {
     let css = gtk::CssProvider::new();
-    css.load_from_string(CSS);
+    css.load_from_string(&format!("{CSS}{}", card::CSS));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
-    let window = adw::ApplicationWindow::builder().application(app).title("Cradle").default_width(980).default_height(700).build();
+    let window = adw::ApplicationWindow::builder().application(app).title("Cradle").default_width(980).default_height(720).build();
 
     // The tabs, in the header as Finder has them.
     let stack = adw::ViewStack::new();
@@ -150,7 +227,18 @@ fn build(app: &adw::Application) {
         panel.append(screen);
         duo.append(&panel);
     }
-    device.append(&duo);
+    // How the phone looks when not in Linux, over its screens.
+    let duo_mode = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    duo_mode.add_css_class("duo-mode");
+    duo_mode.set_halign(gtk::Align::Center);
+    duo_mode.set_valign(gtk::Align::Center);
+    let duo_mode_label = gtk::Label::new(None);
+    duo_mode.append(&duo_mode_label);
+    duo_mode.set_visible(false);
+    let duo_over = gtk::Overlay::new();
+    duo_over.set_child(Some(&duo));
+    duo_over.add_overlay(&duo_mode);
+    device.append(&duo_over);
     // Its shadow on the table.
     let floor = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     floor.add_css_class("duo-floor");
@@ -190,6 +278,29 @@ fn build(app: &adw::Application) {
         r
     };
 
+    // The job under way, on top.
+    let card = card::Card::new();
+    sections.append(&card.root);
+
+    // Where the phone is, when not in Linux.
+    let mode = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    mode.add_css_class("mode-card");
+    let mode_head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let mode_icon = gtk::Image::builder().pixel_size(32).build();
+    let mode_title = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["mode-title"]).build();
+    mode_head.append(&mode_icon);
+    mode_head.append(&mode_title);
+    mode.append(&mode_head);
+    let mode_text = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(70).css_classes(["dim-label"]).build();
+    mode.append(&mode_text);
+    let mode_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    mode_buttons.set_margin_top(4);
+    mode.append(&mode_buttons);
+    mode.set_visible(false);
+    sections.append(&mode);
+
+    let linux_only = gtk::Box::new(gtk::Orientation::Vertical, 22);
+
     // Software.
     let soft = section("Software");
     let software = gtk::Label::builder().xalign(0.0).wrap(true).build();
@@ -203,9 +314,6 @@ fn build(app: &adw::Application) {
     soft_row.append(&update);
     soft_row.append(&reboot);
     soft.append(&soft_row);
-    let progress = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
-    progress.set_visible(false);
-    soft.append(&progress);
     actions.append(&soft);
 
     // Slots: the two boot slots and what is in them, read only.
@@ -219,27 +327,32 @@ fn build(app: &adw::Application) {
     try_ram.set_tooltip_text(Some("fastboot boot: the image runs once, nothing is flashed, the slots stay as they are"));
     slot_row.append(&try_ram);
     slot_sec.append(&slot_row);
-    let slots_progress = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
-    slots_progress.set_visible(false);
-    slot_sec.append(&slots_progress);
     actions.append(&slot_sec);
 
-    // Backups: reading only; restoring comes with flashing.
+    // Backups.
     let back = section("Backups");
-    back.append(&body("Back up the boot chain and your home and settings to this computer - and, once, the device data no image can give back (radio calibration, IMEI, keys)."));
+    back.append(&body("Back up the boot chain and your home and settings to this computer - and, once, the device data no image can give back (radio calibration, IMEI, keys). Everything copies the whole system from the recovery (about 20 minutes)."));
     let back_row = row();
     let backup = pill("Back Up Now");
+    let backup_all = pill("Back Up Everything…");
     let restore = pill("Restore Backup…");
     restore.set_tooltip_text(Some("A slot's boot chain put back from a backup - one slot at a time, a changed boot tried from RAM first"));
     back_row.append(&backup);
+    back_row.append(&backup_all);
     back_row.append(&restore);
     back.append(&back_row);
-    let backup_progress = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
-    backup_progress.set_visible(false);
-    back.append(&backup_progress);
     let backups = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
     back.append(&backups);
     actions.append(&back);
+
+    // Android: the phone's own Android, for a while.
+    let android = section("Android");
+    android.append(&body("Stock Android can come back for a while. Cradle backs everything up first and tests the way back, then clears Linux's data and starts Android. Back to Linux puts it all back from the backup."));
+    let android_row = row();
+    let to_android = pill("Return to Android…");
+    android_row.append(&to_android);
+    android.append(&android_row);
+    actions.append(&android);
 
     // Screen.
     let scr = section("Screen");
@@ -251,13 +364,14 @@ fn build(app: &adw::Application) {
     scr_row.append(&folder);
     scr.append(&scr_row);
     actions.append(&scr);
-    sections.append(&actions);
+    linux_only.append(&actions);
 
     // System: a few facts.
     let sys = section("System");
     let facts = gtk::Grid::builder().row_spacing(6).column_spacing(18).build();
     sys.append(&facts);
-    sections.append(&sys);
+    linux_only.append(&sys);
+    sections.append(&linux_only);
 
     let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&sections).hexpand(true).build();
     general.append(&scroll);
@@ -278,10 +392,14 @@ fn build(app: &adw::Application) {
     let logs_page = logs_view(owner.clone());
     stack.add_titled_with_icon(&logs_page, Some("logs"), "Logs", "text-x-generic-symbolic");
 
-    // The page asking for the phone, when it is not there.
-    let away = adw::StatusPage::builder().icon_name("phone-symbolic").title("Connect your Surface Duo").description("Plug it in with a USB cable. Cradle sees it when Linux is up, in fastboot, or in recovery.").build();
+    // The page asking for the phone, when it has not been seen for a while.
+    let away = adw::StatusPage::builder()
+        .icon_name("phone-symbolic")
+        .title("Connect your Surface Duo")
+        .description("Plug it in with a USB cable. Cradle finds it in Linux, in Android, in the bootloader or in the recovery.")
+        .build();
 
-    let pages = gtk::Stack::new();
+    let pages = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(400).build();
     pages.add_named(&stack, Some("phone"));
     pages.add_named(&away, Some("away"));
     pages.set_visible_child_name("away");
@@ -307,19 +425,24 @@ fn build(app: &adw::Application) {
         banner,
         pages,
         switcher,
-        away,
         screens,
+        duo_mode,
+        duo_mode_label,
         name,
         join: join.clone(),
         serial: RefCell::default(),
         name_sub,
         battery,
         software,
+        card: card.clone(),
+        mode,
+        mode_icon,
+        mode_title,
+        mode_text,
+        mode_buttons,
+        linux_only,
         actions,
-        progress,
-        backup_progress,
         slots,
-        slots_progress,
         backups,
         facts,
         storage: storage.clone(),
@@ -391,6 +514,22 @@ fn build(app: &adw::Application) {
         let ui = ui.clone();
         move |_| run_job(&ui, Job::Backup)
     });
+    backup_all.connect_clicked({
+        let ui = ui.clone();
+        move |_| {
+            ask(
+                &ui,
+                "Back up everything?",
+                "The phone restarts into the recovery and its whole system is copied here - about 20 minutes, the phone unusable meanwhile - then it comes back to Linux. Nothing on the phone is changed.",
+                "Back Up",
+                Job::FullBackup,
+            )
+        }
+    });
+    to_android.connect_clicked({
+        let ui = ui.clone();
+        move |_| return_to_android(&ui)
+    });
     shot.connect_clicked({
         let ui = ui.clone();
         move |_| take_screens(&ui, true)
@@ -399,6 +538,17 @@ fn build(app: &adw::Application) {
         let dir = shots_dir();
         let _ = std::fs::create_dir_all(&dir);
         let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(&dir).uri(), gio::AppLaunchContext::NONE);
+    });
+    card.dismiss.connect_clicked({
+        let ui = Rc::downgrade(&ui);
+        move |_| {
+            let Some(ui) = ui.upgrade() else { return };
+            let mut st = ui.state.borrow_mut();
+            st.job = None;
+            st.dismissed = cradle_core::activity::elsewhere(u64::MAX).and_then(|a| a.ended_at).or(st.dismissed);
+            drop(st);
+            ui.card.hide();
+        }
     });
 
     stack.connect_visible_child_notify({
@@ -424,7 +574,11 @@ fn build(app: &adw::Application) {
         let mut ticks = 0u32;
         move || {
             ticks += 1;
-            if !ui.state.borrow().busy {
+            let (busy, elsewhere) = {
+                let st = ui.state.borrow();
+                (st.busy, st.elsewhere)
+            };
+            if !busy && !elsewhere {
                 look(&ui);
                 live_sync(&ui);
                 // Without the live view (an item without a mirror), a picture
@@ -437,8 +591,88 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
+    // The job under way, told each second: this window's, or the command
+    // line's.
+    glib::timeout_add_seconds_local(1, {
+        let ui = ui.clone();
+        move || {
+            tell(&ui);
+            glib::ControlFlow::Continue
+        }
+    });
     window.present();
 }
+
+/// The card brought up to date: this window's job, else one the command line
+/// runs (or ended a little while ago and not put away).
+fn tell(ui: &Rc<Ui>) {
+    {
+        let st = ui.state.borrow();
+        if let Some(job) = &st.job {
+            ui.card.show(job.kind, &job.lines, job.started.elapsed().as_secs(), job.ended.clone(), false);
+            if job.ended.is_none() {
+                duo_moving(ui, ui.card.phone(job.kind, &job.lines));
+            }
+            return;
+        }
+    }
+    let other = cradle_core::activity::elsewhere(15 * 60);
+    let dismissed = ui.state.borrow().dismissed;
+    match other {
+        Some(a) if a.ended_at.is_none() || a.ended_at != dismissed => {
+            let running = a.ended.is_none();
+            ui.card.show(&a.job, &a.lines, a.seconds(), a.ended.clone(), true);
+            ui.actions.set_sensitive(!running);
+            ui.mode_buttons.set_sensitive(!running);
+            if running {
+                // The phone is the command line's now: no looks, the page kept.
+                ui.state.borrow_mut().elsewhere = true;
+                if let Some(stop) = ui.live.borrow_mut().take() {
+                    stop.stop();
+                }
+                ui.pages.set_visible_child_name("phone");
+                duo_moving(ui, ui.card.phone(&a.job, &a.lines));
+            } else if ui.state.borrow().elsewhere {
+                ui.state.borrow_mut().elsewhere = false;
+                ui.state.borrow_mut().pictured = false;
+                ui.state.borrow_mut().last_seen = Some(std::time::Instant::now());
+                look(ui);
+            }
+        }
+        _ => {
+            if ui.state.borrow().elsewhere {
+                ui.state.borrow_mut().elsewhere = false;
+                ui.actions.set_sensitive(true);
+                ui.mode_buttons.set_sensitive(true);
+                look(ui);
+            }
+            if !ui.state.borrow().busy {
+                ui.card.hide();
+            }
+        }
+    }
+}
+
+/// The Duo drawn shown as it looks at a job's stage.
+fn duo_moving(ui: &Ui, phone: &str) {
+    if phone == "Linux" {
+        ui.duo_mode.set_visible(false);
+        return;
+    }
+    for s in &ui.screens {
+        s.set_paintable(gdk::Paintable::NONE);
+    }
+    ui.live_badge.set_visible(false);
+    ui.duo_mode_label.set_label(match phone {
+        "Restarting" => "Restarting…",
+        "TWRP" => "Recovery (TWRP)",
+        "Starting" => "Starting…",
+        other => other,
+    });
+    ui.duo_mode.add_css_class("moving");
+    ui.duo_mode.set_visible(true);
+}
+
 
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     use std::f64::consts::PI;
@@ -460,45 +694,57 @@ fn look(ui: &Rc<Ui>) {
     glib::spawn_future_local(async move {
         let found = gio::spawn_blocking(|| {
             let seen = cradle_core::detect();
-            let status = if seen.mode == Mode::Linux { Some(status::read(&seen.via)) } else { None };
-            (seen, status)
+            let place = match seen.mode {
+                Mode::Linux => Place::Linux(seen.via.clone()),
+                Mode::Fastboot => Place::Fastboot(seen.via.clone()),
+                Mode::Recovery => Place::Recovery(seen.via.clone()),
+                Mode::Android => Place::Android(seen.via.clone()),
+                Mode::Gone if cradle_core::android::port_without_system() => Place::NoSystem,
+                Mode::Gone => cradle_core::android::on_usb_quietly().map(Place::Quiet).unwrap_or(Place::Gone),
+            };
+            // What can be done from there: is Android a guest (Linux's data
+            // erased), is there a whole backup to come back from.
+            let guest = place.serial().is_some_and(|s| cradle_core::android::guest(s).is_some());
+            let status = if let Place::Linux(host) = &place { Some(status::read(host)) } else { None };
+            (place, guest, status)
         })
         .await;
-        let Ok((seen, status)) = found else { return };
-        if ui.state.borrow().busy {
+        let Ok((place, guest, status)) = found else { return };
+        let (busy, elsewhere) = {
+            let st = ui.state.borrow();
+            (st.busy, st.elsewhere)
+        };
+        if busy || elsewhere {
             return;
         }
-        show(&ui, &seen, status);
+        show(&ui, place, guest, status);
     });
 }
 
-fn show(ui: &Rc<Ui>, seen: &Seen, status: Option<Result<status::Status, String>>) {
-    let linux = seen.mode == Mode::Linux;
+fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::Status, String>>) {
     let was = ui.state.borrow().host.clone();
-    ui.state.borrow_mut().host = linux.then(|| seen.via.clone());
-    if !linux {
-        ui.state.borrow_mut().pictured = false;
-        ui.away.set_title(match seen.mode {
-            Mode::Gone => "Connect your Surface Duo",
-            Mode::Fastboot => "The Duo is in fastboot",
-            Mode::Recovery => "The Duo is in recovery",
-            _ => "The Duo runs Android",
-        });
-        let how = if seen.mode == Mode::Gone {
-            "Plug it in with a USB cable. Cradle sees it when Linux is up, in fastboot, or in recovery.".to_owned()
-        } else {
-            format!("{} - {}.", seen.via, seen.mode.means())
+    let now = std::time::Instant::now();
+    {
+        let mut st = ui.state.borrow_mut();
+        st.host = match &place {
+            Place::Linux(h) => Some(h.clone()),
+            _ => None,
         };
-        ui.away.set_description(Some(&how));
-        ui.pages.set_visible_child_name("away");
-        ui.switcher.set_visible(false);
-        ui.banner.set_revealed(false);
-        bottom_shown(ui);
-        return;
+        if place != Place::Gone {
+            st.last_seen = Some(now);
+        }
+        st.place = place.clone();
     }
+    let Place::Linux(host) = &place else {
+        away_from_linux(ui, &place, guest);
+        return;
+    };
     ui.pages.set_visible_child_name("phone");
     ui.switcher.set_visible(true);
-    ui.name_sub.set_label(&format!("Linux · {}", seen.via));
+    ui.mode.set_visible(false);
+    ui.linux_only.set_visible(true);
+    ui.duo_mode.set_visible(false);
+    ui.name_sub.set_label(&format!("Linux · {host}"));
     match status {
         Some(Ok(s)) => fill(ui, &s),
         Some(Err(e)) => {
@@ -516,6 +762,116 @@ fn show(ui: &Rc<Ui>, seen: &Seen, status: Option<Result<status::Status, String>>
         show_backups(ui);
         show_slots(ui);
     }
+}
+
+/// The phone outside Linux: said calmly on its page - where it is, what that
+/// means, what can be done - and only after a while gone, the page asking
+/// for it.
+fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
+    let st = ui.state.borrow();
+    let seen_lately = st.last_seen.is_some_and(|t| t.elapsed().as_secs() < GONE_AFTER_S);
+    drop(st);
+    ui.state.borrow_mut().pictured = false;
+    if let Some(stop) = ui.live.borrow_mut().take() {
+        stop.stop();
+    }
+    ui.live_badge.set_visible(false);
+    ui.banner.set_revealed(false);
+    if *place == Place::Gone && !seen_lately {
+        ui.pages.set_visible_child_name("away");
+        ui.switcher.set_visible(false);
+        bottom_shown(ui);
+        return;
+    }
+    ui.pages.set_visible_child_name("phone");
+    ui.tabs.set_visible_child_name("general");
+    ui.switcher.set_visible(false);
+    ui.linux_only.set_visible(false);
+    ui.mode.set_visible(true);
+    bottom_shown(ui);
+    for s in &ui.screens {
+        s.set_paintable(gdk::Paintable::NONE);
+    }
+    while let Some(child) = ui.mode_buttons.first_child() {
+        ui.mode_buttons.remove(&child);
+    }
+    let button = |label: &str, suggested: bool, job: Job, ask_first: Option<(&'static str, &'static str)>| {
+        let b = gtk::Button::with_label(label);
+        b.add_css_class("pill");
+        if suggested {
+            b.add_css_class("suggested-action");
+        }
+        ui.mode_buttons.append(&b);
+        let ui = ui.clone();
+        let label = label.to_owned();
+        b.connect_clicked(move |_| match ask_first {
+            Some((heading, body)) => ask(&ui, heading, body, &label, job.clone()),
+            None => run_job(&ui, job.clone()),
+        });
+    };
+    const BACK_BODY: &str = "Linux's system and data go back from the newest whole-system backup, each part checked on the phone - about 35 minutes. Android's data on the phone goes.";
+    let (icon, duo, title, text, moving) = match place {
+        Place::Fastboot(s) => {
+            if guest {
+                button("Start Android", true, Job::AndroidStart(s.clone()), None);
+                button("Back to Linux…", false, Job::AndroidBack(s.clone()), Some(("Back to Linux?", BACK_BODY)));
+                ("system-reboot-symbolic", "Bootloader", "The Duo is in its bootloader", "Android runs here as a guest: Linux's data was put away in a backup. Start Android again, or bring Linux back.", false)
+            } else {
+                button("Start Linux", true, Job::LeaveFastboot(s.clone()), None);
+                ("system-reboot-symbolic", "Bootloader", "The Duo is in its bootloader", "Nothing is wrong: the safety catch stopped a restart here, or it was asked for. Start Linux goes on from the same slot.", false)
+            }
+        }
+        Place::Recovery(s) => {
+            if guest {
+                button("Back to Linux…", true, Job::AndroidBack(s.clone()), Some(("Back to Linux?", BACK_BODY)));
+            } else {
+                button("Back to Linux", true, Job::RecoveryExit(s.clone()), None);
+            }
+            ("applications-engineering-symbolic", "Recovery (TWRP)", "The Duo is in the recovery", "TWRP, a small repair system, runs from memory. It has no touch: Cradle drives it from here.", false)
+        }
+        Place::Android(s) => {
+            if guest {
+                button("Back to Linux…", true, Job::AndroidBack(s.clone()), Some(("Back to Linux?", BACK_BODY)));
+                button("Restart Android", false, Job::AndroidStart(s.clone()), None);
+            }
+            ("phone-symbolic", "Android", "The Duo runs Android", if guest { "Stock Android, started by Cradle as a guest. Don't restart it from its own menu: Restart Android here does it the right way." } else { "Android runs on the phone." }, false)
+        }
+        Place::Quiet(_) => (
+            "phone-symbolic",
+            "Android",
+            "The Duo runs Android - or is starting",
+            "Cradle sees the phone on the cable but cannot talk to it yet. If Android is up: Settings → About phone → tap Build number seven times → System → Developer options → USB debugging, then allow this computer on the phone.",
+            true,
+        ),
+        Place::NoSystem => (
+            "dialog-information-symbolic",
+            "No system",
+            "The Duo started without a system",
+            "Android was restarted plainly, so the phone started Linux's kernel - but Linux's data is in the backup now. Hold Power about 15 seconds until it is off, then hold Volume Down and press Power: the bootloader opens, and Cradle takes it from there.",
+            false,
+        ),
+        _ => ("content-loading-symbolic", "Restarting…", "Waiting for the Duo", "It is restarting, or the cable came out. Cradle keeps looking.", true),
+    };
+    ui.mode_icon.set_icon_name(Some(icon));
+    ui.mode_title.set_label(title);
+    ui.mode_text.set_label(text);
+    if moving {
+        ui.mode.add_css_class("moving");
+        ui.duo_mode.add_css_class("moving");
+    } else {
+        ui.mode.remove_css_class("moving");
+        ui.duo_mode.remove_css_class("moving");
+    }
+    ui.duo_mode_label.set_label(duo);
+    ui.duo_mode.set_visible(true);
+    ui.name_sub.set_label(match place {
+        Place::Fastboot(_) => "Bootloader",
+        Place::Recovery(_) => "Recovery",
+        Place::Android(_) | Place::Quiet(_) => "Android",
+        Place::NoSystem => "No system",
+        _ => "Not seen just now",
+    });
+    ui.battery.set_label("");
 }
 
 fn fill(ui: &Ui, s: &status::Status) {
@@ -812,8 +1168,32 @@ enum Job {
     Update,
     Reboot,
     Backup,
+    FullBackup,
     RamBoot(std::path::PathBuf),
     Restore(Box<cradle_core::restore::Plan>),
+    RecoveryExit(String),
+    LeaveFastboot(String),
+    AndroidGo(Box<cradle_core::android::Plan>),
+    AndroidStart(String),
+    AndroidBack(String),
+}
+
+impl Job {
+    /// Its kind, for the card's stages and the record.
+    fn kind(&self) -> &'static str {
+        match self {
+            Job::Update => "update",
+            Job::Reboot => "reboot",
+            Job::Backup => "backup",
+            Job::FullBackup => "full-backup",
+            Job::RamBoot(_) => "ramboot",
+            Job::Restore(_) => "restore",
+            Job::RecoveryExit(_) | Job::LeaveFastboot(_) => "recovery-exit",
+            Job::AndroidGo(_) => "android-go",
+            Job::AndroidStart(_) => "android-start",
+            Job::AndroidBack(_) => "android-back",
+        }
+    }
 }
 
 /// A boot chain to put back: the backup and the slot chosen, the plan made
@@ -1021,34 +1401,52 @@ fn ask(ui: &Rc<Ui>, heading: &str, body: &str, yes: &str, job: Job) {
     dialog.present(Some(&ui.window));
 }
 
-/// An update or a reboot, its steps shown under Software as they come.
+/// A job run off the main thread, told on the card as it goes; recorded for
+/// another Cradle too.
 fn run_job(ui: &Rc<Ui>, job: Job) {
-    let Some(host) = ui.state.borrow().host.clone() else { return };
-    ui.state.borrow_mut().busy = true;
-    ui.actions.set_sensitive(false);
-    // Each job's steps under its own section.
-    let list = match job {
-        Job::Backup | Job::Restore(_) => ui.backup_progress.clone(),
-        Job::RamBoot(_) => ui.slots_progress.clone(),
-        _ => ui.progress.clone(),
-    };
-    let (backing_up, ram_boot) = (matches!(job, Job::Backup), matches!(job, Job::RamBoot(_) | Job::Restore(_)));
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
+    let host = ui.state.borrow().host.clone();
+    let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_));
+    if needs_linux && host.is_none() {
+        stopped(ui, "The phone is not in Linux just now.");
+        return;
     }
-    list.set_visible(true);
+    // Where Linux will answer, for the jobs that end there.
+    let host = host.or_else(|| cradle_core::phone::hosts().into_iter().next()).unwrap_or_default();
+    let kind = job.kind();
+    {
+        let mut st = ui.state.borrow_mut();
+        st.busy = true;
+        st.job = Some(OwnJob { kind, lines: Vec::new(), started: std::time::Instant::now(), ended: None });
+    }
+    if let Some(stop) = ui.live.borrow_mut().take() {
+        stop.stop();
+    }
+    ui.actions.set_sensitive(false);
+    ui.mode_buttons.set_sensitive(false);
+    tell(ui);
     let (tx, rx) = async_channel::unbounded::<String>();
-    let started = std::time::Instant::now();
     let work = gio::spawn_blocking(move || {
-        let say = |words: &str| {
-            let _ = tx.send_blocking(format!("{:.0} s · {words}", started.elapsed().as_secs_f64()));
+        cradle_core::activity::begin(kind);
+        let mut say = |words: String| {
+            cradle_core::activity::line(&words);
+            let _ = tx.send_blocking(words);
         };
-        match job {
-            Job::Update => cradle_core::update::update(&host, true, &mut |step| say(step.words())),
-            Job::Reboot => cradle_core::phone::reboot(&host, &mut |b| say(b.words())),
-            Job::Restore(plan) => cradle_core::restore::restore(&host, &plan, &mut |line| say(&line)),
-            Job::RamBoot(path) => cradle_core::ramboot::ram_boot(&host, &path, cradle_core::ramboot::Expect::of(&path), &mut |line| say(&line)),
-            Job::Backup => {
+        let result = match job {
+            Job::Update => cradle_core::update::update(&host, true, &mut |step| say(step.words().to_owned())),
+            Job::Reboot => cradle_core::phone::reboot(&host, &mut |b| say(b.words().to_owned())),
+            Job::Restore(plan) => cradle_core::restore::restore(&host, &plan, &mut say),
+            Job::RamBoot(path) => cradle_core::ramboot::ram_boot(&host, &path, cradle_core::ramboot::Expect::of(&path), &mut say),
+            Job::FullBackup => cradle_core::full::take(&host, &mut say).map(|_| ()),
+            Job::RecoveryExit(serial) => cradle_core::ramboot::leave_recovery(&host, &serial, &mut say),
+            Job::LeaveFastboot(serial) => cradle_core::ramboot::leave_fastboot(&host, &serial, &mut say),
+            Job::AndroidGo(plan) => {
+                let word = cradle_core::backup::serial(&host).map(|s| cradle_core::android::confirm_word(&s)).unwrap_or_default();
+                // The number was typed in the window already; the losses shown.
+                cradle_core::android::go(&host, &plan, &word, true, &mut say)
+            }
+            Job::AndroidStart(serial) => cradle_core::android::start(&host, &serial, &mut say),
+            Job::AndroidBack(serial) => cradle_core::android::back(&host, &serial, &mut say),
+            Job::Backup => (|| {
                 use cradle_core::backup::{self, Kind};
                 // The device data once; the boot chain and home each time.
                 let serial = backup::serial(&host)?;
@@ -1058,51 +1456,110 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
                 }
                 kinds.extend([Kind::Boot, Kind::Quick]);
                 for kind in kinds {
-                    backup::take(&host, kind, &mut |line| say(&line))?;
+                    backup::take(&host, kind, &mut say)?;
                 }
                 Ok(())
-            }
-        }
+            })(),
+        };
+        cradle_core::activity::end(&result);
+        result
     });
     let ui = ui.clone();
     glib::spawn_future_local(async move {
-        // Each step: a spinner while it runs, a tick once the next comes.
-        let mut last: Option<(adw::ActionRow, gtk::Spinner)> = None;
         while let Ok(line) = rx.recv().await {
-            if let Some((prev, spin)) = last.take() {
-                spin.set_visible(false);
-                prev.add_prefix(&gtk::Image::from_icon_name("emblem-ok-symbolic"));
+            if let Some(job) = ui.state.borrow_mut().job.as_mut() {
+                job.lines.push(line);
             }
-            let r = adw::ActionRow::builder().title(&line).build();
-            let spin = gtk::Spinner::builder().spinning(true).build();
-            r.add_prefix(&spin);
-            list.append(&r);
-            last = Some((r, spin));
+            tell(&ui);
         }
         let result = work.await.unwrap_or_else(|_| Err("the work stopped".into()));
-        if let Some((prev, spin)) = last {
-            spin.set_visible(false);
-            prev.add_prefix(&gtk::Image::from_icon_name(if result.is_ok() { "emblem-ok-symbolic" } else { "dialog-error-symbolic" }));
+        {
+            let mut st = ui.state.borrow_mut();
+            st.busy = false;
+            st.pictured = false;
+            // The phone may be anywhere now: looked for afresh, not "gone".
+            st.last_seen = Some(std::time::Instant::now());
+            if let Some(job) = st.job.as_mut() {
+                job.ended = Some(result.err());
+            }
+            // This window's own record is not "elsewhere".
+            st.dismissed = cradle_core::activity::elsewhere(u64::MAX).and_then(|a| a.ended_at).or(st.dismissed);
         }
-        ui.state.borrow_mut().busy = false;
-        ui.state.borrow_mut().pictured = false;
+        tell(&ui);
         ui.actions.set_sensitive(true);
-        if let (Err(e), true) = (&result, ram_boot) {
-            stopped(&ui, e);
-        }
-        let toast = match &result {
-            Ok(()) if backing_up => adw::Toast::new("Backed up"),
-            Ok(()) => adw::Toast::new("Done: enter the PIN on the phone"),
-            Err(e) => adw::Toast::new(e),
-        };
+        ui.mode_buttons.set_sensitive(true);
         show_backups(&ui);
         show_slots(&ui);
-        toast.set_timeout(6);
-        ui.toasts.add_toast(toast);
         look(&ui);
     });
 }
 
+/// Return to Android: the plan read off the main thread, then told plainly -
+/// what happens, what it needs, what is lost - and the phone's number typed
+/// before anything is erased.
+fn return_to_android(ui: &Rc<Ui>) {
+    let Some(host) = ui.state.borrow().host.clone() else { return };
+    let toast = adw::Toast::builder().title("Checking what the return needs…").timeout(3).build();
+    ui.toasts.add_toast(toast);
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let h = host.clone();
+        let read = gio::spawn_blocking(move || {
+            let plan = cradle_core::android::plan(&h)?;
+            let serial = cradle_core::backup::serial(&h)?;
+            Ok::<_, String>((plan, cradle_core::android::confirm_word(&serial)))
+        })
+        .await
+        .unwrap_or_else(|_| Err("the work stopped".into()));
+        let (plan, word) = match read {
+            Ok(r) => r,
+            Err(e) => {
+                stopped(&ui, &e);
+                return;
+            }
+        };
+        if !plan.stops.is_empty() {
+            stopped(&ui, &format!("Android cannot come back just now:\n\n• {}", plan.stops.join("\n• ")));
+            return;
+        }
+        let build = plan.kernel.as_ref().map(|(_, b)| b.fingerprint.split('/').nth(3).unwrap_or(&b.fingerprint).to_owned()).unwrap_or_default();
+        let backup_line = if plan.full_fresh { "1. The whole-system backup taken a moment ago is checked (a few minutes)." } else { "1. Everything is backed up to this computer (about 20 minutes)." };
+        let mut body = format!(
+            "Stock Android {build} comes back for a while. In order, each a stop if it fails:\n\n\
+             {backup_line}\n\
+             2. The recovery starts, and the way back is tested - nothing is erased if it fails.\n\
+             3. Linux's data on the phone is erased (about 8 minutes).\n\
+             4. Android starts from the computer's memory and opens its welcome screens.\n\n\
+             About {} minutes in all; keep the cable in. Back to Linux, here in Cradle, puts everything back.",
+            if plan.full_fresh { 15 } else { 35 }
+        );
+        if !plan.losses.is_empty() {
+            let lost: Vec<String> = plan.losses.iter().map(|(n, b)| format!("{n} ({})", status::size_words(b / 1024))).collect();
+            body.push_str(&format!("\n\nNot in any backup, and lost: {}.", lost.join(", ")));
+        }
+        body.push_str(&format!("\n\nType {word} - this Duo's number - to go on."));
+        let entry = gtk::Entry::builder().placeholder_text(word.as_str()).input_purpose(gtk::InputPurpose::Digits).build();
+        let dialog = adw::AlertDialog::new(Some("Return to Android?"), Some(&body));
+        dialog.set_extra_child(Some(&entry));
+        dialog.add_responses(&[("cancel", "Cancel"), ("go", "Erase and Return")]);
+        dialog.set_response_appearance("go", adw::ResponseAppearance::Destructive);
+        dialog.set_response_enabled("go", false);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        entry.connect_changed({
+            let dialog = dialog.clone();
+            let word = word.clone();
+            move |e| dialog.set_response_enabled("go", e.text().trim() == word)
+        });
+        let ui2 = ui.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "go" {
+                run_job(&ui2, Job::AndroidGo(Box::new(plan.clone())));
+            }
+        });
+        dialog.present(Some(&ui.window));
+    });
+}
 /// The Logs tab: a part, a search, this boot or the one before; read through
 /// the window's phone once it is known (`owner`).
 fn logs_view(owner: Rc<RefCell<Option<Rc<Ui>>>>) -> gtk::Box {

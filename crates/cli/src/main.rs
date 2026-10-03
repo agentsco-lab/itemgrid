@@ -9,6 +9,20 @@ fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A job that changes the phone, recorded for a Cradle window open
+    // meanwhile (it begins with the job's first step).
+    let job = match (args.first().map(String::as_str), args.get(1).map(String::as_str)) {
+        (Some("backup"), Some("full")) => Some("full-backup"),
+        (Some("android"), Some(sub @ ("go" | "start" | "back" | "trial"))) => Some(match sub {
+            "go" => "android-go",
+            "start" => "android-start",
+            "back" => "android-back",
+            _ => "android-trial",
+        }),
+        (Some(c @ ("update" | "reboot" | "backup" | "ramboot" | "recovery-exit" | "restore")), _) => Some(&*Box::leak(c.to_owned().into_boxed_str())),
+        _ => None,
+    };
+    *JOB.lock().unwrap() = job;
     let code = match args.first().map(String::as_str) {
         None | Some("help") | Some("--help") | Some("-h") => {
             usage();
@@ -37,7 +51,32 @@ fn main() {
             2
         }
     };
+    if STARTED.load(std::sync::atomic::Ordering::Relaxed) {
+        let failed = LAST_STOP.lock().unwrap().take();
+        cradle_core::activity::end(&if code == 0 { Ok(()) } else { Err(failed.unwrap_or_else(|| "stopped".into())) });
+    }
     std::process::exit(code);
+}
+
+static JOB: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LAST_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// A step said: printed with the time since `start`, and recorded.
+fn said(start: &std::time::Instant, words: &str) {
+    println!("[{:>4.0}s] {words}", start.elapsed().as_secs_f64());
+    if let Some(job) = *JOB.lock().unwrap() {
+        if !STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            cradle_core::activity::begin(job);
+        }
+        cradle_core::activity::line(words);
+    }
+}
+
+/// A job stopped: said, and kept for the record.
+fn stop(why: &str) {
+    eprintln!("cradle: STOP: {why}");
+    *LAST_STOP.lock().unwrap() = Some(why.to_owned());
 }
 
 fn cmd_status() -> i32 {
@@ -88,7 +127,7 @@ fn cmd_update(args: &[String]) -> i32 {
     }
     let start = std::time::Instant::now();
     let result = cradle_core::update::update(&seen.via, build, &mut |step| {
-        println!("[{:>4.0}s] {}", start.elapsed().as_secs_f64(), step.words());
+        said(&start, step.words());
     });
     match result {
         Ok(()) => 0,
@@ -248,13 +287,13 @@ fn cmd_backup(args: &[String]) -> i32 {
         Some("quick") => vec![Kind::Quick],
         Some("full") => {
             let start = std::time::Instant::now();
-            return match cradle_core::full::take(&host, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+            return match cradle_core::full::take(&host, &mut |line| said(&start, &line)) {
                 Ok(b) => {
                     println!("        {}", b.dir.display());
                     0
                 }
                 Err(e) => {
-                    eprintln!("cradle: STOP: {e}");
+                    stop(&e);
                     1
                 }
             };
@@ -275,7 +314,7 @@ fn cmd_backup(args: &[String]) -> i32 {
     };
     let start = std::time::Instant::now();
     for kind in kinds {
-        match backup::take(&host, kind, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+        match backup::take(&host, kind, &mut |line| said(&start, &line)) {
             Ok(b) => println!("        {}", b.dir.display()),
             Err(e) => {
                 eprintln!("cradle: {}: {e}", kind.words());
@@ -385,7 +424,7 @@ fn cmd_ramboot(args: &[String]) -> i32 {
     let (img, serial, slot) = match cradle_core::ramboot::preflight(&host, image) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("cradle: STOP: {e}");
+            stop(&e);
             return 1;
         }
     };
@@ -411,10 +450,10 @@ fn cmd_ramboot(args: &[String]) -> i32 {
     let start = std::time::Instant::now();
     let expect = if args.iter().any(|a| a == "--recovery") { cradle_core::ramboot::Expect::Recovery } else { cradle_core::ramboot::Expect::of(image) };
     println!("Boots into: {}", if expect == cradle_core::ramboot::Expect::Recovery { "a recovery (awaited over adb)" } else { "Linux (awaited over ssh)" });
-    match cradle_core::ramboot::ram_boot(&host, image, expect, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+    match cradle_core::ramboot::ram_boot(&host, image, expect, &mut |line| said(&start, &line)) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("cradle: STOP: {e}");
+            stop(&e);
             1
         }
     }
@@ -430,7 +469,7 @@ fn cmd_recovery_exit() -> i32 {
     };
     let host = cradle_core::phone::hosts().into_iter().next().unwrap_or_default();
     let start = std::time::Instant::now();
-    match cradle_core::ramboot::leave_recovery(&host, &serial, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+    match cradle_core::ramboot::leave_recovery(&host, &serial, &mut |line| said(&start, &line)) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("cradle: {e}");
@@ -517,7 +556,7 @@ fn cmd_restore(args: &[String]) -> i32 {
     let plan = match cradle_core::restore::plan(&host, &backup, slot, rewrite) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("cradle: STOP: {e}");
+            stop(&e);
             return 1;
         }
     };
@@ -541,10 +580,10 @@ fn cmd_restore(args: &[String]) -> i32 {
         return 0;
     }
     let start = std::time::Instant::now();
-    match cradle_core::restore::restore(&host, &plan, &mut |l| println!("[{:>4.0}s] {l}", start.elapsed().as_secs_f64())) {
+    match cradle_core::restore::restore(&host, &plan, &mut |l| said(&start, &l)) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("cradle: STOP: {e}");
+            stop(&e);
             1
         }
     }
@@ -554,11 +593,11 @@ fn cmd_android(args: &[String]) -> i32 {
     use cradle_core::android;
     let yes = args.iter().any(|a| a == "--yes");
     let start = std::time::Instant::now();
-    let mut say = |l: String| println!("[{:>4.0}s] {l}", start.elapsed().as_secs_f64());
+    let mut say = |l: String| said(&start, &l);
     let done = |r: Result<(), String>| match r {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("cradle: STOP: {e}");
+            stop(&e);
             1
         }
     };
@@ -664,7 +703,7 @@ fn cmd_android(args: &[String]) -> i32 {
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
-    match cradle_core::phone::reboot(&host, &mut |b| println!("[{:>4.0}s] {}", start.elapsed().as_secs_f64(), b.words())) {
+    match cradle_core::phone::reboot(&host, &mut |b| said(&start, b.words())) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("cradle: {e}");

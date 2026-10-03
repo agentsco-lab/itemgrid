@@ -294,7 +294,7 @@ fn android_up(serial: &str) -> bool {
 }
 
 /// A USB device with this serial number attached.
-pub(crate) fn usb_serial_present(serial: &str) -> bool {
+pub fn usb_serial_present(serial: &str) -> bool {
     std::fs::read_dir("/sys/bus/usb/devices").is_ok_and(|d| d.flatten().any(|e| std::fs::read_to_string(e.path().join("serial")).is_ok_and(|s| s.trim() == serial)))
 }
 
@@ -330,6 +330,28 @@ fn arm_brake_recovery(serial: &str) -> Result<(), String> {
     if back.trim() != want {
         return Err(format!("the parking brake read back in the recovery differs: {}", back.trim()));
     }
+    Ok(())
+}
+
+/// From the bootloader back into Linux, on the same slot (fastboot
+/// continue) - when Linux's data is still there (not after a return to
+/// Android: then it is android::back).
+pub fn leave_fastboot(host: &str, serial: &str, say: Say) -> Result<(), String> {
+    if !in_fastboot(serial) {
+        return Err("the phone is not in the bootloader".into());
+    }
+    say("starting the port".into());
+    fastboot(&["-s", serial, "continue"], Duration::from_secs(20))?;
+    let start = Instant::now();
+    while !crate::phone::answers_fresh(host) {
+        if start.elapsed() > Duration::from_secs(300) {
+            return Err("Linux did not come back in 5 minutes - look at the phone's screen".into());
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    say("Linux is back: arming the parking brake".into());
+    arm_brake_linux(host)?;
+    crate::flash::log(serial, "left fastboot for Linux, parking brake armed - cradle")?;
     Ok(())
 }
 
