@@ -5,3 +5,4 @@ version.workspace = true
 description = "What a connected Surface Duo is doing, and the safe ways to act on it"
 
 [dependencies]
+png = "0.17"

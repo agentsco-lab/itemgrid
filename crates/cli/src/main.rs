@@ -14,6 +14,8 @@ fn main() {
         Some("logs") => cmd_logs(&args[1..]),
         Some("run") => cmd_run(&args[1..]),
         Some("shell") => cmd_shell(&args[1..]),
+        Some("reboot") => cmd_reboot(),
+        Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
             usage();
@@ -212,6 +214,40 @@ fn cmd_shell(args: &[String]) -> i32 {
     })
 }
 
+fn cmd_reboot() -> i32 {
+    let Some(host) = linux() else { return 1 };
+    let start = std::time::Instant::now();
+    match cradle_core::phone::reboot(&host, &mut |b| println!("[{:>4.0}s] {}", start.elapsed().as_secs_f64(), b.words())) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            1
+        }
+    }
+}
+
+fn cmd_screenshot(args: &[String]) -> i32 {
+    let hinge = args.iter().any(|a| a == "--hinge");
+    let path = args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| {
+        let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("cradle-shots");
+        let _ = std::fs::create_dir_all(&dir);
+        let stamp = std::process::Command::new("date").arg("+%Y-%m-%d-%H%M%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+        dir.join(format!("{stamp}.png")).display().to_string()
+    });
+    let Some(host) = linux() else { return 1 };
+    let png = cradle_core::screenshot::take(&host).and_then(|rgba| cradle_core::screenshot::png(&rgba, hinge));
+    match png.and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))) {
+        Ok(()) => {
+            println!("{path}");
+            0
+        }
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            1
+        }
+    }
+}
+
 fn usage() {
     println!("cradle - look after a connected Surface Duo\n");
     println!("  status       what the phone is doing; on Linux its versions, battery, heat, space, failed services");
@@ -221,11 +257,6 @@ fn usage() {
     println!("  run          a command (or --file SCRIPT) on the phone as root, or --user as its owner;");
     println!("               refused: the GPIO debug file, writing block devices");
     println!("  shell        a shell on the phone as root (--user: as its owner)");
-    println!("\nComing next:");
-    for (cmd, what) in [
-        ("reboot", "and wait until it is back"),
-        ("screenshot", "both panels as one picture on the computer"),
-    ] {
-        println!("  {cmd:<12} {what}");
-    }
+    println!("  reboot       reboot the phone and wait until item runs again");
+    println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }

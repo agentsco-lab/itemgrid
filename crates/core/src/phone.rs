@@ -32,6 +32,11 @@ pub fn answers(host: &str) -> bool {
 
 /// A script run on the phone as root; its standard output.
 pub fn run(host: &str, script: &str) -> Result<String, String> {
+    run_bytes(host, script).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// A script run on the phone as root; its standard output as bytes.
+pub fn run_bytes(host: &str, script: &str) -> Result<Vec<u8>, String> {
     crate::guard::check(script)?;
     let mut child = ssh(host, 4).args(["sh", "-s"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("ssh: {e}"))?;
     child.stdin.take().expect("piped").write_all(script.as_bytes()).map_err(|e| format!("ssh: {e}"))?;
@@ -39,7 +44,57 @@ pub fn run(host: &str, script: &str) -> Result<String, String> {
     if out.status.code() == Some(255) {
         return Err(format!("ssh: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(out.stdout)
+}
+
+/// Where a reboot is, for whoever shows it.
+#[derive(Debug, Clone)]
+pub enum Boot {
+    Rebooting,
+    Down,
+    Up,
+    ItemRunning,
+}
+
+impl Boot {
+    pub fn words(&self) -> &'static str {
+        match self {
+            Boot::Rebooting => "rebooting the phone",
+            Boot::Down => "the phone went down; waiting for it to come back",
+            Boot::Up => "the phone is back; waiting for item",
+            Boot::ItemRunning => "item is running: enter the PIN",
+        }
+    }
+}
+
+/// The phone rebooted, and waited for: down, back, item running.
+pub fn reboot(host: &str, step: &mut dyn FnMut(Boot)) -> Result<(), String> {
+    use std::time::Duration;
+    step(Boot::Rebooting);
+    // The connection drops as the phone goes down: its error is expected.
+    let _ = run(host, "sync; systemctl reboot");
+    wait(|| !answers(host), Duration::from_secs(90), "the phone did not go down")?;
+    step(Boot::Down);
+    wait(|| answers(host), Duration::from_secs(300), "the phone did not come back within 5 minutes")?;
+    step(Boot::Up);
+    wait(
+        || run(host, "systemctl is-active item.service").is_ok_and(|s| s.trim() == "active"),
+        Duration::from_secs(120),
+        "item did not start within 2 minutes - `cradle logs` shows why",
+    )?;
+    step(Boot::ItemRunning);
+    Ok(())
+}
+
+fn wait(mut done: impl FnMut() -> bool, limit: std::time::Duration, fail: &str) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < limit {
+        if done() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    Err(fail.to_owned())
 }
 
 /// A script run on the phone as root, its output going straight to ours

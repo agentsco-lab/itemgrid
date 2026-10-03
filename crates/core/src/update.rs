@@ -5,7 +5,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 /// The packages install-phone.sh takes from the build.
 const PACKAGES: &[&str] = &["item-compositor", "item-face", "pen-split"];
@@ -16,10 +15,7 @@ const TARGET: &str = "aarch64-unknown-linux-gnu";
 pub enum Step {
     Building,
     Installing,
-    Rebooting,
-    Down,
-    Up,
-    ItemRunning,
+    Boot(crate::phone::Boot),
 }
 
 impl Step {
@@ -27,10 +23,7 @@ impl Step {
         match self {
             Step::Building => "building item",
             Step::Installing => "installing it on the phone",
-            Step::Rebooting => "rebooting the phone",
-            Step::Down => "the phone went down; waiting for it to come back",
-            Step::Up => "the phone is back; waiting for item",
-            Step::ItemRunning => "item is running: enter the PIN",
+            Step::Boot(b) => b.words(),
         }
     }
 }
@@ -76,29 +69,6 @@ pub fn update(host: &str, build: bool, step: &mut dyn FnMut(Step)) -> Result<(),
     }
     step(Step::Installing);
     run(Command::new("sh").current_dir(&tree).arg(Path::new("tools/install-phone.sh")).arg(format!("root@{host}")), "the install")?;
-    step(Step::Rebooting);
-    // The connection drops as the phone goes down: its error is expected.
-    let _ = crate::phone::run(host, "sync; systemctl reboot");
-    wait(|| !crate::phone::answers(host), Duration::from_secs(90), "the phone did not go down")?;
-    step(Step::Down);
-    wait(|| crate::phone::answers(host), Duration::from_secs(300), "the phone did not come back within 5 minutes")?;
-    step(Step::Up);
-    wait(
-        || crate::phone::run(host, "systemctl is-active item.service").is_ok_and(|s| s.trim() == "active"),
-        Duration::from_secs(120),
-        "item did not start within 2 minutes - `cradle logs` shows why",
-    )?;
-    step(Step::ItemRunning);
-    Ok(())
+    crate::phone::reboot(host, &mut |b| step(Step::Boot(b)))
 }
 
-fn wait(mut done: impl FnMut() -> bool, limit: Duration, fail: &str) -> Result<(), String> {
-    let start = Instant::now();
-    while start.elapsed() < limit {
-        if done() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-    Err(fail.to_owned())
-}

@@ -7,6 +7,7 @@ pub mod detect;
 pub mod guard;
 pub mod logs;
 pub mod phone;
+pub mod screenshot;
 pub mod status;
 pub mod update;
 
