@@ -21,6 +21,8 @@ fn main() {
         Some("confirm") => cmd_confirm(&args[1..]),
         Some("ramboot") => cmd_ramboot(&args[1..]),
         Some("recovery-exit") => cmd_recovery_exit(),
+        Some("club") => cmd_club(&args[1..]),
+        Some("register") => cmd_register(),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -46,6 +48,9 @@ fn cmd_status() -> i32 {
             return 1;
         }
     };
+    if let Some(d) = cradle_core::club::known(&s.serial) {
+        println!("Club:      {}{}", d.number, d.label.map(|l| format!(" - {l}")).unwrap_or_default());
+    }
     let (h, m) = (s.uptime_s / 3600, s.uptime_s / 60 % 60);
     println!("System:    {}, kernel {}, up {h} h {m} min", s.os, s.kernel);
     println!("item:      {} (built {}), {}", s.item, s.item_built, if s.item_running { "running" } else { "not running" });
@@ -414,6 +419,59 @@ fn cmd_recovery_exit() -> i32 {
     }
 }
 
+fn cmd_club(args: &[String]) -> i32 {
+    use cradle_core::club;
+    match args.first().map(String::as_str) {
+        Some("token") => {
+            println!("Paste the registry token from {} (Settings -> Device registry), then Enter:", club::server());
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                return 2;
+            }
+            match club::set_token(&line) {
+                Ok(()) => {
+                    println!("Kept in the keyring.");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("cradle: {e}");
+                    1
+                }
+            }
+        }
+        Some("forget") => match club::forget_token() {
+            Ok(()) => {
+                println!("The token is gone from the keyring.");
+                0
+            }
+            Err(e) => {
+                eprintln!("cradle: {e}");
+                1
+            }
+        },
+        _ => {
+            println!("The club: {}", club::server());
+            println!("Token: {}", if club::token().is_some() { "in the keyring" } else { "none - cradle club token" });
+            0
+        }
+    }
+}
+
+fn cmd_register() -> i32 {
+    let Some(host) = linux() else { return 1 };
+    match cradle_core::club::register(&host) {
+        Ok(d) => {
+            println!("This Duo is {} in the club{}.", d.number, if d.new { " - newly registered" } else { "" });
+            println!("Written on the phone: /etc/item/device-id");
+            0
+        }
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            1
+        }
+    }
+}
+
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
@@ -466,5 +524,7 @@ fn usage() {
     println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go;");
     println!("               a TWRP image, or --recovery, is awaited in the recovery)");
     println!("  recovery-exit  out of the recovery, back into Linux");
+    println!("  club         the Duo owners' club: club token (paste one from the site), club forget");
+    println!("  register     this Duo's number in the club (00001...), written onto the phone");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }

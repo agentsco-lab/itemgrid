@@ -7,6 +7,7 @@ const SCRIPT: &str = r#"
 v() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
 echo "os=$(. /etc/os-release; echo "$PRETTY_NAME")"
 echo "kernel=$(uname -r)"
+for w in $(cat /proc/cmdline); do case "$w" in androidboot.serialno=*) echo "serial=${w#*=}";; esac; done
 echo "uptime=$(cut -d. -f1 /proc/uptime)"
 echo "item=$(v item-shell)"
 echo "item_built=$(date -r /usr/libexec/item/item-compositor '+%F %R' 2>/dev/null)"
@@ -29,6 +30,7 @@ systemctl --failed --no-legend --plain 2>/dev/null | awk '{print "failed=" $1}'
 /// The phone's state, read once.
 #[derive(Debug, Default, Clone)]
 pub struct Status {
+    pub serial: String,
     pub os: String,
     pub kernel: String,
     pub uptime_s: u64,
@@ -92,6 +94,7 @@ pub fn read(host: &str) -> Result<Status, String> {
         }
     }
     let get = |k: &str| kv.get(k).copied().unwrap_or_default().to_owned();
+    s.serial = get("serial");
     s.os = get("os");
     s.kernel = get("kernel");
     s.uptime_s = get("uptime").parse().unwrap_or(0);

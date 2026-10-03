@@ -78,6 +78,9 @@ struct Ui {
     switcher: adw::ViewSwitcher,
     away: adw::StatusPage,
     screens: [gtk::Picture; 2],
+    name: gtk::Label,
+    join: gtk::Button,
+    serial: RefCell<String>,
     name_sub: gtk::Label,
     battery: gtk::Label,
     software: gtk::Label,
@@ -156,11 +159,15 @@ fn build(app: &adw::Application) {
     live_badge.set_visible(false);
     device.append(&live_badge);
     let name = gtk::Label::builder().label("Surface Duo").css_classes(["title-1"]).margin_top(10).build();
+    let join = gtk::Button::builder().label("Join the Club…").css_classes(["pill"]).halign(gtk::Align::Center).build();
+    join.set_tooltip_text(Some("A number for this Duo in the owners' club on agentsco.uk (00001...)"));
+    join.set_visible(false);
     let name_sub = gtk::Label::builder().css_classes(["dim-label"]).build();
     let battery = gtk::Label::new(None);
     device.append(&name);
     device.append(&name_sub);
     device.append(&battery);
+    device.append(&join);
     general.append(&device);
 
     let sections = gtk::Box::new(gtk::Orientation::Vertical, 22);
@@ -303,6 +310,9 @@ fn build(app: &adw::Application) {
         switcher,
         away,
         screens,
+        name,
+        join: join.clone(),
+        serial: RefCell::default(),
         name_sub,
         battery,
         software,
@@ -365,6 +375,10 @@ fn build(app: &adw::Application) {
     reboot.connect_clicked({
         let ui = ui.clone();
         move |_| ask(&ui, "Restart the phone?", "Enter the PIN when it is back.", "Restart", Job::Reboot)
+    });
+    join.connect_clicked({
+        let ui = ui.clone();
+        move |_| join_club(&ui)
     });
     try_ram.connect_clicked({
         let ui = ui.clone();
@@ -502,6 +516,18 @@ fn show(ui: &Rc<Ui>, seen: &Seen, status: Option<Result<status::Status, String>>
 }
 
 fn fill(ui: &Ui, s: &status::Status) {
+    // The club's number, if this computer knows it.
+    *ui.serial.borrow_mut() = s.serial.clone();
+    match cradle_core::club::known(&s.serial) {
+        Some(d) => {
+            ui.name.set_label(&format!("Surface Duo · {}", d.number));
+            ui.join.set_visible(false);
+        }
+        None => {
+            ui.name.set_label("Surface Duo");
+            ui.join.set_visible(!s.serial.is_empty());
+        }
+    }
     let problems: Vec<String> = s.warnings().into_iter().chain(s.failed.iter().map(|u| format!("{u} failed"))).collect();
     ui.banner.set_title(&problems.join(" · "));
     ui.banner.set_revealed(!problems.is_empty());
@@ -848,6 +874,49 @@ fn choose_ram_image(ui: &Rc<Ui>) {
             });
             dialog.present(Some(&ui.window));
         });
+    });
+}
+
+/// This Duo into the club: the token asked for first if the keyring has none.
+fn join_club(ui: &Rc<Ui>) {
+    if cradle_core::club::token().is_some() {
+        register_now(ui);
+        return;
+    }
+    let entry = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("creg_…").build();
+    let dialog = adw::AlertDialog::new(
+        Some("Join the owners' club"),
+        Some(&format!("Paste a registry token from {} (Settings → Device registry). Cradle keeps it in your keyring; the phone's serial number never leaves this computer.", cradle_core::club::server())),
+    );
+    dialog.set_extra_child(Some(&entry));
+    dialog.add_responses(&[("cancel", "Cancel"), ("go", "Join")]);
+    dialog.set_response_appearance("go", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("go"));
+    let ui2 = ui.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "go" {
+            return;
+        }
+        match cradle_core::club::set_token(&entry.text()) {
+            Ok(()) => register_now(&ui2),
+            Err(e) => stopped(&ui2, &e),
+        }
+    });
+    dialog.present(Some(&ui.window));
+}
+
+fn register_now(ui: &Rc<Ui>) {
+    let Some(host) = ui.state.borrow().host.clone() else { return };
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        match gio::spawn_blocking(move || cradle_core::club::register(&host)).await.unwrap_or_else(|_| Err("the work stopped".into())) {
+            Ok(d) => {
+                ui.name.set_label(&format!("Surface Duo · {}", d.number));
+                ui.join.set_visible(false);
+                ui.toasts.add_toast(adw::Toast::new(&format!("This Duo is {} in the club", d.number)));
+            }
+            Err(e) => stopped(&ui, &e),
+        }
     });
 }
 

@@ -4,6 +4,7 @@
 //! this crate, so neither can be gone around.
 
 pub mod backup;
+pub mod club;
 pub mod detect;
 pub mod flash;
 pub mod guard;
