@@ -29,6 +29,7 @@ fn main() {
         Some("club") => cmd_club(&args[1..]),
         Some("register") => cmd_register(),
         Some("restore") => cmd_restore(&args[1..]),
+        Some("android") => cmd_android(),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -549,6 +550,52 @@ fn cmd_restore(args: &[String]) -> i32 {
     }
 }
 
+fn cmd_android() -> i32 {
+    use cradle_core::android;
+    let Some(host) = linux() else { return 1 };
+    let plan = match android::plan(&host) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            return 1;
+        }
+    };
+    println!("Return to Android - the plan (nothing is changed)\n");
+    for b in &plan.builds {
+        println!("Android in super, slot {}: {} (vendor built {})", b.slot.to_ascii_uppercase(), b.fingerprint, android::when(b.vendor_utc));
+    }
+    match &plan.kernel {
+        Some((k, b)) => println!("Stock kernel:   {} (built {}, {} min after its vendor) -> slot {}", k.path.display(), android::when(k.built_utc), (k.built_utc - b.vendor_utc) / 60, b.slot.to_ascii_uppercase()),
+        None => {
+            println!("Stock kernel:   none matching; seen:");
+            for k in &plan.kernels_seen {
+                println!("                {} built {}", k.path.display(), android::when(k.built_utc));
+            }
+        }
+    }
+    println!("Battery:        {}%", plan.battery.map(|b| b.to_string()).unwrap_or("?".into()));
+    println!("Device data:    {}", if plan.device_data { "backed up" } else { "NOT backed up" });
+    match &plan.full {
+        Some(b) => println!("Whole system:   backed up {}{}", b.manifest.created, if plan.full_fresh { " - fresh" } else { " - not fresh: a new one is taken first (~18 min)" }),
+        None => println!("Whole system:   no backup - one is taken first (~18 min)"),
+    }
+    if !plan.losses.is_empty() {
+        println!("Lost with userdata (in no backup):");
+        for (name, bytes) in &plan.losses {
+            println!("                {name} ({})", cradle_core::status::size_words(bytes / 1024));
+        }
+    }
+    if plan.stops.is_empty() {
+        println!("\nNothing stops it.");
+    } else {
+        println!("\nWhat stops it:");
+        for s in &plan.stops {
+            println!("  - {s}");
+        }
+    }
+    0
+}
+
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
@@ -604,6 +651,7 @@ fn usage() {
     println!("  recovery-exit  out of the recovery, back into Linux");
     println!("  club         the Duo owners' club: club token (paste one from the site), club forget");
     println!("  register     this Duo's number in the club (00001...), written onto the phone");
+    println!("  android      the plan for returning to the phone's stock Android (reads only, for now)");
     println!("  restore      a slot's boot chain from a backup: [BACKUP] --slot a|b (shows the plan; --yes;");
     println!("               --rewrite writes the same bytes, to try the writing on the spare slot)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
