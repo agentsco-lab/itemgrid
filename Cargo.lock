@@ -354,6 +354,7 @@ name = "cradle"
 version = "0.1.0"
 dependencies = [
  "cradle-core",
+ "libc",
 ]
 
 [[package]]

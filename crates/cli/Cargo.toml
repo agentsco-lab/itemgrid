@@ -9,4 +9,5 @@ name = "cradle"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
 cradle-core = { path = "../core" }

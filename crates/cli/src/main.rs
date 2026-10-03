@@ -3,6 +3,11 @@
 use cradle_core::{status, Mode};
 
 fn main() {
+    // Output cut short (| head) ends cradle quietly, as other tools.
+    // SAFETY: setting SIGPIPE's disposition before any thread runs.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         None | Some("help") | Some("--help") | Some("-h") => {
