@@ -1,0 +1,12 @@
+[package]
+name = "cradle"
+edition.workspace = true
+version.workspace = true
+description = "The command line over cradle-core"
+
+[[bin]]
+name = "cradle"
+path = "src/main.rs"
+
+[dependencies]
+cradle-core = { path = "../core" }
