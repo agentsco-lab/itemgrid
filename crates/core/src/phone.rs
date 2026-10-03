@@ -164,3 +164,31 @@ pub fn spawn(host: &str, script: &str, out: Stdio) -> Result<std::process::Child
     drop(stdin);
     Ok(child)
 }
+
+/// A script's output on the phone written to `path` as it comes, its sha256
+/// worked out on the way; its size and hash.
+pub fn download(host: &str, script: &str, path: &std::path::Path) -> Result<(u64, String), String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut child = spawn(host, script, Stdio::piped())?;
+    let mut out = child.stdout.take().expect("piped");
+    let mut file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut hash = Sha256::new();
+    let mut size = 0u64;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = out.read(&mut buf).map_err(|e| format!("ssh: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+        file.write_all(&buf[..n]).map_err(|e| format!("{}: {e}", path.display()))?;
+        size += n as u64;
+    }
+    file.sync_all().map_err(|e| format!("{}: {e}", path.display()))?;
+    let status = child.wait().map_err(|e| format!("ssh: {e}"))?;
+    if !status.success() {
+        return Err(format!("reading on the phone failed ({status})"));
+    }
+    Ok((size, format!("{:x}", hash.finalize())))
+}

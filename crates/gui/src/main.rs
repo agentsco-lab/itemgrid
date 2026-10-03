@@ -83,6 +83,8 @@ struct Ui {
     software: gtk::Label,
     actions: gtk::Box,
     progress: gtk::ListBox,
+    backup_progress: gtk::ListBox,
+    backups: gtk::ListBox,
     facts: gtk::Grid,
     storage: gtk::DrawingArea,
     legend: gtk::Box,
@@ -166,7 +168,8 @@ fn build(app: &adw::Application) {
         b.append(&gtk::Label::builder().label(title).css_classes(["section-title"]).xalign(0.0).build());
         b
     };
-    let body = |text: &str| gtk::Label::builder().label(text).wrap(true).xalign(0.0).css_classes(["dim-label"]).build();
+    // Wrapped at a reading width: unbounded, they widened the window.
+    let body = |text: &str| gtk::Label::builder().label(text).wrap(true).max_width_chars(64).xalign(0.0).css_classes(["dim-label"]).build();
     let pill = |label: &str| {
         let b = gtk::Button::with_label(label);
         b.add_css_class("pill");
@@ -196,18 +199,22 @@ fn build(app: &adw::Application) {
     soft.append(&progress);
     actions.append(&soft);
 
-    // Backups: with flashing, the next stage.
+    // Backups: reading only; restoring comes with flashing.
     let back = section("Backups");
-    back.append(&body("Back up the phone's system to this computer, and put it back when something goes wrong. Coming with flashing: a RAM boot first, one change per boot."));
+    back.append(&body("Back up the boot chain and your home and settings to this computer - and, once, the device data no image can give back (radio calibration, IMEI, keys)."));
     let back_row = row();
     let backup = pill("Back Up Now");
     let restore = pill("Restore Backup…");
-    for b in [&backup, &restore] {
-        b.set_sensitive(false);
-        b.set_tooltip_text(Some("Coming with flashing"));
-        back_row.append(b);
-    }
+    restore.set_sensitive(false);
+    restore.set_tooltip_text(Some("Coming with flashing: a RAM boot first, one change per boot"));
+    back_row.append(&backup);
+    back_row.append(&restore);
     back.append(&back_row);
+    let backup_progress = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
+    backup_progress.set_visible(false);
+    back.append(&backup_progress);
+    let backups = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
+    back.append(&backups);
     actions.append(&back);
 
     // Screen.
@@ -283,6 +290,8 @@ fn build(app: &adw::Application) {
         software,
         actions,
         progress,
+        backup_progress,
+        backups,
         facts,
         storage: storage.clone(),
         legend,
@@ -336,6 +345,10 @@ fn build(app: &adw::Application) {
     reboot.connect_clicked({
         let ui = ui.clone();
         move |_| ask(&ui, "Restart the phone?", "Enter the PIN when it is back.", "Restart", Job::Reboot)
+    });
+    backup.connect_clicked({
+        let ui = ui.clone();
+        move |_| run_job(&ui, Job::Backup)
     });
     shot.connect_clicked({
         let ui = ui.clone();
@@ -459,6 +472,7 @@ fn show(ui: &Rc<Ui>, seen: &Seen, status: Option<Result<status::Status, String>>
         ui.state.borrow_mut().pictured = true;
         take_screens(ui, false);
         count_storage(ui);
+        show_backups(ui);
     }
 }
 
@@ -523,6 +537,60 @@ fn count_storage(ui: &Rc<Ui>) {
         *ui.parts.borrow_mut() = Some(parts);
         ui.storage.queue_draw();
     });
+}
+
+/// The backups on this computer under Backups: newest first, a star to keep
+/// one for good, its folder; the device data asks to be copied elsewhere
+/// until it is.
+fn show_backups(ui: &Rc<Ui>) {
+    use cradle_core::backup::{self, Kind};
+    while let Some(child) = ui.backups.first_child() {
+        ui.backups.remove(&child);
+    }
+    let all = backup::list(None);
+    ui.backups.set_visible(!all.is_empty());
+    // The device data's one, and the newest few of the rest.
+    let device = all.iter().find(|b| b.manifest.kind == Kind::Device).cloned();
+    let rest: Vec<_> = all.into_iter().filter(|b| b.manifest.kind != Kind::Device).take(6).collect();
+    for b in device.into_iter().chain(rest) {
+        let when = b.manifest.created.get(..16).unwrap_or(&b.manifest.created).to_owned();
+        let row = adw::ActionRow::builder()
+            .title(b.manifest.kind.words())
+            .subtitle(format!("{when} · {} · item {}", status::size_words(b.size() / 1024), b.manifest.item))
+            .build();
+        if b.manifest.kind == Kind::Device {
+            let elsewhere = gtk::CheckButton::with_label("Copied elsewhere");
+            elsewhere.set_active(b.manifest.off_computer);
+            elsewhere.set_tooltip_text(Some("This exists only on the phone and here: keep a copy on a USB drive or in a cloud too"));
+            if !b.manifest.off_computer {
+                row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                row.set_subtitle(&format!("{when} · only here and on the phone - copy it elsewhere"));
+            }
+            let held = RefCell::new(b.clone());
+            let ui2 = ui.clone();
+            elsewhere.connect_toggled(move |c| {
+                let _ = held.borrow_mut().set_off_computer(c.is_active());
+                show_backups(&ui2);
+            });
+            row.add_suffix(&elsewhere);
+        } else {
+            let star = gtk::ToggleButton::builder().icon_name(if b.manifest.keep { "starred-symbolic" } else { "non-starred-symbolic" }).active(b.manifest.keep).valign(gtk::Align::Center).css_classes(["flat"]).build();
+            star.set_tooltip_text(Some("Keep for good: never removed to make room"));
+            let held = RefCell::new(b.clone());
+            star.connect_toggled(move |t| {
+                let _ = held.borrow_mut().set_keep(t.is_active());
+                t.set_icon_name(if t.is_active() { "starred-symbolic" } else { "non-starred-symbolic" });
+            });
+            row.add_suffix(&star);
+        }
+        let open = gtk::Button::builder().icon_name("folder-open-symbolic").valign(gtk::Align::Center).css_classes(["flat"]).tooltip_text("Show in Files").build();
+        let dir = b.dir.clone();
+        open.connect_clicked(move |_| {
+            let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(&dir).uri(), gio::AppLaunchContext::NONE);
+        });
+        row.add_suffix(&open);
+        ui.backups.append(&row);
+    }
 }
 
 /// The bottom bar on General only, with the phone there.
@@ -635,6 +703,7 @@ fn take_screens(ui: &Rc<Ui>, save: bool) {
 enum Job {
     Update,
     Reboot,
+    Backup,
 }
 
 /// Asks before an action that takes the phone away for a minute.
@@ -657,10 +726,12 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
     let Some(host) = ui.state.borrow().host.clone() else { return };
     ui.state.borrow_mut().busy = true;
     ui.actions.set_sensitive(false);
-    while let Some(child) = ui.progress.first_child() {
-        ui.progress.remove(&child);
+    // Each job's steps under its own section.
+    let list = if matches!(job, Job::Backup) { ui.backup_progress.clone() } else { ui.progress.clone() };
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
     }
-    ui.progress.set_visible(true);
+    list.set_visible(true);
     let (tx, rx) = async_channel::unbounded::<String>();
     let started = std::time::Instant::now();
     let work = gio::spawn_blocking(move || {
@@ -670,6 +741,20 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         match job {
             Job::Update => cradle_core::update::update(&host, true, &mut |step| say(step.words())),
             Job::Reboot => cradle_core::phone::reboot(&host, &mut |b| say(b.words())),
+            Job::Backup => {
+                use cradle_core::backup::{self, Kind};
+                // The device data once; the boot chain and home each time.
+                let serial = backup::serial(&host)?;
+                let mut kinds = Vec::new();
+                if !backup::has_device_data(&serial) {
+                    kinds.push(Kind::Device);
+                }
+                kinds.extend([Kind::Boot, Kind::Quick]);
+                for kind in kinds {
+                    backup::take(&host, kind, &mut |line| say(&line))?;
+                }
+                Ok(())
+            }
         }
     });
     let ui = ui.clone();
@@ -684,7 +769,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
             let r = adw::ActionRow::builder().title(&line).build();
             let spin = gtk::Spinner::builder().spinning(true).build();
             r.add_prefix(&spin);
-            ui.progress.append(&r);
+            list.append(&r);
             last = Some((r, spin));
         }
         let result = work.await.unwrap_or_else(|_| Err("the work stopped".into()));
@@ -695,10 +780,12 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         ui.state.borrow_mut().busy = false;
         ui.state.borrow_mut().pictured = false;
         ui.actions.set_sensitive(true);
-        let toast = match &result {
-            Ok(()) => adw::Toast::new("Done: enter the PIN on the phone"),
-            Err(e) => adw::Toast::new(e),
+        let toast = match (&result, job) {
+            (Ok(()), Job::Backup) => adw::Toast::new("Backed up"),
+            (Ok(()), _) => adw::Toast::new("Done: enter the PIN on the phone"),
+            (Err(e), _) => adw::Toast::new(e),
         };
+        show_backups(&ui);
         toast.set_timeout(6);
         ui.toasts.add_toast(toast);
         look(&ui);

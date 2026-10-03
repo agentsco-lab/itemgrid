@@ -15,6 +15,8 @@ fn main() {
         Some("run") => cmd_run(&args[1..]),
         Some("shell") => cmd_shell(&args[1..]),
         Some("reboot") => cmd_reboot(),
+        Some("backup") => cmd_backup(&args[1..]),
+        Some("backups") => cmd_backups(),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -214,6 +216,66 @@ fn cmd_shell(args: &[String]) -> i32 {
     })
 }
 
+fn cmd_backup(args: &[String]) -> i32 {
+    use cradle_core::backup::{self, Kind};
+    let Some(host) = linux() else { return 1 };
+    let serial = match backup::serial(&host) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            return 1;
+        }
+    };
+    let kinds: Vec<Kind> = match args.first().map(String::as_str) {
+        Some("device") => vec![Kind::Device],
+        Some("boot") => vec![Kind::Boot],
+        Some("quick") => vec![Kind::Quick],
+        None | Some("all") => {
+            // The device data once; the rest each time.
+            let mut k = Vec::new();
+            if !backup::has_device_data(&serial) {
+                k.push(Kind::Device);
+            }
+            k.extend([Kind::Boot, Kind::Quick]);
+            k
+        }
+        Some(other) => {
+            eprintln!("cradle backup: '{other}' - device, boot, quick or all");
+            return 2;
+        }
+    };
+    let start = std::time::Instant::now();
+    for kind in kinds {
+        match backup::take(&host, kind, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+            Ok(b) => println!("        {}", b.dir.display()),
+            Err(e) => {
+                eprintln!("cradle: {}: {e}", kind.words());
+                return 1;
+            }
+        }
+    }
+    if let Some(device) = cradle_core::backup::list(Some(&serial)).into_iter().find(|b| b.manifest.kind == Kind::Device) {
+        if !device.manifest.off_computer {
+            println!("\nThe device data (radio calibration, IMEI, keys) exists nowhere but on the phone and here:");
+            println!("copy {} to a USB drive or a cloud too.", device.dir.display());
+        }
+    }
+    0
+}
+
+fn cmd_backups() -> i32 {
+    let all = cradle_core::backup::list(None);
+    if all.is_empty() {
+        println!("No backups yet: cradle backup");
+        return 0;
+    }
+    for b in all {
+        let flags = [b.manifest.keep.then_some("kept"), b.manifest.off_computer.then_some("copied off")].into_iter().flatten().collect::<Vec<_>>().join(", ");
+        println!("{}  {:<18} {:>9}  item {}  slot {}  {}", b.manifest.created, b.manifest.kind.words(), cradle_core::status::size_words(b.size() / 1024), b.manifest.item, b.manifest.slot, flags);
+    }
+    0
+}
+
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
@@ -258,5 +320,8 @@ fn usage() {
     println!("               refused: the GPIO debug file, writing block devices");
     println!("  shell        a shell on the phone as root (--user: as its owner)");
     println!("  reboot       reboot the phone and wait until item runs again");
+    println!("  backup       back up to ~/cradle-backups: device data (once), boot chain, home and settings;");
+    println!("               or one: device | boot | quick. Reads only.");
+    println!("  backups      the backups on this computer");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }
