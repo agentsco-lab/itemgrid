@@ -7,6 +7,7 @@ pub mod backup;
 pub mod club;
 pub mod detect;
 pub mod flash;
+pub mod full;
 pub mod guard;
 pub mod live;
 pub mod logs;

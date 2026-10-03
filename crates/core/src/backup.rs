@@ -30,6 +30,9 @@ pub enum Kind {
     Device,
     Boot,
     Quick,
+    /// The whole system: the rootfs image and the Android container's data,
+    /// taken from TWRP (full.rs).
+    Full,
 }
 
 impl Kind {
@@ -38,6 +41,7 @@ impl Kind {
             Kind::Device => "device",
             Kind::Boot => "boot",
             Kind::Quick => "quick",
+            Kind::Full => "full",
         }
     }
 
@@ -46,6 +50,7 @@ impl Kind {
             Kind::Device => "Device data",
             Kind::Boot => "Boot chain",
             Kind::Quick => "Home and settings",
+            Kind::Full => "Whole system",
         }
     }
 
@@ -55,6 +60,7 @@ impl Kind {
             Kind::Device => None,
             Kind::Boot => Some(10),
             Kind::Quick => Some(5),
+            Kind::Full => Some(2),
         }
     }
 }
@@ -99,7 +105,7 @@ impl Backup {
         self.manifest.items.iter().map(|i| i.size).sum()
     }
 
-    fn save(&self) -> Result<(), String> {
+    pub(crate) fn save(&self) -> Result<(), String> {
         let text = serde_json::to_string_pretty(&self.manifest).map_err(|e| e.to_string())?;
         std::fs::write(self.dir.join("manifest.json"), text).map_err(|e| e.to_string())
     }
@@ -142,12 +148,12 @@ pub fn list(serial: Option<&str>) -> Vec<Backup> {
 }
 
 /// What the phone is, for the manifest.
-struct Facts {
-    serial: String,
-    slot: String,
-    item: String,
-    port: String,
-    kernel: String,
+pub(crate) struct Facts {
+    pub(crate) serial: String,
+    pub(crate) slot: String,
+    pub(crate) item: String,
+    pub(crate) port: String,
+    pub(crate) kernel: String,
 }
 
 const FACTS: &str = r#"
@@ -157,7 +163,7 @@ echo "port=$(dpkg-query -W -f='${Version}' adaptation-droidian-surfaceduo 2>/dev
 echo "kernel=$(uname -r)"
 "#;
 
-fn facts(host: &str) -> Result<Facts, String> {
+pub(crate) fn facts(host: &str) -> Result<Facts, String> {
     let text = crate::phone::run(host, FACTS)?;
     let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or_default().to_owned();
     let f = Facts { serial: get("serial"), slot: get("slot"), item: get("item"), port: get("port"), kernel: get("kernel") };
@@ -167,13 +173,13 @@ fn facts(host: &str) -> Result<Facts, String> {
     Ok(f)
 }
 
-fn now() -> String {
+pub(crate) fn now() -> String {
     let out = std::process::Command::new("date").arg("+%Y-%m-%d %H:%M:%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
     out
 }
 
 /// Free space where the backups go (bytes).
-fn free_here() -> u64 {
+pub(crate) fn free_here() -> u64 {
     let dir = root();
     let _ = std::fs::create_dir_all(&dir);
     std::process::Command::new("df")
@@ -205,6 +211,7 @@ pub fn take(host: &str, kind: Kind, say: &mut dyn FnMut(String)) -> Result<Backu
         Kind::Device => sizes(host, DEVICE_PARTS)?.iter().sum(),
         Kind::Boot => sizes(host, BOOT_PARTS)?.iter().sum(),
         Kind::Quick => crate::phone::run(host, "du -sxk /home /etc | awk '{s+=$1} END {print s*1024}'")?.trim().parse().unwrap_or(0),
+        Kind::Full => return Err("the whole system is taken with full::take, from TWRP".into()),
     };
     let free = free_here();
     if free < need + need / 10 + (512 << 20) {
@@ -252,6 +259,7 @@ fn take_into(host: &str, kind: Kind, dir: &Path, say: &mut dyn FnMut(String)) ->
                 items.push(Item { source: part.to_string(), file, size, sha256: sha });
             }
         }
+        Kind::Full => return Err("the whole system is taken with full::take, from TWRP".into()),
         Kind::Quick => {
             say("listing the packages".into());
             let list = crate::phone::run(host, "dpkg-query -W -f='${Package}\\t${Version}\\n'; echo '#manual'; apt-mark showmanual 2>/dev/null\n")?;
@@ -279,7 +287,7 @@ fn sha_of(bytes: &[u8]) -> String {
 
 /// The kind's backups beyond its count removed - never one kept for good,
 /// never the first boot chain (where it all began).
-fn prune(serial: &str, kind: Kind, say: &mut dyn FnMut(String)) {
+pub(crate) fn prune(serial: &str, kind: Kind, say: &mut dyn FnMut(String)) {
     let Some(count) = kind.keep() else { return };
     let mut all: Vec<Backup> = list(Some(serial)).into_iter().filter(|b| b.manifest.kind == kind).collect();
     // Oldest last (list gives newest first); the first is spared.

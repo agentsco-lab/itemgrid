@@ -245,6 +245,19 @@ fn cmd_backup(args: &[String]) -> i32 {
         Some("device") => vec![Kind::Device],
         Some("boot") => vec![Kind::Boot],
         Some("quick") => vec![Kind::Quick],
+        Some("full") => {
+            let start = std::time::Instant::now();
+            return match cradle_core::full::take(&host, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+                Ok(b) => {
+                    println!("        {}", b.dir.display());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("cradle: STOP: {e}");
+                    1
+                }
+            };
+        }
         None | Some("all") => {
             // The device data once; the rest each time.
             let mut k = Vec::new();
@@ -255,7 +268,7 @@ fn cmd_backup(args: &[String]) -> i32 {
             k
         }
         Some(other) => {
-            eprintln!("cradle backup: '{other}' - device, boot, quick or all");
+            eprintln!("cradle backup: '{other}' - device, boot, quick, full or all");
             return 2;
         }
     };
@@ -582,6 +595,7 @@ fn usage() {
     println!("  reboot       reboot the phone and wait until item runs again");
     println!("  backup       back up to ~/cradle-backups: device data (once), boot chain, home and settings;");
     println!("               or one: device | boot | quick. Reads only.");
+    println!("               full: the whole system from TWRP (the phone in TWRP ~15-20 min, then back)");
     println!("  backups      the backups on this computer");
     println!("  slots        the two boot slots: their state and what is in them; the RAM boot gate");
     println!("  confirm      record that the running system booted from its slot (shows the evidence; --yes)");
