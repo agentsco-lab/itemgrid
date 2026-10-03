@@ -12,6 +12,8 @@ fn main() {
         Some("status") => cmd_status(),
         Some("update") => cmd_update(&args[1..]),
         Some("logs") => cmd_logs(&args[1..]),
+        Some("run") => cmd_run(&args[1..]),
+        Some("shell") => cmd_shell(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
             usage();
@@ -161,15 +163,66 @@ fn cmd_logs(args: &[String]) -> i32 {
     }
 }
 
+/// The phone, if Linux is up; said why not otherwise.
+fn linux() -> Option<String> {
+    let seen = cradle_core::detect();
+    if seen.mode != Mode::Linux {
+        eprintln!("cradle: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
+        return None;
+    }
+    Some(seen.via)
+}
+
+fn cmd_run(args: &[String]) -> i32 {
+    let owner = args.iter().any(|a| a == "--user");
+    let rest: Vec<&String> = args.iter().filter(|a| *a != "--user").collect();
+    let script = match rest.as_slice() {
+        [flag, path] if flag.as_str() == "--file" => match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("cradle run: {path}: {e}");
+                return 2;
+            }
+        },
+        [] => {
+            eprintln!("cradle run: what to run? e.g. cradle run uptime, cradle run --file x.sh");
+            return 2;
+        }
+        words => words.iter().map(|w| w.as_str()).collect::<Vec<_>>().join(" "),
+    };
+    // The check sees what was typed, before it is wrapped for the owner.
+    if let Err(e) = cradle_core::guard::check(&script) {
+        eprintln!("cradle: {e}");
+        return 3;
+    }
+    let script = if owner { cradle_core::phone::as_owner(&script) } else { script };
+    let Some(host) = linux() else { return 1 };
+    cradle_core::phone::stream(&host, &script).unwrap_or_else(|e| {
+        eprintln!("cradle: {e}");
+        1
+    })
+}
+
+fn cmd_shell(args: &[String]) -> i32 {
+    let Some(host) = linux() else { return 1 };
+    eprintln!("{}", cradle_core::guard::SHELL_WARNING);
+    cradle_core::phone::shell(&host, args.iter().any(|a| a == "--user")).unwrap_or_else(|e| {
+        eprintln!("cradle: {e}");
+        1
+    })
+}
+
 fn usage() {
     println!("cradle - look after a connected Surface Duo\n");
     println!("  status       what the phone is doing; on Linux its versions, battery, heat, space, failed services");
     println!("  update       build item, install it, reboot, wait until it runs (--no-build: install what is built)");
     println!("  logs         the phone's journal: --boot -1, --only item|sensorfw|kernel|posture|pen|UNIT,");
     println!("               --grep PATTERN, --since TIME, -n N|all (200), -f, --save [FILE], --boots");
+    println!("  run          a command (or --file SCRIPT) on the phone as root, or --user as its owner;");
+    println!("               refused: the GPIO debug file, writing block devices");
+    println!("  shell        a shell on the phone as root (--user: as its owner)");
     println!("\nComing next:");
     for (cmd, what) in [
-        ("shell / run", "a shell on the phone, or one command, with the dangerous ones refused"),
         ("reboot", "and wait until it is back"),
         ("screenshot", "both panels as one picture on the computer"),
     ] {

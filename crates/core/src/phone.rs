@@ -51,3 +51,24 @@ pub fn stream(host: &str, script: &str) -> Result<i32, String> {
     let status = child.wait().map_err(|e| format!("ssh: {e}"))?;
     Ok(status.code().unwrap_or(1))
 }
+
+/// A script made to run as the phone's owner (the user logged in), with
+/// their session bus - for gdbus --session, systemctl --user and the like.
+pub fn as_owner(script: &str) -> String {
+    let user = r#"U=$(loginctl list-users --no-legend 2>/dev/null | awk '$2 != "root" {print $2; exit}'); U=${U:-droidian}; I=$(id -u "$U")"#;
+    format!(
+        "{user}\nexec sudo -u \"$U\" env XDG_RUNTIME_DIR=/run/user/$I DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$I/bus sh -c {}\n",
+        crate::logs::quote(script)
+    )
+}
+
+/// An interactive shell on the phone, as root or as its owner; its exit code.
+pub fn shell(host: &str, owner: bool) -> Result<i32, String> {
+    let mut c = ssh(host, 4);
+    c.arg("-t");
+    if owner {
+        c.arg(as_owner("exec bash -l"));
+    }
+    let status = c.status().map_err(|e| format!("ssh: {e}"))?;
+    Ok(status.code().unwrap_or(1))
+}
