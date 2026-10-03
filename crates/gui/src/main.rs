@@ -898,7 +898,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         match job {
             Job::Update => cradle_core::update::update(&host, true, &mut |step| say(step.words())),
             Job::Reboot => cradle_core::phone::reboot(&host, &mut |b| say(b.words())),
-            Job::RamBoot(path) => cradle_core::ramboot::ram_boot(&host, &path, &mut |line| say(&line)),
+            Job::RamBoot(path) => cradle_core::ramboot::ram_boot(&host, &path, cradle_core::ramboot::Expect::of(&path), &mut |line| say(&line)),
             Job::Backup => {
                 use cradle_core::backup::{self, Kind};
                 // The device data once; the boot chain and home each time.

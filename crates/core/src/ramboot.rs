@@ -229,6 +229,96 @@ fn to_bootloader(host: &str) {
 /// Where a RAM boot is, for whoever shows it.
 pub type Say<'a> = &'a mut dyn FnMut(String);
 
+/// What the image boots into, so the boot is known to have come up: Linux
+/// (ssh), or a recovery (TWRP; adb, in state "recovery").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expect {
+    Linux,
+    Recovery,
+}
+
+impl Expect {
+    /// A recovery by its name (TWRP's images say so), Linux otherwise.
+    pub fn of(image: &Path) -> Expect {
+        let name = image.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if name.contains("twrp") || name.contains("recovery") { Expect::Recovery } else { Expect::Linux }
+    }
+}
+
+fn adb(args: &[&str], limit: Duration) -> Result<String, String> {
+    let mut child = Command::new("adb").args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("adb: {e}"))?;
+    let start = Instant::now();
+    loop {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            let out = child.wait_with_output().map_err(|e| e.to_string())?;
+            return Ok(format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+        }
+        if start.elapsed() > limit {
+            let _ = child.kill();
+            return Err(format!("adb {} took longer than {} s", args.join(" "), limit.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Whether this phone is in recovery over adb.
+fn in_recovery(serial: &str) -> bool {
+    adb(&["devices"], Duration::from_secs(10)).is_ok_and(|o| o.lines().any(|l| {
+        let mut w = l.split_whitespace();
+        w.next() == Some(serial) && w.next() == Some("recovery")
+    }))
+}
+
+/// The parking brake armed from the recovery (adb) and read back.
+fn arm_brake_recovery(serial: &str) -> Result<(), String> {
+    let misc = "/dev/block/bootdevice/by-name/misc";
+    let script = format!(
+        "printf '{}' | dd of={misc} bs={BRAKE_LEN} count=1 conv=sync,notrunc,fsync 2>/dev/null; head -c {BRAKE_LEN} {misc} | sha256sum | cut -d' ' -f1",
+        String::from_utf8_lossy(BRAKE)
+    );
+    let back = adb(&["-s", serial, "shell", &script], Duration::from_secs(30))?;
+    let want = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(brake_bytes()))
+    };
+    if back.trim() != want {
+        return Err(format!("the parking brake read back in the recovery differs: {}", back.trim()));
+    }
+    Ok(())
+}
+
+/// Out of the recovery, back into Linux: adb reboot, and Linux awaited. If
+/// the brake stops it in fastboot, the bootloader is told to go on with the
+/// same slot (fastboot continue).
+pub fn leave_recovery(host: &str, serial: &str, say: Say) -> Result<(), String> {
+    if !in_recovery(serial) {
+        return Err("the phone is not in the recovery".into());
+    }
+    say("leaving the recovery".into());
+    adb(&["-s", serial, "reboot"], Duration::from_secs(20))?;
+    let start = Instant::now();
+    let mut continued = false;
+    loop {
+        if crate::phone::answers_fresh(host) {
+            break;
+        }
+        if !continued && fastboot(&["devices"], Duration::from_secs(10)).is_ok_and(|o| o.contains(serial)) {
+            say("the parking brake held it in fastboot: going on with the same slot".into());
+            let _ = fastboot(&["continue"], Duration::from_secs(20));
+            continued = true;
+        }
+        if start.elapsed() > Duration::from_secs(300) {
+            return Err("Linux did not come back in 5 minutes - look at the phone's screen".into());
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    say("Linux is back: arming the parking brake".into());
+    arm_brake_linux(host)?;
+    crate::flash::log(serial, "left the recovery, parking brake armed from Linux - cradle")?;
+    say("done: enter the PIN on the phone".into());
+    Ok(())
+}
+
 /// Everything that can be checked before the phone leaves Linux (steps 1-2):
 /// the image and what the phone says. `Err` is a stop.
 pub fn preflight(host: &str, image: &Path) -> Result<(Image, String, char), String> {
@@ -249,7 +339,7 @@ pub fn preflight(host: &str, image: &Path) -> Result<(Image, String, char), Stri
 }
 
 /// The whole RAM boot (steps 1-7). Only with the owner's go.
-pub fn ram_boot(host: &str, image: &Path, say: Say) -> Result<(), String> {
+pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<(), String> {
     say("checking the image and the phone".into());
     let (img, serial, slot) = preflight(host, image)?;
     say(format!("image fine: header v2, ARM64 kernel, DTB, Android {}, sha {}", img.os_version, &img.sha256[..16]));
@@ -322,19 +412,32 @@ pub fn ram_boot(host: &str, image: &Path, say: Say) -> Result<(), String> {
         return Err(format!("fastboot boot did not answer OKAY - the attempt stays counted; do not retry: {}", out.trim()));
     }
 
-    say("waiting for Linux".into());
+    let (what, up): (&str, Box<dyn Fn() -> bool>) = match expect {
+        Expect::Linux => ("Linux", Box::new(|| crate::phone::answers_fresh(host))),
+        Expect::Recovery => ("the recovery", Box::new(|| in_recovery(&serial))),
+    };
+    say(format!("waiting for {what}"));
     let start = Instant::now();
-    while !crate::phone::answers_fresh(host) {
+    while !up() {
         if start.elapsed() > Duration::from_secs(240) {
-            return Err(format!("Linux did not come back in 4 minutes: the attempt stays counted ({n} of {}). Do not boot this image again to see.", crate::flash::MAX_UNCONFIRMED));
+            return Err(format!("{what} did not come up in 4 minutes: the attempt stays counted ({n} of {}). Do not boot this image again to see.", crate::flash::MAX_UNCONFIRMED));
         }
         std::thread::sleep(Duration::from_secs(3));
     }
     crate::flash::confirm_ram_boot(&serial, &img.sha256, &fb)?;
-    say("Linux is back: the RAM boot is confirmed".into());
+    say(format!("{what} is up: the RAM boot is confirmed"));
     say("re-arming the parking brake".into());
-    arm_brake_linux(host)?;
-    crate::flash::log(&serial, "parking brake armed from Linux after the RAM boot - cradle")?;
-    say("done: enter the PIN on the phone".into());
+    match expect {
+        Expect::Linux => {
+            arm_brake_linux(host)?;
+            crate::flash::log(&serial, "parking brake armed from Linux after the RAM boot - cradle")?;
+            say("done: enter the PIN on the phone".into());
+        }
+        Expect::Recovery => {
+            arm_brake_recovery(&serial)?;
+            crate::flash::log(&serial, "parking brake armed from the recovery after the RAM boot - cradle")?;
+            say("done: the phone is in the recovery (no touch there); cradle recovery-exit brings it back".into());
+        }
+    }
     Ok(())
 }

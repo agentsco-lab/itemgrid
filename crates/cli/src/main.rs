@@ -20,6 +20,7 @@ fn main() {
         Some("slots") => cmd_slots(),
         Some("confirm") => cmd_confirm(&args[1..]),
         Some("ramboot") => cmd_ramboot(&args[1..]),
+        Some("recovery-exit") => cmd_recovery_exit(),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -383,10 +384,31 @@ fn cmd_ramboot(args: &[String]) -> i32 {
         return 0;
     }
     let start = std::time::Instant::now();
-    match cradle_core::ramboot::ram_boot(&host, image, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+    let expect = if args.iter().any(|a| a == "--recovery") { cradle_core::ramboot::Expect::Recovery } else { cradle_core::ramboot::Expect::of(image) };
+    println!("Boots into: {}", if expect == cradle_core::ramboot::Expect::Recovery { "a recovery (awaited over adb)" } else { "Linux (awaited over ssh)" });
+    match cradle_core::ramboot::ram_boot(&host, image, expect, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("cradle: STOP: {e}");
+            1
+        }
+    }
+}
+
+fn cmd_recovery_exit() -> i32 {
+    // The phone is in the recovery: no Linux to ask its serial; the last
+    // one backed up or seen in the state is it.
+    let serial = cradle_core::backup::list(None).first().map(|b| b.manifest.serial.clone());
+    let Some(serial) = serial else {
+        eprintln!("cradle: no phone known here yet");
+        return 1;
+    };
+    let host = cradle_core::phone::hosts().into_iter().next().unwrap_or_default();
+    let start = std::time::Instant::now();
+    match cradle_core::ramboot::leave_recovery(&host, &serial, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("cradle: {e}");
             1
         }
     }
@@ -441,6 +463,8 @@ fn usage() {
     println!("  backups      the backups on this computer");
     println!("  slots        the two boot slots: their state and what is in them; the RAM boot gate");
     println!("  confirm      record that the running system booted from its slot (shows the evidence; --yes)");
-    println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go)");
+    println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go;");
+    println!("               a TWRP image, or --recovery, is awaited in the recovery)");
+    println!("  recovery-exit  out of the recovery, back into Linux");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }
