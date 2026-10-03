@@ -152,3 +152,15 @@ pub fn shell(host: &str, owner: bool) -> Result<i32, String> {
     let status = c.status().map_err(|e| format!("ssh: {e}"))?;
     Ok(status.code().unwrap_or(1))
 }
+
+/// A script started on the phone, its output piped back (for what streams);
+/// the child, to be read and stopped.
+pub fn spawn(host: &str, script: &str, out: Stdio) -> Result<std::process::Child, String> {
+    crate::guard::check(script)?;
+    let mut child = ssh(host, 4).args(["sh", "-s"]).stdin(Stdio::piped()).stdout(out).stderr(Stdio::null()).spawn().map_err(|e| format!("ssh: {e}"))?;
+    let mut stdin = child.stdin.take().expect("piped");
+    stdin.write_all(script.as_bytes()).map_err(|e| format!("ssh: {e}"))?;
+    // Closed: the script is read whole, and sh runs it.
+    drop(stdin);
+    Ok(child)
+}

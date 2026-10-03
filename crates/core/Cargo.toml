@@ -6,3 +6,4 @@ description = "What a connected Surface Duo is doing, and the safe ways to act o
 
 [dependencies]
 png = "0.17"
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode"] }

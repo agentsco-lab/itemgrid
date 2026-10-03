@@ -5,6 +5,7 @@
 
 pub mod detect;
 pub mod guard;
+pub mod live;
 pub mod logs;
 pub mod phone;
 pub mod screenshot;

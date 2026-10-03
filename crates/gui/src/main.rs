@@ -44,6 +44,7 @@ const CSS: &str = "
 .storage-legend-dot { min-width: 10px; min-height: 10px; border-radius: 5px; }
 .dot-free { background: alpha(currentColor, 0.18); }
 .bottom-bar { padding: 14px 24px 16px 24px; }
+.live-badge { color: #ff4f4f; font-weight: 700; font-size: 0.85em; letter-spacing: 1px; }
 .duo-floor {
   min-height: 26px;
   margin: -6px 10px 0 10px;
@@ -89,6 +90,11 @@ struct Ui {
     tabs: adw::ViewStack,
     /// The system disk by part, for the bar; counted when the phone comes.
     parts: RefCell<Option<cradle_core::storage::Parts>>,
+    /// The live view running (its stop), and when it last failed - not
+    /// tried again for a while (an item without a mirror).
+    live: RefCell<Option<cradle_core::live::Stop>>,
+    live_failed: RefCell<Option<std::time::Instant>>,
+    live_badge: gtk::Label,
     state: RefCell<State>,
 }
 
@@ -142,6 +148,9 @@ fn build(app: &adw::Application) {
     let floor = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     floor.add_css_class("duo-floor");
     device.append(&floor);
+    let live_badge = gtk::Label::builder().label("● LIVE").css_classes(["live-badge"]).build();
+    live_badge.set_visible(false);
+    device.append(&live_badge);
     let name = gtk::Label::builder().label("Surface Duo").css_classes(["title-1"]).margin_top(10).build();
     let name_sub = gtk::Label::builder().css_classes(["dim-label"]).build();
     let battery = gtk::Label::new(None);
@@ -280,6 +289,9 @@ fn build(app: &adw::Application) {
         bottom,
         tabs: stack.clone(),
         parts: RefCell::default(),
+        live: RefCell::default(),
+        live_failed: RefCell::default(),
+        live_badge,
         state: RefCell::default(),
     });
     *owner.borrow_mut() = Some(ui.clone());
@@ -340,6 +352,15 @@ fn build(app: &adw::Application) {
         move |_| {
             if let Some(ui) = ui.upgrade() {
                 bottom_shown(&ui);
+                live_sync(&ui);
+            }
+        }
+    });
+    window.connect_is_active_notify({
+        let ui = Rc::downgrade(&ui);
+        move |_| {
+            if let Some(ui) = ui.upgrade() {
+                live_sync(&ui);
             }
         }
     });
@@ -351,8 +372,11 @@ fn build(app: &adw::Application) {
             ticks += 1;
             if !ui.state.borrow().busy {
                 look(&ui);
+                live_sync(&ui);
+                // Without the live view (an item without a mirror), a picture
+                // now and then.
                 let front = ui.window.is_active() && ui.tabs.visible_child_name().as_deref() == Some("general");
-                if front && ticks % SCREENS_EVERY == 0 {
+                if front && ui.live.borrow().is_none() && ticks % SCREENS_EVERY == 0 {
                     take_screens(&ui, false);
                 }
             }
@@ -505,6 +529,66 @@ fn count_storage(ui: &Rc<Ui>) {
 fn bottom_shown(ui: &Ui) {
     let general = ui.tabs.visible_child_name().as_deref() == Some("general");
     ui.bottom.set_visible(general && ui.state.borrow().host.is_some());
+}
+
+/// The live view on while the window is in front on General with the phone
+/// there, off otherwise.
+fn live_sync(ui: &Rc<Ui>) {
+    let host = ui.state.borrow().host.clone();
+    let wanted = host.is_some() && !ui.state.borrow().busy && ui.window.is_active() && ui.tabs.visible_child_name().as_deref() == Some("general");
+    if !wanted {
+        if let Some(stop) = ui.live.borrow_mut().take() {
+            stop.stop();
+        }
+        ui.live_badge.set_visible(false);
+        return;
+    }
+    let resting = ui.live_failed.borrow().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30));
+    if ui.live.borrow().is_some() || resting {
+        return;
+    }
+    // ssh starts at once; only the reading waits, off the main thread.
+    let (mut live, stop) = match cradle_core::live::Live::start(&host.expect("wanted")) {
+        Ok(started) => started,
+        Err(_) => {
+            *ui.live_failed.borrow_mut() = Some(std::time::Instant::now());
+            return;
+        }
+    };
+    *ui.live.borrow_mut() = Some(stop.clone());
+    let (tx, rx) = async_channel::bounded::<cradle_core::live::Frame>(2);
+    let work = gio::spawn_blocking(move || loop {
+        let Ok(frame) = live.next() else { return };
+        if tx.send_blocking(frame).is_err() {
+            return;
+        }
+    });
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let mut frames = 0u64;
+        while let Ok(frame) = rx.recv().await {
+            for (picture, pixels) in ui.screens.iter().zip(frame.panels) {
+                let texture = gdk::MemoryTexture::new(frame.width as i32, frame.height as i32, gdk::MemoryFormat::R8g8b8a8, &glib::Bytes::from_owned(pixels), frame.width * 4);
+                picture.set_paintable(Some(&texture));
+            }
+            frames += 1;
+            if frames == 1 {
+                ui.live_badge.set_visible(true);
+            }
+        }
+        let _ = work.await;
+        // This view's end; a newer one may have started meanwhile.
+        let mine = ui.live.borrow().as_ref().is_some_and(|s| s.same(&stop));
+        if mine {
+            ui.live.borrow_mut().take();
+            ui.live_badge.set_visible(false);
+            // Ended by itself (no mirror in this item, item gone): rest.
+            *ui.live_failed.borrow_mut() = Some(std::time::Instant::now());
+            if frames == 0 {
+                ui.toasts.add_toast(adw::Toast::new("No live view: this item has no mirror yet - update item"));
+            }
+        }
+    });
 }
 
 /// The phone's screens onto the Duo drawn here; saved too if `save`.
