@@ -35,12 +35,62 @@ fn adb_shell(serial: &str, cmd: &str) -> Result<String, String> {
     Ok(text)
 }
 
-/// A command's output in TWRP streamed into `path`; the bytes' sha256, and
-/// - for a gzip stream - the sha256 and size of what it decompresses to.
-fn adb_stream(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<(u64, String, Option<(u64, String)>), String> {
-    use sha2::{Digest, Sha256};
+/// What one stream gave: its bytes' sha256, its size, and - for a gzip
+/// stream - the size and sha256 of what it decompresses to.
+type Streamed = (u64, String, Option<(u64, String)>);
+
+/// Whether this TWRP has what the fast way needs: pigz (all eight cores) and
+/// nc (a plain socket, through adb forward, rather than adb's terminal,
+/// which carried ~4 MB/s).
+fn fast_tools(serial: &str) -> bool {
+    adb_shell(serial, "which pigz && which nc").is_ok_and(|o| o.lines().count() >= 2)
+}
+
+/// A command's output in TWRP streamed into `path`, the fast way: the
+/// command's output on a socket (nc) in TWRP, adb forwarding it here.
+fn adb_stream_fast(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<Streamed, String> {
+    let port = 5599;
+    let fwd = Command::new("adb").args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
+    if !fwd.status.success() {
+        return Err(format!("adb forward: {}", String::from_utf8_lossy(&fwd.stderr).trim()));
+    }
+    let mut server = Command::new("adb").args(["-s", serial, "shell", &format!("{cmd} | nc -l -p {port}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
+    // The listener needs a moment.
+    let mut conn = None;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Ok(c) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            conn = Some(c);
+            break;
+        }
+    }
+    let result = match conn {
+        Some(c) => stream_into(c, path, gunzip, say),
+        None => Err("the stream's socket in TWRP did not open".into()),
+    };
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = Command::new("adb").args(["-s", serial, "forward", "--remove", &format!("tcp:{port}")]).output();
+    result
+}
+
+/// A command's output in TWRP streamed into `path`, through adb's terminal
+/// (slow: ~4 MB/s; the fallback when TWRP lacks pigz or nc).
+fn adb_stream(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<Streamed, String> {
     let mut child = Command::new("adb").args(["-s", serial, "exec-out", cmd]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
     let out = child.stdout.take().expect("piped");
+    let result = stream_into(out, path, gunzip, say);
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if result.is_ok() && !status.success() {
+        return Err(format!("the stream from TWRP failed ({status})"));
+    }
+    result
+}
+
+/// A stream into `path`, hashed; a gzip stream also decompressed on a
+/// thread and what it gives hashed.
+fn stream_into(out: impl Read, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<Streamed, String> {
+    use sha2::{Digest, Sha256};
     // The stream to the file, hashed; a copy to a decoder thread, which
     // hashes what it decompresses to.
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
@@ -103,10 +153,6 @@ fn adb_stream(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn 
     }
     drop(tx);
     file.sync_all().map_err(|e| e.to_string())?;
-    let status = child.wait().map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(format!("the stream from TWRP failed ({status})"));
-    }
     let inner = match decoder {
         Some(d) => Some(d.join().map_err(|_| "the decoder stopped".to_owned())??),
         None => None,
@@ -143,8 +189,12 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
         say("mounting userdata read-only".into());
         adb_shell(&serial, &format!("mkdir -p /tmp/ud && (mountpoint -q /tmp/ud || mount -t ext4 -o ro,noload {UD} /tmp/ud) && ls /tmp/ud"))?;
         let mut items = Vec::new();
-        say("taking rootfs.img (gzip on the phone)".into());
-        let (size, _gz_sha, inner) = adb_stream(&serial, "gzip -1 -c /tmp/ud/rootfs.img", &dir.join("rootfs.img.gz"), true, say)?;
+        let fast = fast_tools(&serial);
+        let stream = |cmd_fast: &str, cmd_slow: &str, path: &Path, say: &mut dyn FnMut(String)| {
+            if fast { adb_stream_fast(&serial, cmd_fast, path, true, say) } else { adb_stream(&serial, cmd_slow, path, true, say) }
+        };
+        say(format!("taking rootfs.img ({})", if fast { "pigz and a socket" } else { "gzip through adb's terminal: slow" }));
+        let (size, _gz_sha, inner) = stream("pigz -1 -c /tmp/ud/rootfs.img", "gzip -1 -c /tmp/ud/rootfs.img", &dir.join("rootfs.img.gz"), say)?;
         let (raw_size, raw_sha) = inner.expect("gunzipped");
         say("hashing rootfs.img on the phone".into());
         let there = adb_shell(&serial, "sha256sum /tmp/ud/rootfs.img | cut -d' ' -f1")?;
@@ -154,7 +204,7 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
         say(format!("rootfs.img: {} as gzip, {} whole, checked", crate::status::size_words(size / 1024), crate::status::size_words(raw_size / 1024)));
         items.push(Item { source: "/userdata/rootfs.img".into(), file: "rootfs.img.gz".into(), size, sha256: raw_sha });
         say("taking the Android container's data".into());
-        let (size, sha, inner) = adb_stream(&serial, "tar -C /tmp/ud -cf - android-data | gzip -1 -c", &dir.join("android-data.tar.gz"), true, say)?;
+        let (size, sha, inner) = stream("tar -C /tmp/ud -cf - android-data | pigz -1 -c", "tar -C /tmp/ud -cf - android-data | gzip -1 -c", &dir.join("android-data.tar.gz"), say)?;
         if inner.is_none_or(|(n, _)| n < 10240) {
             return Err("the Android container's data did not arrive whole".into());
         }
