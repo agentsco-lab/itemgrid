@@ -19,6 +19,7 @@ fn main() {
         Some("backups") => cmd_backups(),
         Some("slots") => cmd_slots(),
         Some("confirm") => cmd_confirm(&args[1..]),
+        Some("ramboot") => cmd_ramboot(&args[1..]),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -348,6 +349,49 @@ fn cmd_confirm(args: &[String]) -> i32 {
     }
 }
 
+fn cmd_ramboot(args: &[String]) -> i32 {
+    let Some(image) = args.iter().find(|a| !a.starts_with('-')) else {
+        eprintln!("cradle ramboot: which image? e.g. cradle ramboot boot.img");
+        return 2;
+    };
+    let image = std::path::Path::new(image);
+    let Some(host) = linux() else { return 1 };
+    let (img, serial, slot) = match cradle_core::ramboot::preflight(&host, image) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("cradle: STOP: {e}");
+            return 1;
+        }
+    };
+    let gate = cradle_core::flash::gate(&serial);
+    println!("Image:     {} ({} MB)", image.display(), img.size >> 20);
+    println!("           header v2, ARM64 kernel, DTB, Android {}, hardware {}, sha {}", img.os_version, img.hardware, &img.sha256[..16]);
+    println!("Phone:     booted from slot {}; RAM boots {} of {} unconfirmed", slot.to_ascii_uppercase(), gate.unconfirmed, cradle_core::flash::MAX_UNCONFIRMED);
+    println!("Baseline:  {}", cradle_core::flash::baseline(&serial).map(|b| b.to_string()).unwrap_or_else(|| "none yet (taken from this boot)".into()));
+    if !args.iter().any(|a| a == "--yes") {
+        println!("\nThe checks that need no change passed. With --yes, in order (each a stop if it fails):");
+        for step in [
+            "1. the parking brake armed in misc from Linux, read back",
+            "2. the phone into the bootloader (its screen goes to fastboot for about a minute)",
+            "3. in fastboot: the same phone, unlocked, the same slot, the battery, the health against the baseline",
+            "4. misc erased and the brake flashed again",
+            "5. the attempt counted, then fastboot boot of the image - nothing flashed, the slots untouched",
+            "6. Linux awaited; back: the boot confirmed and the brake armed again. Not back: stop - never the same image again",
+        ] {
+            println!("   {step}");
+        }
+        return 0;
+    }
+    let start = std::time::Instant::now();
+    match cradle_core::ramboot::ram_boot(&host, image, &mut |line| println!("[{:>4.0}s] {line}", start.elapsed().as_secs_f64())) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("cradle: STOP: {e}");
+            1
+        }
+    }
+}
+
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
@@ -397,5 +441,6 @@ fn usage() {
     println!("  backups      the backups on this computer");
     println!("  slots        the two boot slots: their state and what is in them; the RAM boot gate");
     println!("  confirm      record that the running system booted from its slot (shows the evidence; --yes)");
+    println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }

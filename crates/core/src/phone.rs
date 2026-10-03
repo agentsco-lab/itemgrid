@@ -45,12 +45,12 @@ pub fn answers(host: &str) -> bool {
 
 /// The same, over a new connection: while the phone reboots, a kept one may
 /// not know yet that it is dead.
-fn answers_fresh(host: &str) -> bool {
+pub fn answers_fresh(host: &str) -> bool {
     ssh_with(host, 2, false).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// The kept connection to `host` closed (before a reboot).
-fn close_shared(host: &str) {
+pub fn close_shared(host: &str) {
     let _ = ssh(host, 2).args(["-O", "exit"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
@@ -191,4 +191,17 @@ pub fn download(host: &str, script: &str, path: &std::path::Path) -> Result<(u64
         return Err(format!("reading on the phone failed ({status})"));
     }
     Ok((size, format!("{:x}", hash.finalize())))
+}
+
+/// A vetted script of cradle-core's own run past the guard - the parking
+/// brake written into misc, the reboot into the bootloader. Never what is
+/// typed: only the RAM boot's and flashing's own steps call this.
+pub(crate) fn run_vetted(host: &str, script: &str) -> Result<String, String> {
+    let mut child = ssh(host, 4).args(["sh", "-s"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("ssh: {e}"))?;
+    child.stdin.take().expect("piped").write_all(script.as_bytes()).map_err(|e| format!("ssh: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("ssh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("on the phone: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

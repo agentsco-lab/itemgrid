@@ -10,6 +10,7 @@ pub mod guard;
 pub mod live;
 pub mod logs;
 pub mod phone;
+pub mod ramboot;
 pub mod screenshot;
 pub mod slots;
 pub mod status;

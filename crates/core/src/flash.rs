@@ -121,3 +121,83 @@ pub fn confirm_flashed(serial: &str, ev: &Evidence) -> Result<(), String> {
     std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(())
 }
+
+/// The state, read for changing and written back whole (a temporary file
+/// renamed), with this phone's part made if missing.
+fn edit(serial: &str, change: impl FnOnce(&mut serde_json::Value) -> Result<(), String>) -> Result<(), String> {
+    let path = state_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{\"version\": 2, \"devices\": {}}".into());
+    let mut v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if v["version"] != 2 {
+        return Err(format!("{}: not the state's version 2", path.display()));
+    }
+    let d = &mut v["devices"][serial];
+    if d.is_null() {
+        *d = serde_json::json!({"consecutive_unconfirmed": 0, "confirmed_sha256": null, "product": "surfaceduo", "baseline": null, "history": []});
+    }
+    change(d)?;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("json.new");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn stamp() -> String {
+    std::process::Command::new("date").arg("+%Y-%m-%d %H:%M:%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default()
+}
+
+fn push_event(d: &mut serde_json::Value, event: &str) -> Result<(), String> {
+    let history = d["history"].as_array_mut().ok_or("the state's history is not a list")?;
+    history.push(serde_json::json!({"ts": stamp(), "event": event}));
+    let extra = history.len().saturating_sub(50);
+    history.drain(..extra);
+    Ok(())
+}
+
+/// An event in this phone's history.
+pub fn log(serial: &str, event: &str) -> Result<(), String> {
+    edit(serial, |d| push_event(d, event))
+}
+
+/// This phone's health baseline, if one was taken.
+pub fn baseline(serial: &str) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(state_path()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let b = v["devices"][serial]["baseline"].clone();
+    (!b.is_null()).then_some(b)
+}
+
+/// A RAM boot about to be tried: counted and logged first (flash-safely.sh's
+/// order); the attempt's number.
+pub fn count_attempt(serial: &str, sha: &str) -> Result<u64, String> {
+    let mut n = 0;
+    edit(serial, |d| {
+        n = d["consecutive_unconfirmed"].as_u64().unwrap_or(0) + 1;
+        if n > MAX_UNCONFIRMED {
+            return Err("the RAM boot gate is closed".into());
+        }
+        d["consecutive_unconfirmed"] = n.into();
+        d["confirmed_sha256"] = serde_json::Value::Null;
+        d["last_image_sha256"] = sha.into();
+        d["product"] = "surfaceduo".into();
+        push_event(d, &format!("ram-boot attempt {n}/{MAX_UNCONFIRMED} sha={sha} - cradle"))
+    })?;
+    Ok(n)
+}
+
+/// A RAM boot that reached Linux: the counter to 0, the image confirmed for
+/// flashing, and what fastboot read before it the fresh baseline.
+pub fn confirm_ram_boot(serial: &str, sha: &str, fb: &crate::ramboot::Fastboot) -> Result<(), String> {
+    edit(serial, |d| {
+        d["consecutive_unconfirmed"] = 0.into();
+        d["confirmed_sha256"] = sha.into();
+        d["baseline"] = serde_json::json!({
+            "retry_a": fb.retry_a, "retry_b": fb.retry_b,
+            "unbootable_a": fb.unbootable_a, "unbootable_b": fb.unbootable_b,
+            "critical": fb.critical, "product": fb.product, "captured": stamp(),
+        });
+        push_event(d, &format!("CONFIRMED ram-boot of {sha} - cradle"))
+    })
+}
