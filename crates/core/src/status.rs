@@ -27,7 +27,7 @@ systemctl --failed --no-legend --plain 2>/dev/null | awk '{print "failed=" $1}'
 "#;
 
 /// The phone's state, read once.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Status {
     pub os: String,
     pub kernel: String,
