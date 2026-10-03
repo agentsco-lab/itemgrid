@@ -41,3 +41,13 @@ pub fn run(host: &str, script: &str) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
+
+/// A script run on the phone as root, its output going straight to ours
+/// (for what is followed or long); its exit code.
+pub fn stream(host: &str, script: &str) -> Result<i32, String> {
+    crate::guard::check(script)?;
+    let mut child = ssh(host, 4).args(["sh", "-s"]).stdin(Stdio::piped()).spawn().map_err(|e| format!("ssh: {e}"))?;
+    child.stdin.take().expect("piped").write_all(script.as_bytes()).map_err(|e| format!("ssh: {e}"))?;
+    let status = child.wait().map_err(|e| format!("ssh: {e}"))?;
+    Ok(status.code().unwrap_or(1))
+}

@@ -11,6 +11,7 @@ fn main() {
         }
         Some("status") => cmd_status(),
         Some("update") => cmd_update(&args[1..]),
+        Some("logs") => cmd_logs(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
             usage();
@@ -76,13 +77,98 @@ fn cmd_update(args: &[String]) -> i32 {
     }
 }
 
+fn cmd_logs(args: &[String]) -> i32 {
+    use cradle_core::logs::Query;
+    let mut q = Query { lines: Some(200), ..Default::default() };
+    let mut save: Option<Option<String>> = None;
+    let mut boots = false;
+    let mut it = args.iter().peekable();
+    while let Some(a) = it.next() {
+        let mut value = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} wants a value"));
+        let r: Result<(), String> = (|| {
+            match a.as_str() {
+                "--boot" | "-b" => q.boot = value("--boot")?.parse().map_err(|_| "--boot wants a number, e.g. -1".to_owned())?,
+                "--only" => q.only = Some(value("--only")?),
+                "--grep" | "-g" => q.grep = Some(value("--grep")?),
+                "--since" => q.since = Some(value("--since")?),
+                "-n" => {
+                    let n = value("-n")?;
+                    q.lines = if n == "all" { None } else { Some(n.parse().map_err(|_| "-n wants a number or 'all'".to_owned())?) };
+                }
+                "-f" | "--follow" => q.follow = true,
+                "--save" => save = Some(None),
+                "--boots" => boots = true,
+                other => return Err(format!("'{other}' is not a logs option")),
+            }
+            Ok(())
+        })();
+        if let Err(e) = r {
+            eprintln!("cradle logs: {e}");
+            return 2;
+        }
+        // A file after --save, if one is given.
+        if a == "--save" {
+            if let Some(next) = it.peek() {
+                if !next.starts_with('-') {
+                    save = Some(Some(it.next().cloned().unwrap()));
+                }
+            }
+        }
+    }
+    let seen = cradle_core::detect();
+    if seen.mode != Mode::Linux {
+        eprintln!("cradle: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
+        return 1;
+    }
+    if boots {
+        return cradle_core::phone::stream(&seen.via, cradle_core::logs::BOOTS).unwrap_or_else(|e| {
+            eprintln!("cradle: {e}");
+            1
+        });
+    }
+    match save {
+        None => cradle_core::phone::stream(&seen.via, &q.script()).unwrap_or_else(|e| {
+            eprintln!("cradle: {e}");
+            1
+        }),
+        Some(file) => {
+            // Saved, the whole of what was asked for unless -n was given.
+            if !args.iter().any(|a| a == "-n") {
+                q.lines = None;
+            }
+            q.follow = false;
+            let text = match cradle_core::phone::run(&seen.via, &q.script()) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("cradle: {e}");
+                    return 1;
+                }
+            };
+            let path = file.unwrap_or_else(|| {
+                let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("cradle-logs");
+                let _ = std::fs::create_dir_all(&dir);
+                let stamp = std::process::Command::new("date").arg("+%Y-%m-%d-%H%M%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+                let part = q.only.clone().unwrap_or_else(|| "all".into());
+                dir.join(format!("{stamp}-boot{}-{part}.log", q.boot)).display().to_string()
+            });
+            if let Err(e) = std::fs::write(&path, &text) {
+                eprintln!("cradle: {path}: {e}");
+                return 1;
+            }
+            println!("{} lines saved to {path}", text.lines().count());
+            0
+        }
+    }
+}
+
 fn usage() {
     println!("cradle - look after a connected Surface Duo\n");
     println!("  status       what the phone is doing; on Linux its versions, battery, heat, space, failed services");
     println!("  update       build item, install it, reboot, wait until it runs (--no-build: install what is built)");
+    println!("  logs         the phone's journal: --boot -1, --only item|sensorfw|kernel|posture|pen|UNIT,");
+    println!("               --grep PATTERN, --since TIME, -n N|all (200), -f, --save [FILE], --boots");
     println!("\nComing next:");
     for (cmd, what) in [
-        ("logs", "the journal of this boot or one before, filtered, saved for a ticket"),
         ("shell / run", "a shell on the phone, or one command, with the dangerous ones refused"),
         ("reboot", "and wait until it is back"),
         ("screenshot", "both panels as one picture on the computer"),
