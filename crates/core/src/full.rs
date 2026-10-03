@@ -40,8 +40,11 @@ fn adb_shell(serial: &str, cmd: &str) -> Result<String, String> {
 type Streamed = (u64, String, Option<(u64, String)>);
 
 /// Whether this TWRP has what the fast way needs: pigz (all eight cores) and
-/// nc (a plain socket, through adb forward, rather than adb's terminal,
-/// which carried ~4 MB/s).
+/// nc (a plain socket through adb forward, rather than adb's terminal).
+/// Measured on the phone, a release build: the image's 16 GB of data at
+/// ~40 MB/s as gzip, its empty rest at ~200 MB/s read; 18 minutes in all,
+/// the phone's own sha256 of the image six of them. (A debug build of Cradle
+/// was the bottleneck once: its decompressing and hashing ran at ~4 MB/s.)
 fn fast_tools(serial: &str) -> bool {
     adb_shell(serial, "which pigz && which nc").is_ok_and(|o| o.lines().count() >= 2)
 }
@@ -75,7 +78,7 @@ fn adb_stream_fast(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut
 }
 
 /// A command's output in TWRP streamed into `path`, through adb's terminal
-/// (slow: ~4 MB/s; the fallback when TWRP lacks pigz or nc).
+/// (the fallback when TWRP lacks pigz or nc; single-threaded gzip).
 fn adb_stream(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<Streamed, String> {
     let mut child = Command::new("adb").args(["-s", serial, "exec-out", cmd]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
     let out = child.stdout.take().expect("piped");
