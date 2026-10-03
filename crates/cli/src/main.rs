@@ -581,9 +581,22 @@ fn cmd_android(args: &[String]) -> i32 {
             }
             return done(android::back(&host, &serial, &mut say));
         }
+        Some("trial") => {
+            // The way back tried alone, in TWRP: nothing is erased.
+            let Some(serial) = android::away_serial() else {
+                eprintln!("cradle: no phone with a whole-system backup is on the USB");
+                return 1;
+            };
+            say("trying the way back (512 MB onto the phone, checked)".into());
+            let r = android::try_the_way_back(&serial);
+            if r.is_ok() {
+                say("the way back works".into());
+            }
+            return done(r);
+        }
         Some("go") | None => {}
         Some(other) => {
-            eprintln!("cradle android: unknown '{other}' (go, start, back)");
+            eprintln!("cradle android: unknown '{other}' (go, start, back, trial)");
             return 2;
         }
     }

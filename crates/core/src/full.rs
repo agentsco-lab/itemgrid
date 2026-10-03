@@ -247,44 +247,44 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
     Ok(backup)
 }
 
-/// Data sent into TWRP: `sink` runs there reading it (nc on a socket, adb
-/// forwarding it), so nothing passes adb's terminal. Returns the bytes sent.
+/// Data sent into TWRP: `sink` runs there reading it - nc starts it for the
+/// connection (piping nc's output into it lost everything: TWRP's toybox nc
+/// ends at once when its own input does) - and adb forwards the socket, so
+/// nothing passes adb's terminal. Returns the bytes sent, once the sink has
+/// finished and closed the connection.
 pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<u64, String> {
-    let port = 5598;
+    use std::io::Write;
+    let port = 5598u16;
     let fwd = Command::new("adb").args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
     if !fwd.status.success() {
         return Err(format!("adb forward: {}", String::from_utf8_lossy(&fwd.stderr).trim()));
     }
+    let quoted = sink.replace('\'', "'\\''");
     let mut server = Command::new("adb")
-        .args(["-s", serial, "shell", &format!("nc -l -p {port} </dev/null | {sink}")])
+        .args(["-s", serial, "shell", &format!("nc -l -p {port} sh -c '{quoted}'")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("adb: {e}"))?;
-    let mut conn = None;
-    for _ in 0..50 {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        if let Ok(c) = std::net::TcpStream::connect(("127.0.0.1", port)) {
-            conn = Some(c);
-            break;
-        }
-    }
     let result = (|| -> Result<u64, String> {
-        let mut c = conn.ok_or("the receiving socket in TWRP did not open")?;
-        let n = std::io::copy(data, &mut c).map_err(|e| format!("sending: {e}"))?;
-        c.shutdown(std::net::Shutdown::Write).map_err(|e| e.to_string())?;
-        // The sink done: nc closes once the stream has ended.
+        // adb's end accepts at once, listener or not: wait for the listener.
+        let listening = format!("grep -qi ':{port:04X} 00000000:0000 0A' /proc/net/tcp || grep -qi ':{port:04X} 00000000000000000000000000000000:0000 0A' /proc/net/tcp6");
         let start = std::time::Instant::now();
-        loop {
-            if server.try_wait().map_err(|e| e.to_string())?.is_some() {
-                break;
-            }
-            if start.elapsed() > std::time::Duration::from_secs(300) {
-                return Err("the receiving end in TWRP did not finish".into());
+        while adb_shell(serial, &listening).is_err() {
+            if start.elapsed() > std::time::Duration::from_secs(15) {
+                return Err("the receiving socket in TWRP did not open".into());
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("connecting: {e}"))?;
+        let n = std::io::copy(data, &mut c).map_err(|e| format!("sending: {e}"))?;
+        c.flush().map_err(|e| e.to_string())?;
+        c.shutdown(std::net::Shutdown::Write).map_err(|e| e.to_string())?;
+        // The sink done: the connection closes from its end.
+        c.set_read_timeout(Some(std::time::Duration::from_secs(600))).map_err(|e| e.to_string())?;
+        let mut rest = Vec::new();
+        c.read_to_end(&mut rest).map_err(|e| format!("waiting for the receiving end: {e}"))?;
         Ok(n)
     })();
     let _ = server.kill();

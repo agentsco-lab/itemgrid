@@ -319,7 +319,7 @@ pub fn verify_full(b: &Backup, say: crate::ramboot::Say) -> Result<(), String> {
 /// The way back tried in TWRP: data sent onto the phone, its sha256 there
 /// compared. (adb dropped mid-transfer once on this phone; better found out
 /// before userdata is gone.)
-fn try_the_way_back(serial: &str) -> Result<(), String> {
+pub fn try_the_way_back(serial: &str) -> Result<(), String> {
     use sha2::{Digest, Sha256};
     // Not zeros - those would prove little: a hash chain, cheap and varied.
     let mut data = Vec::with_capacity(TEST_BYTES as usize);
@@ -489,7 +489,7 @@ pub fn back(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), St
             let seek = index * 512;
             let mut ok = false;
             for _ in 0..3 {
-                crate::full::adb_send(serial, &format!("dd of=/tmp/ud/rootfs.img bs=1048576 seek={seek} conv=notrunc 2>/dev/null"), &mut &chunk[..])?;
+                crate::full::adb_send(serial, &format!("dd of=/tmp/ud/rootfs.img bs=1048576 seek={seek} 2>/dev/null"), &mut &chunk[..])?;
                 let there = crate::full::adb_shell(serial, &format!("dd if=/tmp/ud/rootfs.img bs=1048576 skip={seek} count={} 2>/dev/null | sha256sum | cut -d' ' -f1", filled.div_ceil(1 << 20)))?;
                 if there.trim() == want {
                     ok = true;
