@@ -12,6 +12,8 @@ use std::process::{Command, Stdio};
 
 use crate::backup::{Backup, Item, Kind, Manifest};
 
+/// The rest of userdata, in a full backup.
+pub const REST: &str = "userdata-rest.tar.gz";
 pub(crate) const UD: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name/userdata";
 
 /// TWRP's image: CRADLE_TWRP, or the port's out/twrp/, or Cradle's own
@@ -212,6 +214,16 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
             return Err("the Android container's data did not arrive whole".into());
         }
         items.push(Item { source: "/userdata/android-data".into(), file: "android-data.tar.gz".into(), size, sha256: sha });
+        // The rest of userdata (a test image, logs, the symlink): nothing left
+        // behind if userdata is erased - the return to Android does.
+        let rest = adb_shell(&serial, "cd /tmp/ud && ls -A | grep -v -x -e rootfs.img -e android-data -e lost+found")?;
+        let names: Vec<&str> = rest.split_whitespace().collect();
+        if !names.is_empty() {
+            say(format!("taking the rest of userdata: {}", names.join(", ")));
+            let list = names.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(" ");
+            let (size, sha, _) = stream(&format!("tar -C /tmp/ud -cf - {list} | pigz -1 -c"), &format!("tar -C /tmp/ud -cf - {list} | gzip -1 -c"), &dir.join(REST), say)?;
+            items.push(Item { source: format!("/userdata: {}", names.join(" ")), file: REST.into(), size, sha256: sha });
+        }
         let _ = adb_shell(&serial, "umount /tmp/ud");
         Ok(items)
     })();

@@ -193,12 +193,14 @@ pub fn plan(host: &str) -> Result<Plan, String> {
     });
     // What userdata holds besides what the full backup takes.
     let listing = crate::phone::run(host, "cd /userdata && for f in *; do [ -L \"$f\" ] && continue; s=$(du -sb \"$f\" 2>/dev/null | cut -f1); echo \"$s $f\"; done\n")?;
-    let losses: Vec<(String, u64)> = listing
+    // A whole-system backup takes the rest too; one taken before it did not.
+    let rest_kept = !full_fresh || full.as_ref().is_some_and(|b| b.manifest.items.iter().any(|i| i.file == crate::full::REST));
+    let losses: Vec<(String, u64)> = if rest_kept { Vec::new() } else { listing
         .lines()
         .filter_map(|l| l.split_once(' '))
         .filter(|(_, name)| !matches!(*name, "rootfs.img" | "android-data" | "lost+found"))
         .map(|(s, name)| (name.to_owned(), s.parse().unwrap_or(0)))
-        .collect();
+        .collect() };
     let mut stops = Vec::new();
     if builds.is_empty() {
         stops.push("no Android build found in super - nothing to return to".into());
@@ -518,6 +520,11 @@ pub fn back(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), St
     let data = full.manifest.items.iter().find(|i| i.file == "android-data.tar.gz").ok_or("the backup has no container data")?;
     let mut f = std::fs::File::open(full.dir.join(&data.file)).map_err(|e| e.to_string())?;
     crate::full::adb_send(serial, "pigz -dc | tar -C /tmp/ud -xpf -", &mut f)?;
+    if let Some(rest) = full.manifest.items.iter().find(|i| i.file == crate::full::REST) {
+        say(format!("putting back the rest of userdata ({})", rest.source.trim_start_matches("/userdata: ")));
+        let mut f = std::fs::File::open(full.dir.join(&rest.file)).map_err(|e| e.to_string())?;
+        crate::full::adb_send(serial, "pigz -dc | tar -C /tmp/ud -xpf -", &mut f)?;
+    }
     crate::full::adb_shell(serial, "ln -sf /halium-system/var/lib/lxc/android/android-rootfs.img /tmp/ud/android-rootfs.img; sync; umount /tmp/ud")?;
 
     // A failed stock boot may have left --prompt_and_wipe_data in misc.
