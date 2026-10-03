@@ -271,9 +271,12 @@ fn in_recovery(serial: &str) -> bool {
 
 /// The parking brake armed from the recovery (adb) and read back.
 fn arm_brake_recovery(serial: &str) -> Result<(), String> {
-    let misc = "/dev/block/bootdevice/by-name/misc";
+    // Where the recovery keeps it: TWRP for the Duo (built on cepheus's) has
+    // the UFS controller's by-name, not bootdevice; the first that is there.
     let script = format!(
-        "printf '{}' | dd of={misc} bs={BRAKE_LEN} count=1 conv=sync,notrunc,fsync 2>/dev/null; head -c {BRAKE_LEN} {misc} | sha256sum | cut -d' ' -f1",
+        "for m in /dev/block/platform/soc/1d84000.ufshc/by-name/misc /dev/block/by-name/misc /dev/block/bootdevice/by-name/misc; do [ -e \"$m\" ] && break; m=; done; \
+         [ -n \"$m\" ] || {{ echo no-misc; exit 1; }}; \
+         printf '{}' | dd of=\"$m\" bs={BRAKE_LEN} count=1 conv=sync,notrunc,fsync 2>/dev/null; head -c {BRAKE_LEN} \"$m\" | sha256sum | cut -d' ' -f1",
         String::from_utf8_lossy(BRAKE)
     );
     let back = adb(&["-s", serial, "shell", &script], Duration::from_secs(30))?;
