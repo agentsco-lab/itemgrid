@@ -55,7 +55,12 @@ impl Status {
             w.push("item is not running".to_owned());
         }
         for (mount, size, free) in &self.disks {
-            if *size > 0 && (*free as f64) < *size as f64 * 0.05 {
+            // /userdata holds the rootfs image, made nearly as large as the
+            // partition and allocated in full: nearly full is how it is. What
+            // is left there is the Android container's room, worth a word
+            // under 1 GB.
+            let low = if mount == "/userdata" { *free < 1024 * 1024 } else { *size > 0 && (*free as f64) < *size as f64 * 0.05 };
+            if low {
                 w.push(format!("{mount} is nearly full: {} free", size_words(*free)));
             }
         }
