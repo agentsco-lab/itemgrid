@@ -205,3 +205,29 @@ pub(crate) fn run_vetted(host: &str, script: &str) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
+
+/// A local file sent to the phone (`remote`, on its rootfs), and its sha256
+/// there compared with the one here.
+pub(crate) fn upload(host: &str, local: &std::path::Path, remote: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(local).map_err(|e| format!("{}: {e}", local.display()))?;
+    let want = format!("{:x}", Sha256::digest(&bytes));
+    // The file on standard input; the command line names only where it goes.
+    let mut child = ssh(host, 4)
+        .arg(format!("mkdir -p \"$(dirname '{remote}')\" && cat > '{remote}' && sync"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ssh: {e}"))?;
+    child.stdin.take().expect("piped").write_all(&bytes).map_err(|e| format!("ssh: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("ssh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("sending {}: {}", local.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let there = run(host, &format!("sha256sum '{remote}' | cut -d' ' -f1\n"))?;
+    if there.trim() != want {
+        return Err(format!("{} arrived different on the phone", local.display()));
+    }
+    Ok(())
+}

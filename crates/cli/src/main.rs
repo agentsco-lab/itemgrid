@@ -23,6 +23,7 @@ fn main() {
         Some("recovery-exit") => cmd_recovery_exit(),
         Some("club") => cmd_club(&args[1..]),
         Some("register") => cmd_register(),
+        Some("restore") => cmd_restore(&args[1..]),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -472,6 +473,64 @@ fn cmd_register() -> i32 {
     }
 }
 
+fn cmd_restore(args: &[String]) -> i32 {
+    let slot = match args.iter().position(|a| a == "--slot").and_then(|i| args.get(i + 1)).and_then(|s| s.chars().next()) {
+        Some(c) => c.to_ascii_lowercase(),
+        None => {
+            eprintln!("cradle restore: which slot? --slot a or --slot b");
+            return 2;
+        }
+    };
+    let rewrite = args.iter().any(|a| a == "--rewrite");
+    let dir = args.iter().enumerate().find(|(i, a)| !a.starts_with('-') && args.get(i.wrapping_sub(1)).is_none_or(|p| p != "--slot")).map(|(_, a)| std::path::PathBuf::from(a));
+    let Some(host) = linux() else { return 1 };
+    let serial = match cradle_core::backup::serial(&host) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            return 1;
+        }
+    };
+    let Some(backup) = cradle_core::restore::pick(&serial, dir.as_deref()) else {
+        eprintln!("cradle: no such boot-chain backup of this phone (cradle backups)");
+        return 1;
+    };
+    let plan = match cradle_core::restore::plan(&host, &backup, slot, rewrite) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cradle: STOP: {e}");
+            return 1;
+        }
+    };
+    println!("Backup:  {} (item {}, slot {} then)", backup.manifest.created, backup.manifest.item, backup.manifest.slot);
+    println!("Slot:    {}{}", slot.to_ascii_uppercase(), if slot == plan.active_slot { " - the one in use" } else { " - the spare" });
+    for p in &plan.parts {
+        let what = match (p.differs, p.write) {
+            (true, _) => "differs: to be written",
+            (false, true) => "the same: to be rewritten (--rewrite)",
+            (false, false) => "the same: left alone",
+        };
+        println!("  {:<10} {what}", p.partition);
+    }
+    if plan.writes().is_empty() {
+        println!("Nothing to write.");
+        return 0;
+    }
+    if !args.iter().any(|a| a == "--yes") {
+        println!("\nWith --yes: a changed boot tried from RAM first; the chain now backed up; each partition written with dd");
+        println!("and read back; then, for the slot in use, a reboot into it. The other slot is not touched.");
+        return 0;
+    }
+    let start = std::time::Instant::now();
+    match cradle_core::restore::restore(&host, &plan, &mut |l| println!("[{:>4.0}s] {l}", start.elapsed().as_secs_f64())) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("cradle: STOP: {e}");
+            1
+        }
+    }
+}
+
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
@@ -526,5 +585,7 @@ fn usage() {
     println!("  recovery-exit  out of the recovery, back into Linux");
     println!("  club         the Duo owners' club: club token (paste one from the site), club forget");
     println!("  register     this Duo's number in the club (00001...), written onto the phone");
+    println!("  restore      a slot's boot chain from a backup: [BACKUP] --slot a|b (shows the plan; --yes;");
+    println!("               --rewrite writes the same bytes, to try the writing on the spare slot)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }
