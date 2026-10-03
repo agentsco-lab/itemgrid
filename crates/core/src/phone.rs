@@ -17,10 +17,23 @@ pub fn hosts() -> Vec<String> {
 }
 
 fn ssh(host: &str, connect_timeout: u32) -> Command {
+    ssh_with(host, connect_timeout, true)
+}
+
+/// ssh to the phone; `shared`: through one connection kept for a minute
+/// after its last use (a command then costs a few ms, not a new handshake),
+/// noticed dead within ~6 s.
+fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
     let mut c = Command::new("ssh");
     // The phone's host key changes with each image: it is not written into
     // the owner's known_hosts.
     c.args(["-o", "BatchMode=yes", "-o", &format!("ConnectTimeout={connect_timeout}"), "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR"]);
+    if shared {
+        let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+        c.args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={dir}/cradle-%C"), "-o", "ControlPersist=60", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
+    } else {
+        c.args(["-o", "ControlMaster=no", "-o", "ControlPath=none"]);
+    }
     c.arg(format!("root@{host}"));
     c
 }
@@ -28,6 +41,17 @@ fn ssh(host: &str, connect_timeout: u32) -> Command {
 /// Whether the phone answers ssh at `host`.
 pub fn answers(host: &str) -> bool {
     ssh(host, 2).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// The same, over a new connection: while the phone reboots, a kept one may
+/// not know yet that it is dead.
+fn answers_fresh(host: &str) -> bool {
+    ssh_with(host, 2, false).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// The kept connection to `host` closed (before a reboot).
+fn close_shared(host: &str) {
+    let _ = ssh(host, 2).args(["-O", "exit"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// A script run on the phone as root; its standard output.
@@ -73,9 +97,10 @@ pub fn reboot(host: &str, step: &mut dyn FnMut(Boot)) -> Result<(), String> {
     step(Boot::Rebooting);
     // The connection drops as the phone goes down: its error is expected.
     let _ = run(host, "sync; systemctl reboot");
-    wait(|| !answers(host), Duration::from_secs(90), "the phone did not go down")?;
+    close_shared(host);
+    wait(|| !answers_fresh(host), Duration::from_secs(90), "the phone did not go down")?;
     step(Boot::Down);
-    wait(|| answers(host), Duration::from_secs(300), "the phone did not come back within 5 minutes")?;
+    wait(|| answers_fresh(host), Duration::from_secs(300), "the phone did not come back within 5 minutes")?;
     step(Boot::Up);
     wait(
         || run(host, "systemctl is-active item.service").is_ok_and(|s| s.trim() == "active"),
