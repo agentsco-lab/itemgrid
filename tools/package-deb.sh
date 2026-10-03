@@ -14,6 +14,8 @@ strip "$STAGE/usr/bin/cradle" "$STAGE/usr/bin/cradle-gui"
 install -Dm644 data/lab.agentsco.Cradle.desktop "$STAGE/usr/share/applications/lab.agentsco.Cradle.desktop"
 install -Dm644 data/lab.agentsco.Cradle.svg "$STAGE/usr/share/icons/hicolor/scalable/apps/lab.agentsco.Cradle.svg"
 install -Dm644 README.md "$STAGE/usr/share/doc/cradle/README.md"
+# WebKit's sandbox for the Microsoft window needs user namespaces (Ubuntu 24.04).
+install -Dm644 data/apparmor/cradle-gui "$STAGE/etc/apparmor.d/cradle-gui"
 mkdir -p "$STAGE/DEBIAN"
 cat > "$STAGE/DEBIAN/control" <<CONTROL
 Package: cradle
@@ -22,7 +24,7 @@ Architecture: $ARCH
 Maintainer: agentsco-lab
 Section: utils
 Priority: optional
-Depends: libc6, libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.5), openssh-client
+Depends: libc6, libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.5), libwebkitgtk-6.0-4, openssh-client
 Recommends: adb, fastboot
 Description: look after a connected Surface Duo
  Cradle shows what a Surface Duo running Linux (Droidian and item) is doing
@@ -30,6 +32,14 @@ Description: look after a connected Surface Duo
  restarts it, reads its journal and takes screenshots, with the device's
  safety rules built in. A command line (cradle) and a window (cradle-gui).
 CONTROL
+cat > "$STAGE/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && command -v apparmor_parser >/dev/null && [ -d /sys/kernel/security/apparmor ]; then
+  apparmor_parser -r -T -W /etc/apparmor.d/cradle-gui || true
+fi
+POSTINST
+chmod 755 "$STAGE/DEBIAN/postinst"
 mkdir -p target/deb
 OUT=target/deb/cradle_${VERSION}_${ARCH}.deb
 dpkg-deb --root-owner-group --build "$STAGE" "$OUT" >/dev/null

@@ -73,6 +73,15 @@ const CSS: &str = "
 ";
 
 fn main() -> glib::ExitCode {
+    // Ubuntu 24.04 lets no unconfined program make user namespaces, and
+    // WebKit's sandbox needs them: without Cradle's AppArmor profile
+    // (data/apparmor) the Microsoft window would bring the whole app down.
+    // Then WebKit runs unsandboxed - and that window goes to Microsoft's
+    // sign-in and support pages only (see microsoft_only).
+    let restricted = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").is_ok_and(|v| v.trim() == "1");
+    if restricted && !std::path::Path::new("/etc/apparmor.d/cradle-gui").exists() {
+        std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+    }
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(build);
     app.run()
@@ -1606,8 +1615,37 @@ fn get_android_from_microsoft(ui: &Rc<Ui>) {
             });
         }
     });
+    web.connect_decide_policy(|_, decision, kind| {
+        use webkit::prelude::*;
+        if !matches!(kind, webkit::PolicyDecisionType::NavigationAction | webkit::PolicyDecisionType::NewWindowAction) {
+            return false;
+        }
+        let uri = decision
+            .downcast_ref::<webkit::NavigationPolicyDecision>()
+            .and_then(|d| d.navigation_action())
+            .and_then(|mut a| a.request())
+            .and_then(|r| r.uri())
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        if microsoft_only(&uri) {
+            false
+        } else {
+            decision.ignore();
+            true
+        }
+    });
     web.load_uri(cradle_core::stock::RECOVERY_PAGE);
     dialog.present(Some(&ui.window));
+}
+
+/// The Microsoft window goes only where signing in and the support page
+/// need it.
+fn microsoft_only(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("https://") else { return uri == "about:blank" };
+    let host = rest.split(['/', '?', '#', ':']).next().unwrap_or("").to_ascii_lowercase();
+    ["microsoft.com", "live.com", "microsoftonline.com", "msauth.net", "msftauth.net", "msidentity.com", "office.com", "aka.ms"]
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
 /// Return to Android: the plan read off the main thread, then told plainly -
