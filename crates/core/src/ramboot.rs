@@ -498,7 +498,7 @@ pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img:
         }
         // No root in stock Android: no brake from it. An unattended reset
         // starts the port's kernel, still on the slot, or stops in fastboot.
-        Expect::Android => say("done: Android is starting - it formats its data and opens its setup on the phone".into()),
+        Expect::Android => say("done: Android is up from RAM".into()),
     }
     Ok(())
 }

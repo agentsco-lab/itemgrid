@@ -565,8 +565,13 @@ fn cmd_android(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("start") | Some("back") => {
             let Some(serial) = android::away_serial() else {
-                eprintln!("cradle: no phone with a whole-system backup is on the USB (in Android it needs USB debugging on;");
-                eprintln!("        or hold Volume Down while it powers on, for the bootloader)");
+                if android::port_without_system() {
+                    eprintln!("cradle: the phone restarted into the port's kernel, which finds no system on the erased userdata.");
+                    eprintln!("        Hold Power ~15 s until it is off, then Volume Down + Power for the bootloader; run this again.");
+                } else {
+                    eprintln!("cradle: no phone with a whole-system backup is on the USB (in Android it needs USB debugging on;");
+                    eprintln!("        or Volume Down + Power from off, for the bootloader)");
+                }
                 return 1;
             };
             let host = cradle_core::phone::hosts().into_iter().next().unwrap_or_default();
@@ -644,9 +649,9 @@ fn cmd_android(args: &[String]) -> i32 {
     if args.first().map(String::as_str) != Some("go") || !yes || !plan.stops.is_empty() {
         println!("\n`cradle android go --yes`: the whole system backed up (or checked); TWRP from RAM; the way back");
         println!("tried; then, after you type the phone's number, metadata and userdata ERASED and stock Android");
-        println!("started from RAM - as a guest: a restart stops in the bootloader (the parking brake); from there");
-        println!("`cradle android start` runs Android again, `cradle android back` puts Linux back. Lost things need");
-        println!("--accept-losses.");
+        println!("started from RAM - as a guest: the port's kernel stays on the slot, so a plain restart finds no system;");
+        println!("hold Volume Down + Power for the bootloader, then `cradle android start` runs Android again and");
+        println!("`cradle android back` puts Linux back. Lost things need --accept-losses.");
         return if plan.stops.is_empty() { 0 } else { 1 };
     }
     let word = android::confirm_word(&cradle_core::backup::serial(&host).unwrap_or_default());

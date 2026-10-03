@@ -411,15 +411,18 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
     remember_guest(&serial, &kernel.path, build.slot)?;
     crate::ramboot::boot_in_fastboot(host, &serial, build.slot, &kernel.path, &stock, crate::ramboot::Expect::Android, say)?;
     crate::flash::log(&serial, &format!("stock Android started from RAM ({}) - cradle", kernel.path.display()))?;
-    say("Android is setting itself up on the phone. For Cradle later: Settings - About phone - tap Build number seven times - Developer options - USB debugging. A restart stops in the bootloader: Start Android, or Back to Linux.".into());
+    say("Android is setting itself up on the phone. For Cradle later: Settings - About phone - tap Build number seven times - Developer options - USB debugging. Don't restart it plainly: the port's kernel is still on the slot and finds no system. For the bootloader: Volume Down + Power from off (or Cradle, with USB debugging on).".into());
     Ok(())
 }
 
 // ---- running: the guest Android started again ---------------------------------
 
 /// Stock Android started again from RAM - it runs as a guest: the port's
-/// kernel is still on the slot and the parking brake armed, so each restart
-/// stops in the bootloader, and this starts it again.
+/// kernel is still on the slot. The parking brake does not hold here: stock
+/// Android clears misc as it boots (seen 2026-10-04), so a plain restart
+/// starts the port's kernel, which finds no system on the erased userdata
+/// and stops in its initramfs (USB 18d1:d001). Volume Down + Power from off
+/// reaches the bootloader; this starts Android from there.
 pub fn start(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
     let (kernel, slot) = guest(serial).ok_or("Android was never started by Cradle on this phone: return to it first")?;
     let img = crate::ramboot::check_image(&kernel)?;
@@ -556,4 +559,15 @@ pub fn away_serial() -> Option<String> {
     serials.sort();
     serials.dedup();
     serials.into_iter().find(|s| crate::ramboot::usb_serial_present(s))
+}
+
+/// The port's kernel up with no system to start (Halium's initramfs shows
+/// itself on the USB as 18d1:d001): the guest Android restarted plainly.
+pub fn port_without_system() -> bool {
+    std::fs::read_dir("/sys/bus/usb/devices").is_ok_and(|d| {
+        d.flatten().any(|e| {
+            let read = |f: &str| std::fs::read_to_string(e.path().join(f)).map(|s| s.trim().to_owned()).unwrap_or_default();
+            read("idVendor") == "18d1" && read("idProduct") == "d001"
+        })
+    })
 }
