@@ -18,6 +18,7 @@ fn main() {
         Some("backup") => cmd_backup(&args[1..]),
         Some("backups") => cmd_backups(),
         Some("slots") => cmd_slots(),
+        Some("confirm") => cmd_confirm(&args[1..]),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -311,6 +312,42 @@ fn cmd_slots() -> i32 {
     0
 }
 
+fn cmd_confirm(args: &[String]) -> i32 {
+    let Some(host) = linux() else { return 1 };
+    let (serial, ev) = match cradle_core::backup::serial(&host).and_then(|s| cradle_core::flash::evidence(&host).map(|e| (s, e))) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            return 1;
+        }
+    };
+    println!("Booted from:     slot {}", ev.slot.to_ascii_uppercase());
+    println!("Running kernel:  {}", ev.running_kernel);
+    println!("Kernel in slot:  {}", ev.slot_kernel);
+    println!("Image in slot:   {}", ev.image.clone().unwrap_or_else(|| "not known here".into()));
+    if !ev.holds() {
+        eprintln!("cradle: they differ - nothing is confirmed");
+        return 1;
+    }
+    let g = cradle_core::flash::gate(&serial);
+    println!("RAM boots now:   {} of {} unconfirmed", g.unconfirmed, cradle_core::flash::MAX_UNCONFIRMED);
+    if !args.iter().any(|a| a == "--yes") {
+        println!("\nThis records that the system running booted from slot {} and counts the RAM boots back to 0.", ev.slot.to_ascii_uppercase());
+        println!("Nothing on the phone changes. Run again with --yes to record it.");
+        return 0;
+    }
+    match cradle_core::flash::confirm_flashed(&serial, &ev) {
+        Ok(()) => {
+            println!("Recorded in {}: the RAM boots are 0 of {} now.", cradle_core::flash::state_path().display(), cradle_core::flash::MAX_UNCONFIRMED);
+            0
+        }
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            1
+        }
+    }
+}
+
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
@@ -359,5 +396,6 @@ fn usage() {
     println!("               or one: device | boot | quick. Reads only.");
     println!("  backups      the backups on this computer");
     println!("  slots        the two boot slots: their state and what is in them; the RAM boot gate");
+    println!("  confirm      record that the running system booted from its slot (shows the evidence; --yes)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }
