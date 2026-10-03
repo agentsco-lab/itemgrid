@@ -29,7 +29,7 @@ fn main() {
         Some("club") => cmd_club(&args[1..]),
         Some("register") => cmd_register(),
         Some("restore") => cmd_restore(&args[1..]),
-        Some("android") => cmd_android(),
+        Some("android") => cmd_android(&args[1..]),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -550,8 +550,43 @@ fn cmd_restore(args: &[String]) -> i32 {
     }
 }
 
-fn cmd_android() -> i32 {
+fn cmd_android(args: &[String]) -> i32 {
     use cradle_core::android;
+    let yes = args.iter().any(|a| a == "--yes");
+    let start = std::time::Instant::now();
+    let mut say = |l: String| println!("[{:>4.0}s] {l}", start.elapsed().as_secs_f64());
+    let done = |r: Result<(), String>| match r {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("cradle: STOP: {e}");
+            1
+        }
+    };
+    match args.first().map(String::as_str) {
+        Some("start") | Some("back") => {
+            let Some(serial) = android::away_serial() else {
+                eprintln!("cradle: no phone with a whole-system backup is on the USB (in Android it needs USB debugging on;");
+                eprintln!("        or hold Volume Down while it powers on, for the bootloader)");
+                return 1;
+            };
+            let host = cradle_core::phone::hosts().into_iter().next().unwrap_or_default();
+            if args[0] == "start" {
+                return done(android::start(&host, &serial, &mut say));
+            }
+            if !yes {
+                println!("Back to Linux: TWRP from RAM, userdata made ext4 again (Android's data goes), the system and");
+                println!("the Android container's data put back from the newest whole-system backup, checked part by part;");
+                println!("misc cleared, the port started. About 30-40 minutes. Run again with --yes to go.");
+                return 0;
+            }
+            return done(android::back(&host, &serial, &mut say));
+        }
+        Some("go") | None => {}
+        Some(other) => {
+            eprintln!("cradle android: unknown '{other}' (go, start, back)");
+            return 2;
+        }
+    }
     let Some(host) = linux() else { return 1 };
     let plan = match android::plan(&host) {
         Ok(p) => p,
@@ -593,7 +628,19 @@ fn cmd_android() -> i32 {
             println!("  - {s}");
         }
     }
-    0
+    if args.first().map(String::as_str) != Some("go") || !yes || !plan.stops.is_empty() {
+        println!("\n`cradle android go --yes`: the whole system backed up (or checked); TWRP from RAM; the way back");
+        println!("tried; then, after you type the phone's number, metadata and userdata ERASED and stock Android");
+        println!("started from RAM - as a guest: a restart stops in the bootloader (the parking brake); from there");
+        println!("`cradle android start` runs Android again, `cradle android back` puts Linux back. Lost things need");
+        println!("--accept-losses.");
+        return if plan.stops.is_empty() { 0 } else { 1 };
+    }
+    let word = android::confirm_word(&cradle_core::backup::serial(&host).unwrap_or_default());
+    println!("\nThis ERASES the phone's userdata. Type {word} to go on:");
+    let mut typed = String::new();
+    let _ = std::io::stdin().read_line(&mut typed);
+    done(android::go(&host, &plan, &typed, args.iter().any(|a| a == "--accept-losses"), &mut say))
 }
 
 fn cmd_reboot() -> i32 {
@@ -651,7 +698,9 @@ fn usage() {
     println!("  recovery-exit  out of the recovery, back into Linux");
     println!("  club         the Duo owners' club: club token (paste one from the site), club forget");
     println!("  register     this Duo's number in the club (00001...), written onto the phone");
-    println!("  android      the plan for returning to the phone's stock Android (reads only, for now)");
+    println!("  android      the plan for returning to the phone's stock Android (reads only);");
+    println!("               go --yes: there (erases userdata; asks for the phone's number); start: Android again;");
+    println!("               back --yes: Linux again, from the whole-system backup");
     println!("  restore      a slot's boot chain from a backup: [BACKUP] --slot a|b (shows the plan; --yes;");
     println!("               --rewrite writes the same bytes, to try the writing on the spare slot)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");

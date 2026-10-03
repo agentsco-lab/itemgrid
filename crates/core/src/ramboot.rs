@@ -294,7 +294,7 @@ fn android_up(serial: &str) -> bool {
 }
 
 /// A USB device with this serial number attached.
-fn usb_serial_present(serial: &str) -> bool {
+pub(crate) fn usb_serial_present(serial: &str) -> bool {
     std::fs::read_dir("/sys/bus/usb/devices").is_ok_and(|d| d.flatten().any(|e| std::fs::read_to_string(e.path().join("serial")).is_ok_and(|s| s.trim() == serial)))
 }
 

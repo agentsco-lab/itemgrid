@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 
 use crate::backup::{Backup, Item, Kind, Manifest};
 
-const UD: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name/userdata";
+pub(crate) const UD: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name/userdata";
 
 /// TWRP's image: CRADLE_TWRP, or the port's out/twrp/, or Cradle's own
 /// ~/.local/share/cradle/twrp/.
@@ -26,7 +26,7 @@ pub fn twrp() -> Option<PathBuf> {
     places.into_iter().find(|p| p.exists())
 }
 
-fn adb_shell(serial: &str, cmd: &str) -> Result<String, String> {
+pub(crate) fn adb_shell(serial: &str, cmd: &str) -> Result<String, String> {
     let out = Command::new("adb").args(["-s", serial, "shell", cmd]).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() {
@@ -45,7 +45,7 @@ type Streamed = (u64, String, Option<(u64, String)>);
 /// ~40 MB/s as gzip, its empty rest at ~200 MB/s read; 18 minutes in all,
 /// the phone's own sha256 of the image six of them. (A debug build of Cradle
 /// was the bottleneck once: its decompressing and hashing ran at ~4 MB/s.)
-fn fast_tools(serial: &str) -> bool {
+pub(crate) fn fast_tools(serial: &str) -> bool {
     adb_shell(serial, "which pigz && which nc").is_ok_and(|o| o.lines().count() >= 2)
 }
 
@@ -233,4 +233,50 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
     say(format!("whole system backed up: {}", crate::status::size_words(backup.size() / 1024)));
     crate::backup::prune(&f.serial, Kind::Full, say);
     Ok(backup)
+}
+
+/// Data sent into TWRP: `sink` runs there reading it (nc on a socket, adb
+/// forwarding it), so nothing passes adb's terminal. Returns the bytes sent.
+pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<u64, String> {
+    let port = 5598;
+    let fwd = Command::new("adb").args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
+    if !fwd.status.success() {
+        return Err(format!("adb forward: {}", String::from_utf8_lossy(&fwd.stderr).trim()));
+    }
+    let mut server = Command::new("adb")
+        .args(["-s", serial, "shell", &format!("nc -l -p {port} </dev/null | {sink}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("adb: {e}"))?;
+    let mut conn = None;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Ok(c) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            conn = Some(c);
+            break;
+        }
+    }
+    let result = (|| -> Result<u64, String> {
+        let mut c = conn.ok_or("the receiving socket in TWRP did not open")?;
+        let n = std::io::copy(data, &mut c).map_err(|e| format!("sending: {e}"))?;
+        c.shutdown(std::net::Shutdown::Write).map_err(|e| e.to_string())?;
+        // The sink done: nc closes once the stream has ended.
+        let start = std::time::Instant::now();
+        loop {
+            if server.try_wait().map_err(|e| e.to_string())?.is_some() {
+                break;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(300) {
+                return Err("the receiving end in TWRP did not finish".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        Ok(n)
+    })();
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = Command::new("adb").args(["-s", serial, "forward", "--remove", &format!("tcp:{port}")]).output();
+    result
 }

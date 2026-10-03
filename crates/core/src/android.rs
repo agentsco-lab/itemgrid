@@ -252,3 +252,301 @@ mod tests {
         assert_eq!(super::utc_of("Mon Jul 10 11:12:07 UTC 2023"), Some(1688987527));
     }
 }
+
+// ---- going: from Linux to stock Android -------------------------------------
+
+/// The partitions by name in TWRP.
+const BLK: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name";
+/// The way back is tried with this much before anything is erased.
+const TEST_BYTES: u64 = 512 << 20;
+/// sha256 of 1 MiB of zeros.
+const ZERO_MB: &str = "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58";
+
+/// Which stock kernel and slot the guest Android runs from: kept per phone
+/// so a restart picks the same, not a guess.
+fn guest_path(serial: &str) -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/cradle/android").join(format!("{serial}.json"))
+}
+
+fn remember_guest(serial: &str, kernel: &Path, slot: char) -> Result<(), String> {
+    let path = guest_path(serial);
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let body = serde_json::json!({"kernel": kernel, "slot": slot.to_string()});
+    std::fs::write(&path, body.to_string()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The guest's kernel and slot, if Cradle started Android on this phone.
+pub fn guest(serial: &str) -> Option<(PathBuf, char)> {
+    let d: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(guest_path(serial)).ok()?).ok()?;
+    Some((PathBuf::from(d["kernel"].as_str()?), d["slot"].as_str()?.chars().next()?))
+}
+
+/// The word that opens the point of no return: the phone's number in the
+/// club, or its serial's last five digits.
+pub fn confirm_word(serial: &str) -> String {
+    crate::club::known(serial).map(|d| d.number).unwrap_or_else(|| serial.chars().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect())
+}
+
+/// A full backup's files checked against its manifest (the image
+/// decompressed and hashed: a few minutes).
+pub fn verify_full(b: &Backup, say: crate::ramboot::Say) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    for item in &b.manifest.items {
+        let path = b.dir.join(&item.file);
+        say(format!("checking {} in the backup", item.file));
+        let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut hash = Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        // The image's sha is of what it decompresses to; the tar's of the file.
+        let mut reader: Box<dyn Read> = if item.file == "rootfs.img.gz" { Box::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(file))) } else { Box::new(file) };
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buf[..n]);
+        }
+        if format!("{:x}", hash.finalize()) != item.sha256 {
+            return Err(format!("{} does not match its manifest: the backup is damaged - nothing is erased", path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// The way back tried in TWRP: data sent onto the phone, its sha256 there
+/// compared. (adb dropped mid-transfer once on this phone; better found out
+/// before userdata is gone.)
+fn try_the_way_back(serial: &str) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    // Not zeros - those would prove little: a hash chain, cheap and varied.
+    let mut data = Vec::with_capacity(TEST_BYTES as usize);
+    let mut block = Sha256::digest(b"cradle way back").to_vec();
+    while (data.len() as u64) < TEST_BYTES {
+        block = Sha256::digest(&block).to_vec();
+        data.extend_from_slice(&block);
+    }
+    let want = format!("{:x}", Sha256::digest(&data));
+    crate::full::adb_send(serial, "cat > /tmp/cradle-way-back", &mut data.as_slice())?;
+    let there = crate::full::adb_shell(serial, "sha256sum /tmp/cradle-way-back | cut -d' ' -f1; rm -f /tmp/cradle-way-back")?;
+    if there.trim() != want {
+        return Err("the way back failed its trial (what arrived differs) - nothing is erased".into());
+    }
+    Ok(())
+}
+
+/// metadata and userdata zeroed whole, from TWRP - a zeroed start is not
+/// enough: ext4's backup superblocks could bring the port's filesystem back
+/// under Android's first boot, and Android would poison misc
+/// (STOCK-ANDROID.md). Then a few places read back: all zeros.
+fn erase(serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    let _ = crate::full::adb_shell(serial, "umount /tmp/ud 2>/dev/null; true");
+    for (name, bs) in [("metadata", 1048576u64), ("userdata", 4194304)] {
+        let dev = crate::full::adb_shell(serial, &format!("readlink -f {BLK}/{name}"))?.trim().to_owned();
+        if !dev.starts_with("/dev/block/sd") {
+            return Err(format!("{name} is not where it should be ({dev}): stopping"));
+        }
+        say(format!("zeroing {name} ({dev}) whole{}", if name == "userdata" { " - about 7 minutes" } else { "" }));
+        crate::full::adb_shell(serial, &format!("dd if=/dev/zero of={dev} bs={bs} 2>/dev/null; sync; true"))?;
+        // Read back at the start, the end and between.
+        let size: u64 = crate::full::adb_shell(serial, &format!("blockdev --getsize64 {dev}"))?.trim().parse().map_err(|_| format!("{name}'s size was not read"))?;
+        let mb = size >> 20;
+        for k in 0..14u64 {
+            let at = if k == 13 { mb.saturating_sub(1) } else { mb * k / 13 };
+            let sha = crate::full::adb_shell(serial, &format!("dd if={dev} bs=1048576 skip={at} count=1 2>/dev/null | sha256sum | cut -d' ' -f1"))?;
+            if sha.trim() != ZERO_MB {
+                return Err(format!("{name} is not all zeros at {at} MB - stopping before Android boots"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The return to Android, by the plan. `confirm` must be confirm_word's
+/// word; `accept_losses`, the owner's word that what no backup has may go.
+pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crate::ramboot::Say) -> Result<(), String> {
+    if !plan.stops.is_empty() {
+        return Err(format!("stopped before anything: {}", plan.stops.join("; ")));
+    }
+    let serial = crate::backup::serial(host)?;
+    if confirm.trim() != confirm_word(&serial) {
+        return Err(format!("the confirmation does not match ({} expected) - nothing is changed", confirm_word(&serial)));
+    }
+    if !plan.losses.is_empty() && !accept_losses {
+        return Err(format!("userdata holds what no backup has ({}) - say it may go, or back it up", plan.losses.iter().map(|l| l.0.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+    let (kernel, build) = plan.kernel.clone().ok_or("no stock kernel")?;
+    let stock = crate::ramboot::check_image(&kernel.path)?;
+    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let _ = crate::ramboot::check_image(&twrp)?;
+
+    // The whole system, fresh and whole.
+    let full = if plan.full_fresh {
+        let b = plan.full.clone().expect("fresh");
+        verify_full(&b, say)?;
+        b
+    } else {
+        say("taking the whole system's backup first".into());
+        crate::full::take(host, say)?
+    };
+    crate::flash::log(&serial, &format!("return to Android begun: the system backed up in {} - cradle", full.dir.display()))?;
+
+    // Into TWRP, where the way back is tried and userdata erased.
+    say("into TWRP".into());
+    crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
+    say("trying the way back (512 MB onto the phone, checked)".into());
+    if let Err(e) = try_the_way_back(&serial) {
+        let _ = crate::ramboot::leave_recovery(host, &serial, say);
+        return Err(e);
+    }
+    crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - cradle", build.fingerprint))?;
+    erase(&serial, say)?;
+    crate::flash::log(&serial, "metadata and userdata zeroed and read back - cradle")?;
+
+    // The stock kernel from RAM, on its slot.
+    say("into the bootloader".into());
+    crate::ramboot::adb_to_bootloader(&serial)?;
+    remember_guest(&serial, &kernel.path, build.slot)?;
+    crate::ramboot::boot_in_fastboot(host, &serial, build.slot, &kernel.path, &stock, crate::ramboot::Expect::Android, say)?;
+    crate::flash::log(&serial, &format!("stock Android started from RAM ({}) - cradle", kernel.path.display()))?;
+    say("Android is setting itself up on the phone. For Cradle later: Settings - About phone - tap Build number seven times - Developer options - USB debugging. A restart stops in the bootloader: Start Android, or Back to Linux.".into());
+    Ok(())
+}
+
+// ---- running: the guest Android started again ---------------------------------
+
+/// Stock Android started again from RAM - it runs as a guest: the port's
+/// kernel is still on the slot and the parking brake armed, so each restart
+/// stops in the bootloader, and this starts it again.
+pub fn start(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    let (kernel, slot) = guest(serial).ok_or("Android was never started by Cradle on this phone: return to it first")?;
+    let img = crate::ramboot::check_image(&kernel)?;
+    if !crate::ramboot::in_fastboot(serial) {
+        say("into the bootloader".into());
+        crate::ramboot::adb_to_bootloader(serial)?;
+    }
+    crate::ramboot::boot_in_fastboot(host, serial, slot, &kernel, &img, crate::ramboot::Expect::Android, say)?;
+    crate::flash::log(serial, &format!("stock Android started from RAM ({}) - cradle", kernel.display()))
+}
+
+// ---- coming back: from stock Android to Linux ---------------------------------
+
+/// Back to Linux from Android (or from fastboot or TWRP on the way): TWRP
+/// from RAM, userdata made ext4 again, the system and the container's data
+/// put back from the newest full backup - in parts, each checked on the
+/// phone - misc cleared, and the port started from its slot.
+pub fn back(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let full = crate::backup::list(Some(serial)).into_iter().find(|b| b.manifest.kind == Kind::Full).ok_or("no whole-system backup of this phone")?;
+    let slot = full.manifest.slot.trim_start_matches('_').chars().next().unwrap_or('a');
+    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let twrp_img = crate::ramboot::check_image(&twrp)?;
+    say(format!("coming back from the backup of {}", full.manifest.created));
+
+    // Into TWRP, from wherever the phone is.
+    if !crate::ramboot::in_fastboot(serial) {
+        say("into the bootloader".into());
+        crate::ramboot::adb_to_bootloader(serial)?;
+    }
+    crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
+    if !crate::full::fast_tools(serial) {
+        return Err("this TWRP lacks pigz or nc - the way back needs them".into());
+    }
+
+    say("making userdata ext4 again (Android's data goes)".into());
+    crate::flash::log(serial, "back to Linux: userdata made ext4 again - cradle")?;
+    crate::full::adb_shell(serial, &format!("umount /tmp/ud 2>/dev/null; mke2fs -F -t ext4 -L userdata {BLK}/userdata >/dev/null && mkdir -p /tmp/ud && mount -t ext4 {BLK}/userdata /tmp/ud && echo ok"))?;
+
+    // The image in 512 MB parts; empty parts are left as holes.
+    let image = full.manifest.items.iter().find(|i| i.file == "rootfs.img.gz").ok_or("the backup has no rootfs image")?;
+    let file = std::fs::File::open(full.dir.join(&image.file)).map_err(|e| e.to_string())?;
+    let mut dec = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(file));
+    let part = 512usize << 20;
+    let mut buf = vec![0u8; part];
+    let mut whole = Sha256::new();
+    let (mut index, mut total, mut sent) = (0u64, 0u64, 0u64);
+    crate::full::adb_shell(serial, "rm -f /tmp/ud/rootfs.img && touch /tmp/ud/rootfs.img")?;
+    loop {
+        let mut filled = 0;
+        while filled < part {
+            let n = dec.read(&mut buf[filled..]).map_err(|e| format!("the backup's image: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled == 0 {
+            break;
+        }
+        let chunk = &buf[..filled];
+        whole.update(chunk);
+        total += filled as u64;
+        if chunk.iter().any(|b| *b != 0) {
+            let want = format!("{:x}", Sha256::digest(chunk));
+            let seek = index * 512;
+            let mut ok = false;
+            for _ in 0..3 {
+                crate::full::adb_send(serial, &format!("dd of=/tmp/ud/rootfs.img bs=1048576 seek={seek} conv=notrunc 2>/dev/null"), &mut &chunk[..])?;
+                let there = crate::full::adb_shell(serial, &format!("dd if=/tmp/ud/rootfs.img bs=1048576 skip={seek} count={} 2>/dev/null | sha256sum | cut -d' ' -f1", filled.div_ceil(1 << 20)))?;
+                if there.trim() == want {
+                    ok = true;
+                    break;
+                }
+            }
+            if !ok {
+                return Err(format!("part {index} of the image did not arrive whole in three tries - the phone stays in TWRP; run back again"));
+            }
+            sent += filled as u64;
+        }
+        index += 1;
+        if index % 8 == 0 {
+            say(format!("  image: {} of it put back ({} sent)", crate::status::size_words(total / 1024), crate::status::size_words(sent / 1024)));
+        }
+    }
+    if format!("{:x}", whole.finalize()) != image.sha256 {
+        return Err("the backup's image does not match its manifest - stopping in TWRP".into());
+    }
+    crate::full::adb_shell(serial, &format!("truncate -s {total} /tmp/ud/rootfs.img && chmod 644 /tmp/ud/rootfs.img"))?;
+    say("checking the whole image on the phone".into());
+    let there = crate::full::adb_shell(serial, "sha256sum /tmp/ud/rootfs.img | cut -d' ' -f1")?;
+    if there.trim() != image.sha256 {
+        return Err("the image on the phone differs from the backup - stopping in TWRP; run back again".into());
+    }
+
+    say("putting back the Android container's data".into());
+    let data = full.manifest.items.iter().find(|i| i.file == "android-data.tar.gz").ok_or("the backup has no container data")?;
+    let mut f = std::fs::File::open(full.dir.join(&data.file)).map_err(|e| e.to_string())?;
+    crate::full::adb_send(serial, "pigz -dc | tar -C /tmp/ud -xpf -", &mut f)?;
+    crate::full::adb_shell(serial, "ln -sf /halium-system/var/lib/lxc/android/android-rootfs.img /tmp/ud/android-rootfs.img; sync; umount /tmp/ud")?;
+
+    // A failed stock boot may have left --prompt_and_wipe_data in misc.
+    say("clearing misc".into());
+    crate::full::adb_shell(serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync"))?;
+    crate::flash::log(serial, &format!("back to Linux: the system put back from {} - cradle", full.manifest.created))?;
+
+    say("starting the port".into());
+    crate::full::adb_shell(serial, "reboot").ok();
+    let start = std::time::Instant::now();
+    while !crate::phone::answers_fresh(host) {
+        if start.elapsed() > std::time::Duration::from_secs(360) {
+            return Err("Linux did not come back in 6 minutes - look at the phone's screen".into());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    crate::ramboot::arm_brake_linux(host)?;
+    crate::flash::log(serial, "back in Linux, parking brake armed - cradle")?;
+    let _ = std::fs::remove_file(guest_path(serial));
+    say("Linux is back: enter the PIN on the phone".into());
+    Ok(())
+}
+
+/// The phone away from Linux (in Android, fastboot or TWRP): of the phones
+/// this computer has whole-system backups of, the one on the USB now.
+pub fn away_serial() -> Option<String> {
+    let root = crate::backup::list(None);
+    let mut serials: Vec<String> = root.into_iter().filter(|b| b.manifest.kind == Kind::Full).map(|b| b.manifest.serial.clone()).collect();
+    serials.sort();
+    serials.dedup();
+    serials.into_iter().find(|s| crate::ramboot::usb_serial_present(s))
+}
