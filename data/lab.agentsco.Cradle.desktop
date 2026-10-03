@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Cradle
+Comment=Look after a connected Surface Duo
+Exec=cradle-gui
+Icon=lab.agentsco.Cradle
+Terminal=false
+Categories=Utility;System;
+Keywords=Surface;Duo;phone;flash;item;
+StartupNotify=true

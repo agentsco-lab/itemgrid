@@ -15,6 +15,9 @@ use gtk::{gdk, gio, glib};
 
 const APP_ID: &str = "lab.agentsco.Cradle";
 const REFRESH_S: u32 = 5;
+/// The screens on the Duo drawn here, taken again this often while the
+/// window is in front on General (each frame is ~20 MB over USB).
+const SCREENS_EVERY: u32 = 3;
 /// The Duo drawn on the left: a panel's size (logical px).
 const PANEL_W: i32 = 186;
 const PANEL_H: i32 = 248;
@@ -343,9 +346,15 @@ fn build(app: &adw::Application) {
     look(&ui);
     glib::timeout_add_seconds_local(REFRESH_S, {
         let ui = ui.clone();
+        let mut ticks = 0u32;
         move || {
+            ticks += 1;
             if !ui.state.borrow().busy {
                 look(&ui);
+                let front = ui.window.is_active() && ui.tabs.visible_child_name().as_deref() == Some("general");
+                if front && ticks % SCREENS_EVERY == 0 {
+                    take_screens(&ui, false);
+                }
             }
             glib::ControlFlow::Continue
         }
