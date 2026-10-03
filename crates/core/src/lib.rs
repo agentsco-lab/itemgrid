@@ -19,6 +19,7 @@ pub mod restore;
 pub mod screenshot;
 pub mod slots;
 pub mod status;
+pub mod stock;
 pub mod storage;
 pub mod update;
 

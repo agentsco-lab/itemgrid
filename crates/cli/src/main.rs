@@ -41,6 +41,7 @@ fn main() {
         Some("ramboot") => cmd_ramboot(&args[1..]),
         Some("recovery-exit") => cmd_recovery_exit(),
         Some("brake") => cmd_brake(),
+        Some("stock") => cmd_stock(&args[1..]),
         Some("club") => cmd_club(&args[1..]),
         Some("register") => cmd_register(),
         Some("restore") => cmd_restore(&args[1..]),
@@ -460,6 +461,37 @@ fn cmd_ramboot(args: &[String]) -> i32 {
     }
 }
 
+fn cmd_stock(args: &[String]) -> i32 {
+    use cradle_core::stock;
+    // A package named, or those kept in ~/.cache/cradle/stock.
+    let pkgs = match args.iter().find(|a| !a.starts_with('-')) {
+        Some(p) => match stock::read(std::path::Path::new(p)) {
+            Ok(pkg) => vec![pkg],
+            Err(e) => {
+                eprintln!("cradle: {e}");
+                return 1;
+            }
+        },
+        None => stock::packages(),
+    };
+    if pkgs.is_empty() {
+        println!("No Microsoft package here ({}).", stock::packages_dir().display());
+        return 0;
+    }
+    let start = std::time::Instant::now();
+    for pkg in &pkgs {
+        println!("{} · Android build {} · security patch {} · {}", pkg.path.file_name().and_then(|n| n.to_str()).unwrap_or(""), pkg.build, pkg.security_patch, cradle_core::android::when(pkg.timestamp));
+        match stock::boot_chain(pkg, &mut |l| said(&start, &l)) {
+            Ok(dir) => println!("boot chain in {}", dir.display()),
+            Err(e) => {
+                stop(&e);
+                return 1;
+            }
+        }
+    }
+    0
+}
+
 fn cmd_brake() -> i32 {
     // The parking brake armed from Linux: a surprise restart stops in the
     // bootloader. Also what ends a way back finished by hand.
@@ -770,6 +802,7 @@ fn usage() {
     println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go;");
     println!("               a TWRP image, or --recovery, is awaited in the recovery)");
     println!("  recovery-exit  out of the recovery, back into Linux");
+    println!("  stock        Microsoft's packages here, their boot chain taken out and checked ([PACKAGE])");
     println!("  brake        arm the parking brake (misc): the next restart stops in the bootloader");
     println!("  club         the Duo owners' club: club token (paste one from the site), club forget");
     println!("  register     this Duo's number in the club (00001...), written onto the phone");
