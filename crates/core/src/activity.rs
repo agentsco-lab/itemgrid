@@ -88,6 +88,13 @@ pub fn elsewhere(recent: u64) -> Option<Activity> {
 }
 
 impl Activity {
+    /// How it ended: None while running; Some(None) done; Some(Some(why))
+    /// stopped. (Read from the file, "done" and "running" both come back as
+    /// a null `ended`: the end time tells them apart.)
+    pub fn outcome(&self) -> Option<Option<String>> {
+        self.ended_at.map(|_| self.ended.clone().flatten())
+    }
+
     pub fn seconds(&self) -> u64 {
         self.ended_at.unwrap_or_else(now).saturating_sub(self.started)
     }

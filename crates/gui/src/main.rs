@@ -121,6 +121,8 @@ struct OwnJob {
     lines: Vec<String>,
     started: std::time::Instant,
     ended: Option<Option<String>>,
+    /// Its length, once over.
+    took: Option<u64>,
 }
 
 /// What the window knows between looks.
@@ -630,7 +632,8 @@ fn tell(ui: &Rc<Ui>) {
     {
         let st = ui.state.borrow();
         if let Some(job) = &st.job {
-            ui.card.show(job.kind, &job.lines, job.started.elapsed().as_secs(), job.ended.clone(), false);
+            let secs = job.took.unwrap_or_else(|| job.started.elapsed().as_secs());
+            ui.card.show(job.kind, &job.lines, secs, job.ended.clone(), false);
             if job.ended.is_none() {
                 duo_moving(ui, ui.card.phone(job.kind, &job.lines));
             }
@@ -641,8 +644,8 @@ fn tell(ui: &Rc<Ui>) {
     let dismissed = ui.state.borrow().dismissed;
     match other {
         Some(a) if a.ended_at.is_none() || a.ended_at != dismissed => {
-            let running = a.ended.is_none();
-            ui.card.show(&a.job, &a.lines, a.seconds(), a.ended.clone(), true);
+            let running = a.ended_at.is_none();
+            ui.card.show(&a.job, &a.lines, a.seconds(), a.outcome(), true);
             ui.actions.set_sensitive(!running);
             ui.mode_buttons.set_sensitive(!running);
             if running {
@@ -1445,7 +1448,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
     {
         let mut st = ui.state.borrow_mut();
         st.busy = true;
-        st.job = Some(OwnJob { kind, lines: Vec::new(), started: std::time::Instant::now(), ended: None });
+        st.job = Some(OwnJob { kind, lines: Vec::new(), started: std::time::Instant::now(), ended: None, took: None });
     }
     if let Some(stop) = ui.live.borrow_mut().take() {
         stop.stop();
@@ -1516,6 +1519,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
             st.last_seen = Some(std::time::Instant::now());
             if let Some(job) = st.job.as_mut() {
                 job.ended = Some(result.err());
+                job.took = Some(job.started.elapsed().as_secs());
             }
             // This window's own record is not "elsewhere".
             st.dismissed = cradle_core::activity::elsewhere(u64::MAX).and_then(|a| a.ended_at).or(st.dismissed);
