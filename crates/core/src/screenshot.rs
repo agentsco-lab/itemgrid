@@ -57,3 +57,19 @@ pub fn png(rgba: &[u8], hinge: bool) -> Result<Vec<u8>, String> {
     }
     Ok(file)
 }
+
+/// The two panels' pictures, each the right way up (RGBA, PANEL_W x
+/// SCREEN.1), for whoever shows them apart.
+pub fn panels(rgba: &[u8]) -> [Vec<u8>; 2] {
+    let (w, h) = SCREEN;
+    PANELS.map(|(a, b)| {
+        let mut out = Vec::with_capacity((b - a) * h * 4);
+        for y in (0..h).rev() {
+            out.extend_from_slice(&rgba[(y * w + a) * 4..(y * w + b) * 4]);
+        }
+        out
+    })
+}
+
+/// A panel's picture's size (physical px).
+pub const PANEL_SIZE: (usize, usize) = (PANELS[0].1 - PANELS[0].0, SCREEN.1);

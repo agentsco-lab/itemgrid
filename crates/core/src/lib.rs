@@ -9,6 +9,7 @@ pub mod logs;
 pub mod phone;
 pub mod screenshot;
 pub mod status;
+pub mod storage;
 pub mod update;
 
 pub use detect::{detect, Mode, Seen};
