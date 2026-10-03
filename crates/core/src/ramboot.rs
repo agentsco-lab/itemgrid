@@ -427,7 +427,7 @@ pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<()
         }
         std::thread::sleep(Duration::from_secs(3));
     }
-    crate::flash::confirm_ram_boot(&serial, &img.sha256, &fb)?;
+    crate::flash::confirm_ram_boot(&serial, &img.sha256, &fb, expect == Expect::Linux)?;
     say(format!("{what} is up: the RAM boot is confirmed"));
     say("re-arming the parking brake".into());
     match expect {

@@ -187,17 +187,28 @@ pub fn count_attempt(serial: &str, sha: &str) -> Result<u64, String> {
     Ok(n)
 }
 
-/// A RAM boot that reached Linux: the counter to 0, the image confirmed for
-/// flashing, and what fastboot read before it the fresh baseline.
-pub fn confirm_ram_boot(serial: &str, sha: &str, fb: &crate::ramboot::Fastboot) -> Result<(), String> {
+/// A RAM boot that came up: the counter to 0, what fastboot read before it
+/// the fresh baseline, and - for an image that boots Linux - the image
+/// confirmed for flashing. A recovery never is: TWRP is RAM-booted only,
+/// never flashed (SAFETY.md).
+pub fn confirm_ram_boot(serial: &str, sha: &str, fb: &crate::ramboot::Fastboot, flashable: bool) -> Result<(), String> {
     edit(serial, |d| {
         d["consecutive_unconfirmed"] = 0.into();
-        d["confirmed_sha256"] = sha.into();
+        d["confirmed_sha256"] = if flashable { sha.into() } else { serde_json::Value::Null };
         d["baseline"] = serde_json::json!({
             "retry_a": fb.retry_a, "retry_b": fb.retry_b,
             "unbootable_a": fb.unbootable_a, "unbootable_b": fb.unbootable_b,
             "critical": fb.critical, "product": fb.product, "captured": stamp(),
         });
-        push_event(d, &format!("CONFIRMED ram-boot of {sha} - cradle"))
+        push_event(d, &format!("CONFIRMED ram-boot of {sha}{} - cradle", if flashable { "" } else { " (a recovery: not to be flashed)" }))
+    })
+}
+
+/// The image confirmed for flashing taken back (a recovery's, confirmed by
+/// an older cradle).
+pub fn unconfirm_flashing(serial: &str, why: &str) -> Result<(), String> {
+    edit(serial, |d| {
+        d["confirmed_sha256"] = serde_json::Value::Null;
+        push_event(d, &format!("flash confirmation withdrawn: {why} - cradle"))
     })
 }
