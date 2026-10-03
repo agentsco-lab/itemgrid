@@ -40,6 +40,7 @@ fn main() {
         Some("confirm") => cmd_confirm(&args[1..]),
         Some("ramboot") => cmd_ramboot(&args[1..]),
         Some("recovery-exit") => cmd_recovery_exit(),
+        Some("brake") => cmd_brake(),
         Some("club") => cmd_club(&args[1..]),
         Some("register") => cmd_register(),
         Some("restore") => cmd_restore(&args[1..]),
@@ -459,6 +460,22 @@ fn cmd_ramboot(args: &[String]) -> i32 {
     }
 }
 
+fn cmd_brake() -> i32 {
+    // The parking brake armed from Linux: a surprise restart stops in the
+    // bootloader. Also what ends a way back finished by hand.
+    let Some(host) = linux() else { return 1 };
+    match cradle_core::ramboot::arm_brake_linux(&host) {
+        Ok(()) => {
+            println!("parking brake armed: the next restart stops in the bootloader");
+            0
+        }
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            1
+        }
+    }
+}
+
 fn cmd_recovery_exit() -> i32 {
     // The phone is in the recovery: no Linux to ask its serial; the last
     // one backed up or seen in the state is it.
@@ -753,6 +770,7 @@ fn usage() {
     println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go;");
     println!("               a TWRP image, or --recovery, is awaited in the recovery)");
     println!("  recovery-exit  out of the recovery, back into Linux");
+    println!("  brake        arm the parking brake (misc): the next restart stops in the bootloader");
     println!("  club         the Duo owners' club: club token (paste one from the site), club forget");
     println!("  register     this Duo's number in the club (00001...), written onto the phone");
     println!("  android      the plan for returning to the phone's stock Android (reads only);");

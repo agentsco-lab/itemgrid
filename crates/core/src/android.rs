@@ -441,8 +441,6 @@ pub fn start(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), S
 /// put back from the newest full backup - in parts, each checked on the
 /// phone - misc cleared, and the port started from its slot.
 pub fn back(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
     let full = crate::backup::list(Some(serial)).into_iter().find(|b| b.manifest.kind == Kind::Full).ok_or("no whole-system backup of this phone")?;
     let slot = full.manifest.slot.trim_start_matches('_').chars().next().unwrap_or('a');
     let twrp = crate::full::twrp().ok_or("no TWRP image")?;
@@ -467,49 +465,8 @@ pub fn back(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), St
     let image = full.manifest.items.iter().find(|i| i.file == "rootfs.img.gz").ok_or("the backup has no rootfs image")?;
     let file = std::fs::File::open(full.dir.join(&image.file)).map_err(|e| e.to_string())?;
     let mut dec = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(file));
-    let part = 512usize << 20;
-    let mut buf = vec![0u8; part];
-    let mut whole = Sha256::new();
-    let (mut index, mut total, mut sent) = (0u64, 0u64, 0u64);
-    crate::full::adb_shell(serial, "rm -f /tmp/ud/rootfs.img && touch /tmp/ud/rootfs.img")?;
-    loop {
-        let mut filled = 0;
-        while filled < part {
-            let n = dec.read(&mut buf[filled..]).map_err(|e| format!("the backup's image: {e}"))?;
-            if n == 0 {
-                break;
-            }
-            filled += n;
-        }
-        if filled == 0 {
-            break;
-        }
-        let chunk = &buf[..filled];
-        whole.update(chunk);
-        total += filled as u64;
-        if chunk.iter().any(|b| *b != 0) {
-            let want = format!("{:x}", Sha256::digest(chunk));
-            let seek = index * 512;
-            let mut ok = false;
-            for _ in 0..3 {
-                crate::full::adb_send(serial, &format!("dd of=/tmp/ud/rootfs.img bs=1048576 seek={seek} 2>/dev/null"), &mut &chunk[..])?;
-                let there = crate::full::adb_shell(serial, &format!("dd if=/tmp/ud/rootfs.img bs=1048576 skip={seek} count={} 2>/dev/null | sha256sum | cut -d' ' -f1", filled.div_ceil(1 << 20)))?;
-                if there.trim() == want {
-                    ok = true;
-                    break;
-                }
-            }
-            if !ok {
-                return Err(format!("part {index} of the image did not arrive whole in three tries - the phone stays in TWRP; run back again"));
-            }
-            sent += filled as u64;
-        }
-        index += 1;
-        if index % 8 == 0 {
-            say(format!("  image: {} of it put back ({} sent)", crate::status::size_words(total / 1024), crate::status::size_words(sent / 1024)));
-        }
-    }
-    if format!("{:x}", whole.finalize()) != image.sha256 {
+    let (total, whole) = put_file(serial, "rootfs.img", &mut dec, "image", say)?;
+    if whole != image.sha256 {
         return Err("the backup's image does not match its manifest - stopping in TWRP".into());
     }
     crate::full::adb_shell(serial, &format!("truncate -s {total} /tmp/ud/rootfs.img && chmod 644 /tmp/ud/rootfs.img"))?;
@@ -525,8 +482,8 @@ pub fn back(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), St
     crate::full::adb_send(serial, "pigz -dc | tar -C /tmp/ud -xpf -", &mut f)?;
     if let Some(rest) = full.manifest.items.iter().find(|i| i.file == crate::full::REST) {
         say(format!("putting back the rest of userdata ({})", rest.source.trim_start_matches("/userdata: ")));
-        let mut f = std::fs::File::open(full.dir.join(&rest.file)).map_err(|e| e.to_string())?;
-        crate::full::adb_send(serial, "pigz -dc | tar -C /tmp/ud -xpf -", &mut f)?;
+        let f = std::fs::File::open(full.dir.join(&rest.file)).map_err(|e| e.to_string())?;
+        put_tree(serial, f, say)?;
     }
     crate::full::adb_shell(serial, "ln -sf /halium-system/var/lib/lxc/android/android-rootfs.img /tmp/ud/android-rootfs.img; sync; umount /tmp/ud")?;
 
@@ -577,4 +534,97 @@ pub fn port_without_system() -> bool {
 pub fn on_usb_quietly() -> Option<String> {
     let dirs = std::fs::read_dir(crate::backup::root()).ok()?;
     dirs.flatten().filter_map(|e| e.file_name().into_string().ok()).find(|s| crate::ramboot::usb_serial_present(s))
+}
+
+/// A file put onto userdata (mounted at /tmp/ud in TWRP) in 512 MB parts,
+/// each checked on the phone and sent again if it differs; parts all zeros
+/// left as holes. Returns its size and sha256.
+fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, label: &str, say: crate::ramboot::Say) -> Result<(u64, String), String> {
+    use sha2::{Digest, Sha256};
+    let path = format!("/tmp/ud/{name}");
+    let part = 512usize << 20;
+    let mut buf = vec![0u8; part];
+    let mut whole = Sha256::new();
+    let (mut index, mut total, mut sent) = (0u64, 0u64, 0u64);
+    crate::full::adb_shell(serial, &format!("rm -f '{path}' && touch '{path}'"))?;
+    loop {
+        let mut filled = 0;
+        while filled < part {
+            let n = from.read(&mut buf[filled..]).map_err(|e| format!("the backup's {name}: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled == 0 {
+            break;
+        }
+        let chunk = &buf[..filled];
+        whole.update(chunk);
+        total += filled as u64;
+        if chunk.iter().any(|b| *b != 0) {
+            let want = format!("{:x}", Sha256::digest(chunk));
+            let seek = index * 512;
+            let mut ok = false;
+            for _ in 0..3 {
+                // dd without conv= (TWRP's toybox has it disabled): it cuts
+                // the file at the seek, harmless as parts go in order.
+                crate::full::adb_send(serial, &format!("dd of='{path}' bs=1048576 seek={seek} 2>/dev/null"), &mut &chunk[..])?;
+                let there = crate::full::adb_shell(serial, &format!("dd if='{path}' bs=1048576 skip={seek} count={} 2>/dev/null | sha256sum | cut -d' ' -f1", filled.div_ceil(1 << 20)))?;
+                if there.trim() == want {
+                    ok = true;
+                    break;
+                }
+            }
+            if !ok {
+                return Err(format!("part {index} of {name} did not arrive whole in three tries - the phone stays in TWRP; run back again"));
+            }
+            sent += filled as u64;
+        }
+        index += 1;
+        if index % 8 == 0 {
+            say(format!("  {label}: {} of it put back ({} sent)", crate::status::size_words(total / 1024), crate::status::size_words(sent / 1024)));
+        }
+    }
+    crate::full::adb_shell(serial, &format!("truncate -s {total} '{path}'"))?;
+    Ok((total, format!("{:x}", whole.finalize())))
+}
+
+/// A tar.gz of userdata's top level put back. Not through tar in TWRP: its
+/// toybox tar writes a big file from a stream as empty and says all went
+/// well (an 8 GB image, 2026-10-04). Files go part by part, checked; links
+/// and folders made; modes and times set.
+fn put_tree(serial: &str, archive: std::fs::File, say: crate::ramboot::Say) -> Result<(), String> {
+    let mut tar = tar::Archive::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(archive)));
+    for entry in tar.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.path().map_err(|e| e.to_string())?.to_string_lossy().into_owned();
+        if name.contains('\'') || name.starts_with('/') || name.contains("..") {
+            return Err(format!("a strange name in the backup: {name}"));
+        }
+        let header = entry.header().clone();
+        let mode = header.mode().unwrap_or(0o644) & 0o7777;
+        let mtime = header.mtime().unwrap_or(0);
+        match header.entry_type() {
+            tar::EntryType::Directory => {
+                crate::full::adb_shell(serial, &format!("mkdir -p '/tmp/ud/{name}'"))?;
+            }
+            tar::EntryType::Symlink => {
+                let target = entry.link_name().map_err(|e| e.to_string())?.map(|t| t.to_string_lossy().into_owned()).unwrap_or_default();
+                crate::full::adb_shell(serial, &format!("ln -sfn '{target}' '/tmp/ud/{name}'"))?;
+                continue;
+            }
+            _ => {
+                let size = header.size().unwrap_or(0);
+                say(format!("putting back {name} ({})", crate::status::size_words(size / 1024)));
+                let (_, sha) = put_file(serial, &name, &mut entry, &name, say)?;
+                let there = crate::full::adb_shell(serial, &format!("sha256sum '/tmp/ud/{name}' | cut -d' ' -f1"))?;
+                if there.trim() != sha {
+                    return Err(format!("{name} on the phone differs from the backup - stopping in TWRP; run back again"));
+                }
+            }
+        }
+        crate::full::adb_shell(serial, &format!("chmod {mode:o} '/tmp/ud/{name}'; chown {}:{} '/tmp/ud/{name}'; touch -d @{mtime} '/tmp/ud/{name}' 2>/dev/null; true", header.uid().unwrap_or(0), header.gid().unwrap_or(0)))?;
+    }
+    Ok(())
 }
