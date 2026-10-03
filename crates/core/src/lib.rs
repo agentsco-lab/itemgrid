@@ -7,5 +7,6 @@ pub mod detect;
 pub mod guard;
 pub mod phone;
 pub mod status;
+pub mod update;
 
 pub use detect::{detect, Mode, Seen};

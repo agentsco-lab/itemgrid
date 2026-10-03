@@ -10,6 +10,7 @@ fn main() {
             0
         }
         Some("status") => cmd_status(),
+        Some("update") => cmd_update(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
             usage();
@@ -55,12 +56,32 @@ fn cmd_status() -> i32 {
     0
 }
 
+fn cmd_update(args: &[String]) -> i32 {
+    let build = !args.iter().any(|a| a == "--no-build");
+    let seen = cradle_core::detect();
+    if seen.mode != Mode::Linux {
+        eprintln!("cradle: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
+        return 1;
+    }
+    let start = std::time::Instant::now();
+    let result = cradle_core::update::update(&seen.via, build, &mut |step| {
+        println!("[{:>4.0}s] {}", start.elapsed().as_secs_f64(), step.words());
+    });
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            1
+        }
+    }
+}
+
 fn usage() {
     println!("cradle - look after a connected Surface Duo\n");
     println!("  status       what the phone is doing; on Linux its versions, battery, heat, space, failed services");
+    println!("  update       build item, install it, reboot, wait until it runs (--no-build: install what is built)");
     println!("\nComing next:");
     for (cmd, what) in [
-        ("update", "build item, install it, reboot, wait for the PIN"),
         ("logs", "the journal of this boot or one before, filtered, saved for a ticket"),
         ("shell / run", "a shell on the phone, or one command, with the dangerous ones refused"),
         ("reboot", "and wait until it is back"),
