@@ -5,11 +5,13 @@
 
 pub mod backup;
 pub mod detect;
+pub mod flash;
 pub mod guard;
 pub mod live;
 pub mod logs;
 pub mod phone;
 pub mod screenshot;
+pub mod slots;
 pub mod status;
 pub mod storage;
 pub mod update;

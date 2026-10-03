@@ -17,6 +17,7 @@ fn main() {
         Some("reboot") => cmd_reboot(),
         Some("backup") => cmd_backup(&args[1..]),
         Some("backups") => cmd_backups(),
+        Some("slots") => cmd_slots(),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
             eprintln!("cradle: '{other}' is not here yet");
@@ -276,6 +277,40 @@ fn cmd_backups() -> i32 {
     0
 }
 
+fn cmd_slots() -> i32 {
+    let Some(host) = linux() else { return 1 };
+    let slots = match cradle_core::slots::read(&host) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cradle: {e}");
+            return 1;
+        }
+    };
+    for s in &slots {
+        let mut flags = Vec::new();
+        if s.active {
+            flags.push("active".to_owned());
+        }
+        flags.push(if s.successful { "booted fine".into() } else { "never booted".into() });
+        if s.unbootable {
+            flags.push("UNBOOTABLE".into());
+        }
+        flags.push(format!("{} tries left", s.retries));
+        println!("Slot {}:  {}", s.name.to_ascii_uppercase(), flags.join(", "));
+        println!("         {}{}", s.image.clone().unwrap_or_else(|| "an image not known here".into()), if s.kernel.is_empty() { String::new() } else { format!(" · Linux {}", s.kernel) });
+    }
+    if let Ok(serial) = cradle_core::backup::serial(&host) {
+        let g = cradle_core::flash::gate(&serial);
+        println!(
+            "RAM boots: {} of {} unconfirmed - {}",
+            g.unconfirmed,
+            cradle_core::flash::MAX_UNCONFIRMED,
+            if g.open() { "the gate is open" } else { "the gate is CLOSED: confirm a good boot or reset it on purpose" }
+        );
+    }
+    0
+}
+
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
@@ -323,5 +358,6 @@ fn usage() {
     println!("  backup       back up to ~/cradle-backups: device data (once), boot chain, home and settings;");
     println!("               or one: device | boot | quick. Reads only.");
     println!("  backups      the backups on this computer");
+    println!("  slots        the two boot slots: their state and what is in them; the RAM boot gate");
     println!("  screenshot   both panels as one PNG ([FILE], ~/cradle-shots/ by default; --hinge keeps its strip)");
 }

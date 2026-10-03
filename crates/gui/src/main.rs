@@ -84,6 +84,7 @@ struct Ui {
     actions: gtk::Box,
     progress: gtk::ListBox,
     backup_progress: gtk::ListBox,
+    slots: gtk::ListBox,
     backups: gtk::ListBox,
     facts: gtk::Grid,
     storage: gtk::DrawingArea,
@@ -199,6 +200,14 @@ fn build(app: &adw::Application) {
     soft.append(&progress);
     actions.append(&soft);
 
+    // Slots: the two boot slots and what is in them, read only.
+    let slot_sec = section("Slots");
+    slot_sec.append(&body("The phone boots from one of two slots. Read from the phone's partition table; nothing here changes them."));
+    let slots = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
+    slots.append(&adw::ActionRow::builder().title("Reading the slots…").build());
+    slot_sec.append(&slots);
+    actions.append(&slot_sec);
+
     // Backups: reading only; restoring comes with flashing.
     let back = section("Backups");
     back.append(&body("Back up the boot chain and your home and settings to this computer - and, once, the device data no image can give back (radio calibration, IMEI, keys)."));
@@ -291,6 +300,7 @@ fn build(app: &adw::Application) {
         actions,
         progress,
         backup_progress,
+        slots,
         backups,
         facts,
         storage: storage.clone(),
@@ -473,6 +483,7 @@ fn show(ui: &Rc<Ui>, seen: &Seen, status: Option<Result<status::Status, String>>
         take_screens(ui, false);
         count_storage(ui);
         show_backups(ui);
+        show_slots(ui);
     }
 }
 
@@ -591,6 +602,60 @@ fn show_backups(ui: &Rc<Ui>) {
         row.add_suffix(&open);
         ui.backups.append(&row);
     }
+}
+
+/// The slots and the RAM boot gate, read off the main thread.
+fn show_slots(ui: &Rc<Ui>) {
+    let Some(host) = ui.state.borrow().host.clone() else { return };
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let read = gio::spawn_blocking(move || {
+            let slots = cradle_core::slots::read(&host)?;
+            let gate = cradle_core::backup::serial(&host).map(|s| cradle_core::flash::gate(&s)).ok();
+            Ok::<_, String>((slots, gate))
+        })
+        .await
+        .unwrap_or_else(|_| Err("the work stopped".into()));
+        while let Some(child) = ui.slots.first_child() {
+            ui.slots.remove(&child);
+        }
+        let (slots, gate) = match read {
+            Ok(r) => r,
+            Err(e) => {
+                ui.slots.append(&adw::ActionRow::builder().title("The slots were not read").subtitle(e).build());
+                return;
+            }
+        };
+        for s in &slots {
+            let mut state = Vec::new();
+            if s.active {
+                state.push("active".to_owned());
+            }
+            state.push(if s.successful { "booted fine".into() } else { "never booted".into() });
+            if s.unbootable {
+                state.push("marked unbootable".into());
+            }
+            state.push(format!("{} tries left", s.retries));
+            let what = s.image.clone().unwrap_or_else(|| "an image not known here".into());
+            let kernel = if s.kernel.is_empty() { String::new() } else { format!(" · Linux {}", s.kernel) };
+            let row = adw::ActionRow::builder()
+                .title(format!("Slot {} · {}", s.name.to_ascii_uppercase(), state.join(", ")))
+                .subtitle(format!("{what}{kernel}"))
+                .build();
+            let icon = if s.active { "emblem-ok-symbolic" } else if s.unbootable { "dialog-warning-symbolic" } else { "media-record-symbolic" };
+            row.add_prefix(&gtk::Image::from_icon_name(icon));
+            ui.slots.append(&row);
+        }
+        if let Some(g) = gate {
+            let max = cradle_core::flash::MAX_UNCONFIRMED;
+            let row = adw::ActionRow::builder()
+                .title(format!("RAM boots: {} of {max} unconfirmed", g.unconfirmed))
+                .subtitle(if g.open() { "The gate is open: an image can be tried from RAM." } else { "The gate is closed: a good boot must be confirmed, or the counter reset on purpose." })
+                .build();
+            row.add_prefix(&gtk::Image::from_icon_name(if g.open() { "changes-allow-symbolic" } else { "changes-prevent-symbolic" }));
+            ui.slots.append(&row);
+        }
+    });
 }
 
 /// The bottom bar on General only, with the phone there.
