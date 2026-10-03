@@ -230,8 +230,7 @@ fn build(app: &adw::Application) {
     let back_row = row();
     let backup = pill("Back Up Now");
     let restore = pill("Restore Backup…");
-    restore.set_sensitive(false);
-    restore.set_tooltip_text(Some("Coming with flashing: a RAM boot first, one change per boot"));
+    restore.set_tooltip_text(Some("A slot's boot chain put back from a backup - one slot at a time, a changed boot tried from RAM first"));
     back_row.append(&backup);
     back_row.append(&restore);
     back.append(&back_row);
@@ -379,6 +378,10 @@ fn build(app: &adw::Application) {
     join.connect_clicked({
         let ui = ui.clone();
         move |_| join_club(&ui)
+    });
+    restore.connect_clicked({
+        let ui = ui.clone();
+        move |_| choose_restore(&ui)
     });
     try_ram.connect_clicked({
         let ui = ui.clone();
@@ -810,6 +813,82 @@ enum Job {
     Reboot,
     Backup,
     RamBoot(std::path::PathBuf),
+    Restore(Box<cradle_core::restore::Plan>),
+}
+
+/// A boot chain to put back: the backup and the slot chosen, the plan made
+/// off the main thread (reading only), then asked.
+fn choose_restore(ui: &Rc<Ui>) {
+    let serial = ui.serial.borrow().clone();
+    let backups: Vec<cradle_core::backup::Backup> = cradle_core::backup::list(Some(&serial)).into_iter().filter(|b| b.manifest.kind == cradle_core::backup::Kind::Boot).collect();
+    if backups.is_empty() {
+        stopped(ui, "No boot-chain backup of this phone yet: Back Up Now makes one.");
+        return;
+    }
+    let names: Vec<String> = backups
+        .iter()
+        .map(|b| format!("{} · item {} · slot {} then", b.manifest.created.get(..16).unwrap_or(&b.manifest.created), b.manifest.item, b.manifest.slot.trim_start_matches('_').to_uppercase()))
+        .collect();
+    let backup_pick = gtk::DropDown::from_strings(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    let slot_pick = gtk::DropDown::from_strings(&["Slot A", "Slot B"]);
+    let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    fields.append(&gtk::Label::builder().label("Backup").xalign(0.0).css_classes(["dim-label"]).build());
+    fields.append(&backup_pick);
+    fields.append(&gtk::Label::builder().label("Slot").xalign(0.0).css_classes(["dim-label"]).margin_top(6).build());
+    fields.append(&slot_pick);
+    let dialog = adw::AlertDialog::new(Some("Restore a boot chain"), Some("boot, dtbo and vbmeta of one slot, from a backup. The other slot is not touched. Next shows what would be written - nothing is written yet."));
+    dialog.set_extra_child(Some(&fields));
+    dialog.add_responses(&[("cancel", "Cancel"), ("next", "Next")]);
+    dialog.set_default_response(Some("next"));
+    dialog.set_close_response("cancel");
+    let ui2 = ui.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "next" {
+            return;
+        }
+        let Some(host) = ui2.state.borrow().host.clone() else { return };
+        let backup = backups[backup_pick.selected() as usize].clone();
+        let slot = if slot_pick.selected() == 0 { 'a' } else { 'b' };
+        let ui3 = ui2.clone();
+        glib::spawn_future_local(async move {
+            let planned = gio::spawn_blocking(move || cradle_core::restore::plan(&host, &backup, slot, false)).await.unwrap_or_else(|_| Err("the work stopped".into()));
+            let plan = match planned {
+                Ok(p) => p,
+                Err(e) => {
+                    stopped(&ui3, &e);
+                    return;
+                }
+            };
+            let lines: Vec<String> = plan
+                .parts
+                .iter()
+                .map(|p| format!("{}: {}", p.partition, if p.differs { "differs - to be written" } else { "the same - left alone" }))
+                .collect();
+            let in_use = if plan.slot == plan.active_slot { "the slot in use: the phone restarts into it after" } else { "the spare slot: written and checked, not booted" };
+            if plan.writes().is_empty() {
+                stopped(&ui3, &format!("Slot {} already holds this backup - nothing to write.\n\n{}", plan.slot.to_ascii_uppercase(), lines.join("\n")));
+                return;
+            }
+            let body = format!(
+                "Slot {} - {in_use}.\n\n{}\n\nA changed boot is first booted from RAM; the chain as it is now is backed up; each partition is written and read back.",
+                plan.slot.to_ascii_uppercase(),
+                lines.join("\n")
+            );
+            let confirm = adw::AlertDialog::new(Some("Restore this boot chain?"), Some(&body));
+            confirm.add_responses(&[("cancel", "Cancel"), ("go", "Restore")]);
+            confirm.set_response_appearance("go", adw::ResponseAppearance::Destructive);
+            confirm.set_default_response(Some("cancel"));
+            confirm.set_close_response("cancel");
+            let ui4 = ui3.clone();
+            confirm.connect_response(None, move |_, response| {
+                if response == "go" {
+                    run_job(&ui4, Job::Restore(Box::new(plan.clone())));
+                }
+            });
+            confirm.present(Some(&ui3.window));
+        });
+    });
+    dialog.present(Some(&ui.window));
 }
 
 /// An image chosen to be tried from RAM: the checks that change nothing
@@ -949,11 +1028,11 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
     ui.actions.set_sensitive(false);
     // Each job's steps under its own section.
     let list = match job {
-        Job::Backup => ui.backup_progress.clone(),
+        Job::Backup | Job::Restore(_) => ui.backup_progress.clone(),
         Job::RamBoot(_) => ui.slots_progress.clone(),
         _ => ui.progress.clone(),
     };
-    let (backing_up, ram_boot) = (matches!(job, Job::Backup), matches!(job, Job::RamBoot(_)));
+    let (backing_up, ram_boot) = (matches!(job, Job::Backup), matches!(job, Job::RamBoot(_) | Job::Restore(_)));
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
@@ -967,6 +1046,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         match job {
             Job::Update => cradle_core::update::update(&host, true, &mut |step| say(step.words())),
             Job::Reboot => cradle_core::phone::reboot(&host, &mut |b| say(b.words())),
+            Job::Restore(plan) => cradle_core::restore::restore(&host, &plan, &mut |line| say(&line)),
             Job::RamBoot(path) => cradle_core::ramboot::ram_boot(&host, &path, cradle_core::ramboot::Expect::of(&path), &mut |line| say(&line)),
             Job::Backup => {
                 use cradle_core::backup::{self, Kind};
