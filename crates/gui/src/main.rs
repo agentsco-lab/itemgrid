@@ -85,6 +85,7 @@ struct Ui {
     progress: gtk::ListBox,
     backup_progress: gtk::ListBox,
     slots: gtk::ListBox,
+    slots_progress: gtk::ListBox,
     backups: gtk::ListBox,
     facts: gtk::Grid,
     storage: gtk::DrawingArea,
@@ -206,6 +207,14 @@ fn build(app: &adw::Application) {
     let slots = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
     slots.append(&adw::ActionRow::builder().title("Reading the slots…").build());
     slot_sec.append(&slots);
+    let slot_row = row();
+    let try_ram = pill("Try an Image from RAM…");
+    try_ram.set_tooltip_text(Some("fastboot boot: the image runs once, nothing is flashed, the slots stay as they are"));
+    slot_row.append(&try_ram);
+    slot_sec.append(&slot_row);
+    let slots_progress = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
+    slots_progress.set_visible(false);
+    slot_sec.append(&slots_progress);
     actions.append(&slot_sec);
 
     // Backups: reading only; restoring comes with flashing.
@@ -301,6 +310,7 @@ fn build(app: &adw::Application) {
         progress,
         backup_progress,
         slots,
+        slots_progress,
         backups,
         facts,
         storage: storage.clone(),
@@ -355,6 +365,10 @@ fn build(app: &adw::Application) {
     reboot.connect_clicked({
         let ui = ui.clone();
         move |_| ask(&ui, "Restart the phone?", "Enter the PIN when it is back.", "Restart", Job::Reboot)
+    });
+    try_ram.connect_clicked({
+        let ui = ui.clone();
+        move |_| choose_ram_image(&ui)
     });
     backup.connect_clicked({
         let ui = ui.clone();
@@ -764,11 +778,84 @@ fn take_screens(ui: &Rc<Ui>, save: bool) {
     });
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Job {
     Update,
     Reboot,
     Backup,
+    RamBoot(std::path::PathBuf),
+}
+
+/// An image chosen to be tried from RAM: the checks that change nothing
+/// first, off the main thread; then what they found and the plan, asked.
+fn choose_ram_image(ui: &Rc<Ui>) {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Boot images"));
+    filter.add_pattern("*.img");
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    let chooser = gtk::FileDialog::builder().title("Choose a boot image to try from RAM").filters(&filters).modal(true).build();
+    if let Some(out) = cradle_core::flash::port_tree().map(|t| t.join("out")) {
+        chooser.set_initial_folder(Some(&gio::File::for_path(out)));
+    }
+    let ui = ui.clone();
+    chooser.open(Some(&ui.window.clone()), gio::Cancellable::NONE, move |picked| {
+        let Some(path) = picked.ok().and_then(|f| f.path()) else { return };
+        let Some(host) = ui.state.borrow().host.clone() else { return };
+        let ui = ui.clone();
+        glib::spawn_future_local(async move {
+            let p = path.clone();
+            let checked = gio::spawn_blocking(move || {
+                let (img, serial, slot) = cradle_core::ramboot::preflight(&host, &p)?;
+                let gate = cradle_core::flash::gate(&serial);
+                Ok::<_, String>((img, slot, gate))
+            })
+            .await
+            .unwrap_or_else(|_| Err("the work stopped".into()));
+            let (img, slot, gate) = match checked {
+                Ok(c) => c,
+                Err(e) => {
+                    stopped(&ui, &e);
+                    return;
+                }
+            };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("the image").to_owned();
+            let body = format!(
+                "{name}\nheader v2, ARM64 kernel, DTB, Android {}, sha {}…\n\nThe phone booted from slot {}; RAM boots {} of {} unconfirmed; battery fine.\n\n\
+                 In order, each a stop if it fails:\n\
+                 1. the parking brake armed in misc, read back\n\
+                 2. the phone into the bootloader (about a minute)\n\
+                 3. in fastboot: the same phone, unlocked, the same slot, its health\n\
+                 4. misc erased, the brake flashed again\n\
+                 5. the attempt counted, the image booted from RAM - nothing flashed\n\
+                 6. Linux awaited, the boot confirmed. Not back: stop - never the same image again.",
+                img.os_version,
+                &img.sha256[..16],
+                slot.to_ascii_uppercase(),
+                gate.unconfirmed,
+                cradle_core::flash::MAX_UNCONFIRMED
+            );
+            let dialog = adw::AlertDialog::new(Some("Boot this image from RAM?"), Some(&body));
+            dialog.add_responses(&[("cancel", "Cancel"), ("go", "Boot from RAM")]);
+            dialog.set_response_appearance("go", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+            let ui2 = ui.clone();
+            dialog.connect_response(None, move |_, response| {
+                if response == "go" {
+                    run_job(&ui2, Job::RamBoot(path.clone()));
+                }
+            });
+            dialog.present(Some(&ui.window));
+        });
+    });
+}
+
+/// A stop, said so it cannot be missed.
+fn stopped(ui: &Ui, why: &str) {
+    let dialog = adw::AlertDialog::new(Some("Stopped"), Some(why));
+    dialog.add_response("ok", "OK");
+    dialog.present(Some(&ui.window));
 }
 
 /// Asks before an action that takes the phone away for a minute.
@@ -780,7 +867,7 @@ fn ask(ui: &Rc<Ui>, heading: &str, body: &str, yes: &str, job: Job) {
     let ui2 = ui.clone();
     dialog.connect_response(None, move |_, response| {
         if response == "go" {
-            run_job(&ui2, job);
+            run_job(&ui2, job.clone());
         }
     });
     dialog.present(Some(&ui.window));
@@ -792,7 +879,12 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
     ui.state.borrow_mut().busy = true;
     ui.actions.set_sensitive(false);
     // Each job's steps under its own section.
-    let list = if matches!(job, Job::Backup) { ui.backup_progress.clone() } else { ui.progress.clone() };
+    let list = match job {
+        Job::Backup => ui.backup_progress.clone(),
+        Job::RamBoot(_) => ui.slots_progress.clone(),
+        _ => ui.progress.clone(),
+    };
+    let (backing_up, ram_boot) = (matches!(job, Job::Backup), matches!(job, Job::RamBoot(_)));
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
@@ -806,6 +898,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         match job {
             Job::Update => cradle_core::update::update(&host, true, &mut |step| say(step.words())),
             Job::Reboot => cradle_core::phone::reboot(&host, &mut |b| say(b.words())),
+            Job::RamBoot(path) => cradle_core::ramboot::ram_boot(&host, &path, &mut |line| say(&line)),
             Job::Backup => {
                 use cradle_core::backup::{self, Kind};
                 // The device data once; the boot chain and home each time.
@@ -845,12 +938,16 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         ui.state.borrow_mut().busy = false;
         ui.state.borrow_mut().pictured = false;
         ui.actions.set_sensitive(true);
-        let toast = match (&result, job) {
-            (Ok(()), Job::Backup) => adw::Toast::new("Backed up"),
-            (Ok(()), _) => adw::Toast::new("Done: enter the PIN on the phone"),
-            (Err(e), _) => adw::Toast::new(e),
+        if let (Err(e), true) = (&result, ram_boot) {
+            stopped(&ui, e);
+        }
+        let toast = match &result {
+            Ok(()) if backing_up => adw::Toast::new("Backed up"),
+            Ok(()) => adw::Toast::new("Done: enter the PIN on the phone"),
+            Err(e) => adw::Toast::new(e),
         };
         show_backups(&ui);
+        show_slots(&ui);
         toast.set_timeout(6);
         ui.toasts.add_toast(toast);
         look(&ui);
