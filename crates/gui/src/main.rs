@@ -151,6 +151,8 @@ struct Ui {
     name_sub: gtk::Label,
     battery: gtk::Label,
     software: gtk::Label,
+    /// Microsoft's packages on this computer, in a line.
+    stock_line: gtk::Label,
     /// The job under way, told.
     card: Rc<card::Card>,
     /// Where the phone is when it is not in Linux, and what can be done.
@@ -350,8 +352,13 @@ fn build(app: &adw::Application) {
     android.append(&body("Stock Android can come back for a while. Cradle backs everything up first and tests the way back, then clears Linux's data and starts Android. Back to Linux puts it all back from the backup."));
     let android_row = row();
     let to_android = pill("Return to Android…");
+    let get_android = pill("Get Android from Microsoft…");
+    get_android.set_tooltip_text(Some("Microsoft's own package for this Duo, by its serial number: the stock kernel for the return, and a full repair"));
     android_row.append(&to_android);
+    android_row.append(&get_android);
     android.append(&android_row);
+    let stock_line = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim-label", "caption"]).build();
+    android.append(&stock_line);
     actions.append(&android);
 
     // Screen.
@@ -434,6 +441,7 @@ fn build(app: &adw::Application) {
         name_sub,
         battery,
         software,
+        stock_line,
         card: card.clone(),
         mode,
         mode_icon,
@@ -525,6 +533,10 @@ fn build(app: &adw::Application) {
                 Job::FullBackup,
             )
         }
+    });
+    get_android.connect_clicked({
+        let ui = ui.clone();
+        move |_| get_android_from_microsoft(&ui)
     });
     to_android.connect_clicked({
         let ui = ui.clone();
@@ -954,6 +966,11 @@ fn count_storage(ui: &Rc<Ui>) {
 /// until it is.
 fn show_backups(ui: &Rc<Ui>) {
     use cradle_core::backup::{self, Kind};
+    let pkgs = cradle_core::stock::packages();
+    ui.stock_line.set_label(&match pkgs.last() {
+        Some(p) => format!("Microsoft's Android {} (security patch {}) is on this computer.", p.build, p.security_patch),
+        None => "Microsoft's package is not on this computer yet.".to_owned(),
+    });
     while let Some(child) = ui.backups.first_child() {
         ui.backups.remove(&child);
     }
@@ -1176,6 +1193,8 @@ enum Job {
     AndroidGo(Box<cradle_core::android::Plan>),
     AndroidStart(String),
     AndroidBack(String),
+    /// Microsoft's package from a link, then its boot chain taken out.
+    StockDownload(String, String),
 }
 
 impl Job {
@@ -1192,6 +1211,7 @@ impl Job {
             Job::AndroidGo(_) => "android-go",
             Job::AndroidStart(_) => "android-start",
             Job::AndroidBack(_) => "android-back",
+            Job::StockDownload(..) => "stock-download",
         }
     }
 }
@@ -1446,6 +1466,12 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
             }
             Job::AndroidStart(serial) => cradle_core::android::start(&host, &serial, &mut say),
             Job::AndroidBack(serial) => cradle_core::android::back(&host, &serial, &mut say),
+            Job::StockDownload(url, label) => (|| {
+                say(format!("downloading {label}"));
+                let pkg = cradle_core::stock::download(&url, &mut |done, whole| say(format!("  downloaded: {} of {} MB", done >> 20, whole >> 20)))?;
+                cradle_core::stock::boot_chain(&pkg, &mut say)?;
+                Ok(())
+            })(),
             Job::Backup => (|| {
                 use cradle_core::backup::{self, Kind};
                 // The device data once; the boot chain and home each time.
@@ -1492,6 +1518,96 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         show_slots(&ui);
         look(&ui);
     });
+}
+
+/// Microsoft's package for this Duo: Microsoft's page in a window of its own
+/// (its sign-in kept for next time); once signed in, Cradle asks for the
+/// Duo by its serial, takes the link from the answer, and downloads it as a
+/// job on the card.
+fn get_android_from_microsoft(ui: &Rc<Ui>) {
+    use webkit::prelude::*;
+    let serial = {
+        let s = ui.serial.borrow().clone();
+        if s.is_empty() { ui.state.borrow().place.serial().unwrap_or_default().to_owned() } else { s }
+    };
+    if serial.is_empty() {
+        stopped(ui, "Cradle needs the phone connected to know its serial number.");
+        return;
+    }
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let session = webkit::NetworkSession::new(
+        home.join(".local/share/cradle/web").to_str(),
+        home.join(".cache/cradle/web").to_str(),
+    );
+    if let Some(cookies) = session.cookie_manager() {
+        cookies.set_persistent_storage(home.join(".local/share/cradle/web/cookies.sqlite").to_str().unwrap_or_default(), webkit::CookiePersistentStorage::Sqlite);
+    }
+    let web = webkit::WebView::builder().network_session(&session).vexpand(true).hexpand(true).build();
+    let note = gtk::Label::builder()
+        .label("Cradle fetches Android with Microsoft's own page. Sign in with your Microsoft account once - Cradle does the rest and remembers the sign-in.")
+        .wrap(true)
+        .xalign(0.0)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(10)
+        .margin_bottom(10)
+        .css_classes(["dim-label"])
+        .build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&note);
+    content.append(&web);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&content));
+    let dialog = adw::Dialog::builder().title("Android from Microsoft").content_width(960).content_height(720).child(&view).build();
+    let asked = Rc::new(std::cell::Cell::new(false));
+    web.connect_load_changed({
+        let ui = ui.clone();
+        let dialog = dialog.clone();
+        let note = note.clone();
+        let serial = serial.clone();
+        move |web, event| {
+            if event != webkit::LoadEvent::Finished || asked.get() {
+                return;
+            }
+            let on_page = web.uri().is_some_and(|u| u.starts_with(cradle_core::stock::RECOVERY_PAGE));
+            if !on_page {
+                note.set_label("Sign in with your Microsoft account. Cradle goes on by itself after that.");
+                return;
+            }
+            // Signed in, the page has the form: ask for this Duo with it.
+            let body = r#"
+                const input = document.querySelector('input[name="ProductSerial"]');
+                if (!input || !input.form) return "sign-in";
+                const data = new FormData(input.form);
+                data.set("ProductName", "Surface Duo");
+                data.set("ProductSerial", serial);
+                const answer = await fetch(location.pathname, { method: "POST", body: data, credentials: "same-origin" });
+                return await answer.text();
+            "#;
+            let args = glib::VariantDict::new(None);
+            args.insert("serial", &serial);
+            let (ui, dialog, note, asked) = (ui.clone(), dialog.clone(), note.clone(), asked.clone());
+            note.set_label("Asking Microsoft for this Duo's package…");
+            web.call_async_javascript_function(body, Some(&args.end()), None, None, gio::Cancellable::NONE, move |result| {
+                let text = result.ok().map(|v| v.to_str().to_string()).unwrap_or_default();
+                if text == "sign-in" || text.is_empty() {
+                    note.set_label("Sign in with your Microsoft account (Sign In on the page). Cradle goes on by itself after that.");
+                    return;
+                }
+                match cradle_core::stock::link_in(&text) {
+                    Some((url, label)) => {
+                        asked.set(true);
+                        dialog.close();
+                        run_job(&ui, Job::StockDownload(url, label));
+                    }
+                    None => note.set_label("Microsoft offered no Android package for this serial number. Is it a Surface Duo (1st gen)?"),
+                }
+            });
+        }
+    });
+    web.load_uri(cradle_core::stock::RECOVERY_PAGE);
+    dialog.present(Some(&ui.window));
 }
 
 /// Return to Android: the plan read off the main thread, then told plainly -

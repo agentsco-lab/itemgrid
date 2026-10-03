@@ -152,7 +152,7 @@ impl Card {
             .map(|i| match &ended {
                 Some(None) => 1.0,
                 _ if i < at => 1.0,
-                _ if i == at => journey::within(&stages[i], secs_in),
+                _ if i == at => lines.last().and_then(|l| journey::counted(l)).unwrap_or_else(|| journey::within(&stages[i], secs_in)),
                 _ => 0.0,
             })
             .collect();

@@ -99,6 +99,10 @@ pub fn stages(job: &str) -> Vec<Stage> {
             st("Putting the rest back", "Android apps' data and the other files go back.", "TWRP", &["putting back"], 200.0),
             st("Restarting into Linux", "The phone restarts into Linux - the first start takes a little longer. Enter the PIN when the lock screen appears.", "Restarting", &["clearing misc", "starting the port"], 120.0),
         ],
+        "stock-download" => vec![
+            st("Downloading Android from Microsoft", "Microsoft's own package for this Duo - about 2.6 GB - comes straight from Microsoft's servers, asked for by its serial number. A break is no loss: it goes on from where it stopped.", "Linux", &["downloading"], 600.0),
+            st("Checking and preparing", "The package is checked, and the stock boot chain taken out of it against the package's own hashes - so a return to Android never depends on a backup.", "Linux", &["taking boot out"], 8.0),
+        ],
         "android-trial" => vec![st("Testing the way back", "512 MB are sent to the phone and checked there.", "TWRP", &["trying the way back"], 30.0)],
         "restore" => vec![st("Restoring the boot chain", "A changed boot is tried from RAM first; then each partition is written and read back.", "Restarting", &[""], 180.0)],
         // backup and anything new: one stage.
@@ -118,6 +122,7 @@ pub fn title(job: &str) -> &'static str {
         "android-start" => "Starting Android",
         "android-back" => "Back to Linux",
         "android-trial" => "Testing the way back",
+        "stock-download" => "Getting Android from Microsoft",
         "restore" => "Restoring a boot chain",
         _ => "Backing up",
     }
@@ -130,6 +135,7 @@ pub fn after(job: &str) -> &'static str {
         "full-backup" => "Everything is on this computer. Enter the PIN on the phone.",
         "backup" => "The backup is on this computer.",
         "android-trial" => "The way back works.",
+        "stock-download" => "Microsoft's Android for this Duo is on this computer: Cradle uses it to return to Android, and to repair it.",
         _ => "Enter the PIN on the phone when the lock screen appears.",
     }
 }
@@ -151,6 +157,15 @@ pub fn locate(stages: &[Stage], lines: &[String]) -> usize {
         }
     }
     at
+}
+
+/// How far a step that counts says it is ("  downloaded: 812 of 2509 MB").
+pub fn counted(line: &str) -> Option<f64> {
+    let rest = line.trim_start().split_once(": ")?.1;
+    let (done, rest) = rest.split_once(" of ")?;
+    let whole = rest.split_whitespace().next()?;
+    let (d, w): (f64, f64) = (done.trim().parse().ok()?, whole.parse().ok()?);
+    (w > 0.0).then(|| (d / w).clamp(0.0, 1.0))
 }
 
 /// How far into a stage after `secs` there: quick at first, never quite

@@ -280,3 +280,101 @@ pub fn boot_chain(pkg: &Package, say: crate::ramboot::Say) -> Result<PathBuf, St
     }
     Ok(dir)
 }
+
+// ---- getting a package from Microsoft ----------------------------------------
+
+/// Microsoft's page: signed in there, a product and a serial give a link.
+pub const RECOVERY_PAGE: &str = "https://support.microsoft.com/en-us/surface-recovery-image";
+
+/// The page's answer read for the download link and what it names
+/// ("Surface Duo 128 - Android 12 - ATT - 2022.902.48").
+pub fn link_in(html: &str) -> Option<(String, String)> {
+    let at = html.find("https://surface.downloads.prss.microsoft.com/")?;
+    let end = at + html[at..].find('"')?;
+    let url = html[at..end].replace("&amp;", "&");
+    // The row's product cell, before the link.
+    let row = &html[..at];
+    let label = row.rsplit("<td").nth(1).map(|c| strip_tags(c).trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_default();
+    Some((url, label))
+}
+
+fn strip_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for c in s.chars() {
+        match c {
+            '<' => inside = true,
+            '>' => inside = false,
+            _ if !inside => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim_start_matches(|c: char| c != ' ' && !c.is_alphanumeric()).to_owned()
+}
+
+/// The file a link downloads to, by its name in the link.
+pub fn file_for(url: &str) -> Result<PathBuf, String> {
+    let name = url.split('?').next().and_then(|u| u.rsplit('/').next()).filter(|n| n.ends_with(".zip") && !n.contains(['/', '\\'])).ok_or("the link does not name a zip")?;
+    Ok(packages_dir().join(name))
+}
+
+/// A package downloaded from a link (resumed if a part is here already),
+/// its size checked, then read as a Duo package. `progress` hears bytes so
+/// far and the whole.
+pub fn download(url: &str, progress: &mut dyn FnMut(u64, u64)) -> Result<Package, String> {
+    use std::io::Write;
+    let path = file_for(url)?;
+    if let Ok(pkg) = read(&path) {
+        return Ok(pkg);
+    }
+    std::fs::create_dir_all(packages_dir()).map_err(|e| e.to_string())?;
+    let part = path.with_extension("zip.part");
+    let have = part.metadata().map(|m| m.len()).unwrap_or(0);
+    let agent = ureq::Agent::config_builder().timeout_global(None).build().new_agent();
+    let mut req = agent.get(url);
+    if have > 0 {
+        req = req.header("Range", &format!("bytes={have}-"));
+    }
+    let resp = req.call().map_err(|e| format!("Microsoft's server: {e} - the link may have expired (they last ten minutes); ask for it again"))?;
+    let resumed = resp.status() == 206;
+    let rest: u64 = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let (mut done, whole) = if resumed { (have, have + rest) } else { (0, rest) };
+    let mut file = std::fs::OpenOptions::new().create(true).write(true).append(resumed).truncate(!resumed).open(&part).map_err(|e| e.to_string())?;
+    let mut body = resp.into_body().into_reader();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut last = std::time::Instant::now();
+    loop {
+        let n = body.read(&mut buf).map_err(|e| format!("downloading: {e} - run it again to go on from here"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        done += n as u64;
+        if last.elapsed().as_millis() > 300 {
+            progress(done, whole);
+            last = std::time::Instant::now();
+        }
+    }
+    file.sync_all().map_err(|e| e.to_string())?;
+    progress(done, whole);
+    if whole > 0 && done != whole {
+        return Err(format!("the download stopped at {} of {} MB - run it again to go on", done >> 20, whole >> 20));
+    }
+    std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
+    read(&path).map_err(|e| {
+        let _ = std::fs::remove_file(&path);
+        format!("what came is not a Duo package: {e}")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_link_is_found_in_microsofts_answer() {
+        let html = r#"<table><tr><td>Surface Duo 128 - Android 12 - ATT - 2022.902.48</td><td><a href="https://surface.downloads.prss.microsoft.com/dbazure/ota_b1-12-customer_att_2022.902.48.zip?t=x&amp;P1=1">Download image</a></td></tr></table>"#;
+        let (url, label) = super::link_in(html).unwrap();
+        assert_eq!(url, "https://surface.downloads.prss.microsoft.com/dbazure/ota_b1-12-customer_att_2022.902.48.zip?t=x&P1=1");
+        assert_eq!(label, "Surface Duo 128 - Android 12 - ATT - 2022.902.48");
+        assert!(super::file_for(&url).unwrap().ends_with("ota_b1-12-customer_att_2022.902.48.zip"));
+    }
+}
