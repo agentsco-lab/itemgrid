@@ -235,6 +235,9 @@ pub type Say<'a> = &'a mut dyn FnMut(String);
 pub enum Expect {
     Linux,
     Recovery,
+    /// The phone's stock Android (android.rs): up when the phone has left
+    /// fastboot and shows on USB as itself again.
+    Android,
 }
 
 impl Expect {
@@ -259,6 +262,46 @@ fn adb(args: &[&str], limit: Duration) -> Result<String, String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Whether the phone is in fastboot now.
+pub fn in_fastboot(serial: &str) -> bool {
+    fastboot(&["devices"], Duration::from_secs(10)).is_ok_and(|o| o.lines().any(|l| l.starts_with(serial)))
+}
+
+/// Waits for the phone in fastboot, up to `secs`.
+pub fn wait_fastboot(serial: &str, secs: u64) -> Result<(), String> {
+    let start = Instant::now();
+    while !in_fastboot(serial) {
+        if start.elapsed() > Duration::from_secs(secs) {
+            return Err(format!("the phone did not reach fastboot in {secs} s - look at its screen"));
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    Ok(())
+}
+
+/// Stock Android up: the phone out of fastboot, and on USB as itself - over
+/// adb (once its debugging is allowed), or any USB device whose serial
+/// number is this phone's. Not by vendor id: other Microsoft hardware (a
+/// Kinect, say) shares 045e.
+fn android_up(serial: &str) -> bool {
+    if in_fastboot(serial) {
+        return false;
+    }
+    let adb_sees = adb(&["devices"], Duration::from_secs(10)).is_ok_and(|o| o.lines().any(|l| l.starts_with(serial) && !l.contains("recovery")));
+    adb_sees || usb_serial_present(serial)
+}
+
+/// A USB device with this serial number attached.
+fn usb_serial_present(serial: &str) -> bool {
+    std::fs::read_dir("/sys/bus/usb/devices").is_ok_and(|d| d.flatten().any(|e| std::fs::read_to_string(e.path().join("serial")).is_ok_and(|s| s.trim() == serial)))
+}
+
+/// From the recovery or Android (adb) into the bootloader.
+pub fn adb_to_bootloader(serial: &str) -> Result<(), String> {
+    adb(&["-s", serial, "reboot", "bootloader"], Duration::from_secs(20))?;
+    wait_fastboot(serial, 120)
 }
 
 /// Whether this phone is in recovery over adb.
@@ -364,6 +407,15 @@ pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<()
         std::thread::sleep(Duration::from_secs(2));
     }
 
+    boot_in_fastboot(host, &serial, slot, image, &img, expect, say)
+}
+
+/// The phone in fastboot (whatever brought it there): checked to be this
+/// phone, on `slot`, healthy; misc erased and the brake flashed; the attempt
+/// counted; the image booted from RAM; what it boots into awaited and the
+/// boot confirmed. `host`: where Linux would answer, for Expect::Linux.
+pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img: &Image, expect: Expect, say: Say) -> Result<(), String> {
+    let serial = serial.to_owned();
     say("in fastboot: checking it is the same phone, and its health".into());
     let fb = probe()?;
     if fb.serial != serial {
@@ -418,6 +470,7 @@ pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<()
     let (what, up): (&str, Box<dyn Fn() -> bool>) = match expect {
         Expect::Linux => ("Linux", Box::new(|| crate::phone::answers_fresh(host))),
         Expect::Recovery => ("the recovery", Box::new(|| in_recovery(&serial))),
+        Expect::Android => ("Android", Box::new(|| android_up(&serial))),
     };
     say(format!("waiting for {what}"));
     let start = Instant::now();
@@ -427,6 +480,8 @@ pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<()
         }
         std::thread::sleep(Duration::from_secs(3));
     }
+    // Only an image that boots Linux is ever confirmed for flashing: TWRP
+    // never is (SAFETY.md), and the stock kernel only by its own step.
     crate::flash::confirm_ram_boot(&serial, &img.sha256, &fb, expect == Expect::Linux)?;
     say(format!("{what} is up: the RAM boot is confirmed"));
     say("re-arming the parking brake".into());
@@ -441,6 +496,9 @@ pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<()
             crate::flash::log(&serial, "parking brake armed from the recovery after the RAM boot - cradle")?;
             say("done: the phone is in the recovery (no touch there); cradle recovery-exit brings it back".into());
         }
+        // No root in stock Android: no brake from it. An unattended reset
+        // starts the port's kernel, still on the slot, or stops in fastboot.
+        Expect::Android => say("done: Android is starting - it formats its data and opens its setup on the phone".into()),
     }
     Ok(())
 }
