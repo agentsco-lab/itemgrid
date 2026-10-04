@@ -371,6 +371,7 @@ fn erase(serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
 /// The return to Android, by the plan. `confirm` must be confirm_word's
 /// word; `accept_losses`, the owner's word that what no backup has may go.
 pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crate::ramboot::Say) -> Result<(), String> {
+    let _ = crate::phone::keep_awake(host, true);
     if !plan.stops.is_empty() {
         return Err(format!("stopped before anything: {}", plan.stops.join("; ")));
     }

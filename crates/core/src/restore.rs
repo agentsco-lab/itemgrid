@@ -83,6 +83,7 @@ pub fn plan(host: &str, backup: &Backup, slot: char, rewrite: bool) -> Result<Pl
 
 /// The restore, by the plan. Only with the owner's go.
 pub fn restore(host: &str, plan: &Plan, say: crate::ramboot::Say) -> Result<(), String> {
+    let _ = crate::phone::keep_awake(host, true);
     let writes: Vec<Part> = plan.writes().into_iter().cloned().collect();
     if writes.is_empty() {
         say(format!("slot {} already holds this backup: nothing to write", plan.slot.to_ascii_uppercase()));

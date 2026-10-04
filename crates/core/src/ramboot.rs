@@ -408,6 +408,7 @@ pub fn preflight(host: &str, image: &Path) -> Result<(Image, String, char), Stri
 
 /// The whole RAM boot (steps 1-7). Only with the owner's go.
 pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<(), String> {
+    let _ = crate::phone::keep_awake(host, true);
     say("checking the image and the phone".into());
     let (img, serial, slot) = preflight(host, image)?;
     say(format!("image fine: header v2, ARM64 kernel, DTB, Android {}, sha {}", img.os_version, &img.sha256[..16]));

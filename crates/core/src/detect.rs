@@ -53,6 +53,10 @@ pub fn detect() -> Seen {
     if let Some(host) = crate::phone::hosts().into_iter().find(|h| crate::phone::answers(h)) {
         return Seen { mode: Mode::Linux, via: host };
     }
+    // Asleep: the link pings, ssh does not answer until it is woken.
+    if let Some(host) = crate::phone::hosts().into_iter().find(|h| crate::phone::pings(h) && crate::phone::wake(h)) {
+        return Seen { mode: Mode::Linux, via: host };
+    }
     if let Some(line) = lines("fastboot", &["devices"]).into_iter().next() {
         let serial = line.split_whitespace().next().unwrap_or_default().to_owned();
         return Seen { mode: Mode::Fastboot, via: serial };

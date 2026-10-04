@@ -55,6 +55,7 @@ fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
 /// installs it on the phone at `host` with apt, reboots it and waits until
 /// item runs again; `step` hears each stage.
 pub fn update(host: &str, build: bool, step: &mut dyn FnMut(Step)) -> Result<(), String> {
+    let _ = crate::phone::keep_awake(host, true);
     let tree = item_tree()?;
     if build {
         step(Step::Building);

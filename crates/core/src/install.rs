@@ -83,6 +83,7 @@ pub fn public_key() -> Result<String, String> {
 /// Erase and install, from Linux. `confirm` must be the phone's word
 /// (android::confirm_word).
 pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    let _ = crate::phone::keep_awake(host, true);
     use crate::full::adb_shell;
     let serial = crate::backup::serial(host)?;
     if confirm.trim() != crate::android::confirm_word(&serial) {

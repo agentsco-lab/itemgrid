@@ -231,3 +231,29 @@ pub(crate) fn upload(host: &str, local: &std::path::Path, remote: &str) -> Resul
     }
     Ok(())
 }
+
+/// A phone asleep (item sends it to sleep when it is left): ssh times out,
+/// though the USB link still answers a ping - a packet wakes it for a moment.
+/// Pings and a fresh ssh in turn, up to ~40 s, until it answers.
+pub fn wake(host: &str) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(40) {
+        let _ = std::process::Command::new("ping").args(["-c", "3", "-i", "0.2", "-W", "1", host]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        if ssh_with(host, 6, false).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the link to `host` answers a ping (the phone is there, maybe asleep).
+pub fn pings(host: &str) -> bool {
+    std::process::Command::new("ping").args(["-c", "1", "-W", "1", host]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// The phone kept from sleeping while Cradle works on it (a kernel wakelock,
+/// "cradle"), or let go. A reboot lets it go by itself.
+pub fn keep_awake(host: &str, on: bool) -> Result<(), String> {
+    let file = if on { "wake_lock" } else { "wake_unlock" };
+    run(host, &format!("echo cradle > /sys/power/{file}\n")).map(|_| ())
+}
