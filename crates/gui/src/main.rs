@@ -196,8 +196,6 @@ struct Ui {
     status_lines: gtk::Label,
     backups_row: adw::ActionRow,
     updates_row: adw::ActionRow,
-    /// The page on the right: the main one, or Repair & Reset.
-    right: gtk::Stack,
     repair_note: gtk::Label,
     /// What takes the phone out of Linux: the cable only (tracker #156).
     cable_only: Vec<(gtk::Button, Option<glib::GString>)>,
@@ -574,7 +572,6 @@ fn build(app: &adw::Application) {
         status_lines,
         backups_row,
         updates_row,
-        right: right.clone(),
         repair_note,
         cable_note,
         actions,
