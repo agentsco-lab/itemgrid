@@ -654,7 +654,10 @@ pub(crate) fn put_archive(serial: &str, archive: &Path, root: &str, say: crate::
     }
     let small = small.into_inner().map_err(|e| e.to_string())?;
     crate::full::adb_shell(serial, &format!("mkdir -p '{root}'"))?;
-    crate::full::adb_send(serial, &format!("tar -C '{root}' -xpf -"), &mut &small[..])?;
+    // From a file, not a pipe: from a pipe TWRP's tar cut a 1.3 MB file
+    // short and stopped there, quietly (2026-10-04).
+    crate::full::push_file(serial, &small, "/tmp/cradle-small.tar")?;
+    crate::full::adb_shell(serial, &format!("tar -C '{root}' -xpf /tmp/cradle-small.tar; rc=$?; rm -f /tmp/cradle-small.tar; exit $rc"))?;
     for (path, size, mode, uid, gid) in &big {
         say(format!("putting back {path} ({} MB)", size >> 20));
         let mut a = open()?;

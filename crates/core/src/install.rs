@@ -259,7 +259,7 @@ const BIG: u64 = 32 << 20;
 /// in TWRP: small files through tar, big ones part by part, every file's size
 /// checked after; the owner's password hash (the PIN) carried over.
 fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Say) -> Result<(), String> {
-    use crate::full::{adb_send, adb_shell};
+    use crate::full::adb_shell;
     let archive = quick.dir.join("home-etc.tar.gz");
     let open = || -> Result<tar::Archive<flate2::read::MultiGzDecoder<std::io::BufReader<std::fs::File>>>, String> {
         let f = std::fs::File::open(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
@@ -296,7 +296,8 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
     }
     let small = small.into_inner().map_err(|e| e.to_string())?;
     say(format!("putting back your files ({} MB, {} big)", small.len() >> 20, big.len()));
-    adb_send(serial, "tar -C /tmp/r -xpf -", &mut &small[..])?;
+    crate::full::push_file(serial, &small, "/tmp/cradle-small.tar")?;
+    adb_shell(serial, "tar -C /tmp/r -xpf /tmp/cradle-small.tar; rc=$?; rm -f /tmp/cradle-small.tar; exit $rc")?;
     for (path, size, mode, uid, gid) in &big {
         say(format!("putting back {path} ({} MB)", size >> 20));
         let mut a = open()?;

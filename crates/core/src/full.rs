@@ -313,3 +313,16 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     let _ = Command::new("adb").args(["-s", serial, "forward", "--remove", &format!("tcp:{port}")]).output();
     result
 }
+
+/// Bytes put at `to` in TWRP as a file, by adb push.
+pub(crate) fn push_file(serial: &str, data: &[u8], to: &str) -> Result<(), String> {
+    let tmp = std::env::temp_dir().join(format!("cradle-push-{}-{}", std::process::id(), data.len()));
+    std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
+    let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
+    let _ = std::fs::remove_file(&tmp);
+    let out = out?;
+    if !out.status.success() {
+        return Err(format!("adb push: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(())
+}
