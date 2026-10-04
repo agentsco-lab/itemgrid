@@ -2,8 +2,8 @@
 //!
 //! Simple by default: the Duo on the left; on the right one sentence on how
 //! it is (a coloured dot), one button for what to do now, backups, updates
-//! and the storage; Repair & Reset on a page of its own (all needing the
-//! cable). Developer Mode (the menu) shows what was here before - slots,
+//! and the storage; Settings (the menu) hold Repair & Reset - the backup,
+//! a reinstall, the whole system back, Android - and Developer Mode, which shows what was here before - slots,
 //! images from RAM, every kind of backup, the logs.
 //!
 //! Before the simple page, the window was:
@@ -242,7 +242,7 @@ fn build(app: &adw::Application) {
     header.pack_end(&refresh);
     // The menu: Developer Mode.
     let menu = gio::Menu::new();
-    menu.append(Some("Developer Mode"), Some("win.developer"));
+    menu.append(Some("Settings"), Some("win.settings"));
     let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Menu").build();
     header.pack_end(&menu_button);
 
@@ -454,8 +454,6 @@ fn build(app: &adw::Application) {
     let updates_row = adw::ActionRow::builder().title("Updates").build();
     home_list.append(&updates_row);
     home.append(&home_list);
-    let to_repair = gtk::Button::builder().label("Repair & Reset…").css_classes(["flat"]).halign(gtk::Align::Start).build();
-    home.append(&to_repair);
     home.set_visible(false);
     sections.append(&home);
     sections.append(&linux_only);
@@ -466,7 +464,13 @@ fn build(app: &adw::Application) {
     let repair = gtk::Box::new(gtk::Orientation::Vertical, 16);
     let repair_back = gtk::Button::builder().icon_name("go-previous-symbolic").css_classes(["flat", "circular"]).halign(gtk::Align::Start).tooltip_text("Back").build();
     repair.append(&repair_back);
-    repair.append(&gtk::Label::builder().label("Repair & Reset").xalign(0.0).css_classes(["status-title"]).build());
+    repair.append(&gtk::Label::builder().label("Settings").xalign(0.0).css_classes(["status-title"]).build());
+    // Developer Mode: what the simple page leaves out.
+    let dev_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+    let dev_row = adw::SwitchRow::builder().title("Developer Mode").subtitle("Slots, images from RAM, every kind of backup, item built from your tree, the logs.").active(developer_mode()).build();
+    dev_list.append(&dev_row);
+    repair.append(&dev_list);
+    repair.append(&gtk::Label::builder().label("Repair & Reset").xalign(0.0).css_classes(["section-title"]).margin_top(10).build());
     repair.append(&body("Things to do once in a while. Each asks before it starts; all but the backup need the USB cable."));
     let repair_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     let repair_row = |title: &str, text: &str, button: &str, destructive: bool| {
@@ -615,28 +619,27 @@ fn build(app: &adw::Application) {
         }
     });
 
-    // Developer Mode, kept between runs.
-    let developer = gio::SimpleAction::new_stateful("developer", None, &developer_mode().to_variant());
-    developer.connect_activate({
+    // Settings (the menu): Developer Mode, kept between runs, and Repair &
+    // Reset.
+    let settings = gio::SimpleAction::new("settings", None);
+    settings.connect_activate({
+        let right = right.clone();
+        move |_, _| right.set_visible_child_name("repair")
+    });
+    window.add_action(&settings);
+    dev_row.connect_active_notify({
         let ui = Rc::downgrade(&ui);
-        move |action, _| {
-            let on = !action.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
-            action.set_state(&on.to_variant());
-            set_developer_mode(on);
+        move |row| {
+            set_developer_mode(row.is_active());
             if let Some(ui) = ui.upgrade() {
                 ui.state.borrow_mut().pictured = false;
                 look(&ui);
             }
         }
     });
-    window.add_action(&developer);
     back_up_now.connect_clicked({
         let ui = ui.clone();
         move |_| run_job(&ui, Job::Backup)
-    });
-    to_repair.connect_clicked({
-        let right = right.clone();
-        move |_| right.set_visible_child_name("repair")
     });
     repair_back.connect_clicked({
         let right = right.clone();
@@ -1018,7 +1021,6 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     ui.switcher.set_visible(false);
     ui.linux_only.set_visible(false);
     ui.home.set_visible(false);
-    ui.right.set_visible_child_name("main");
     ui.mode.set_visible(true);
     bottom_shown(ui);
     for s in &ui.screens {
