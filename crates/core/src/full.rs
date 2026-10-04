@@ -171,6 +171,8 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
     let _ = crate::phone::keep_awake(host, true);
     let twrp = twrp().ok_or("no TWRP image: put surfaceduo1-twrp.img in ~/.local/share/cradle/twrp/")?;
     let f = crate::backup::facts(host)?;
+    // The fingers known now, to see them back after a way back.
+    let fingers = crate::phone::fingers(host);
     // Room here: the used part of userdata, gzipped, with room to spare.
     let used_kib: u64 = crate::phone::run(host, "df -Pk /userdata | awk 'NR==2 {print $3}'\n")?.trim().parse().unwrap_or(0);
     let rootfs_used_kib: u64 = crate::phone::run(host, "df -Pk / | awk 'NR==2 {print $3}'\n")?.trim().parse().unwrap_or(0);
@@ -241,7 +243,7 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
         }
     };
     back?;
-    let backup = Backup { dir, manifest: Manifest { kind: Kind::Full, created, serial: f.serial.clone(), slot: f.slot, item: f.item, port: f.port, kernel: f.kernel, items, keep: false, off_computer: false } };
+    let backup = Backup { dir, manifest: Manifest { kind: Kind::Full, created, serial: f.serial.clone(), slot: f.slot, item: f.item, port: f.port, kernel: f.kernel, items, keep: false, off_computer: false, fingers } };
     backup.save()?;
     say(format!("whole system backed up: {}", crate::status::size_words(backup.size() / 1024)));
     crate::backup::prune(&f.serial, Kind::Full, say);

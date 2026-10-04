@@ -15,6 +15,7 @@ echo "item_built=$(date -r /usr/libexec/item/item-compositor '+%F %R' 2>/dev/nul
 echo "item_running=$(systemctl is-active item.service 2>/dev/null)"
 echo "port=$(v adaptation-droidian-surfaceduo)"
 echo "sensorfw=$(v sensorfw-qt6)"
+echo "fingers=$(busctl --system call org.droidian.fingerprint /org/droidian/fingerprint org.droidian.fingerprint GetAll 2>/dev/null | awk '{print $2}')"
 b=/sys/class/power_supply/battery
 echo "battery=$(cat $b/capacity 2>/dev/null)"
 echo "battery_status=$(cat $b/status 2>/dev/null)"
@@ -40,6 +41,8 @@ pub struct Status {
     pub item_running: bool,
     pub port: String,
     pub sensorfw: String,
+    /// Fingers the reader knows, if its daemon answered.
+    pub fingers: Option<u32>,
     pub battery: Option<u32>,
     pub battery_status: String,
     /// Degrees Celsius.
@@ -104,6 +107,7 @@ pub fn read(host: &str) -> Result<Status, String> {
     s.item_running = get("item_running") == "active";
     s.port = get("port");
     s.sensorfw = get("sensorfw");
+    s.fingers = get("fingers").parse().ok();
     s.battery = get("battery").parse().ok();
     s.battery_status = get("battery_status");
     s.battery_temp = get("battery_temp").parse::<f64>().ok().map(|t| t / 10.0);

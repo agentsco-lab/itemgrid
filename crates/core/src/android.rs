@@ -524,8 +524,32 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
     crate::ramboot::arm_brake_linux(host)?;
     crate::flash::log(serial, "back in Linux, parking brake armed - cradle")?;
     let _ = std::fs::remove_file(guest_path(serial));
+    fingers_back(host, full.manifest.fingers, say);
     say("Linux is back: enter the PIN on the phone".into());
     Ok(())
+}
+
+/// The fingers as before the way back: the reader's daemon asked once it is
+/// up (it starts with the Android container); fewer is said, not an error.
+fn fingers_back(host: &str, before: Option<u32>, say: crate::ramboot::Say) {
+    let Some(before) = before.filter(|n| *n > 0) else { return };
+    let start = std::time::Instant::now();
+    let now = loop {
+        if let Some(n) = crate::phone::fingers(host) {
+            // Its list is read a moment after it answers.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            break crate::phone::fingers(host).or(Some(n));
+        }
+        if start.elapsed() > std::time::Duration::from_secs(120) {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    };
+    match now {
+        Some(n) if n >= before => say(format!("fingerprints back: {n}")),
+        Some(n) => say(format!("the fingerprints did not all come back ({n} of {before}): enrol them again on the phone")),
+        None => say("the fingerprint reader did not answer: check the fingers on the phone".into()),
+    }
 }
 
 /// The phone away from Linux (in Android, fastboot or TWRP): of the phones

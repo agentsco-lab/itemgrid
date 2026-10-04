@@ -54,6 +54,12 @@ pub fn close_shared(host: &str) {
     let _ = ssh(host, 2).args(["-O", "exit"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
+/// The fingers the reader knows (droidian-fpd's GetAll), when it answers.
+pub fn fingers(host: &str) -> Option<u32> {
+    let out = run(host, "busctl --system call org.droidian.fingerprint /org/droidian/fingerprint org.droidian.fingerprint GetAll 2>/dev/null\n").ok()?;
+    out.trim().strip_prefix("as ")?.split_whitespace().next()?.parse().ok()
+}
+
 /// A script run on the phone as root; its standard output.
 pub fn run(host: &str, script: &str) -> Result<String, String> {
     run_bytes(host, script).map(|b| String::from_utf8_lossy(&b).into_owned())

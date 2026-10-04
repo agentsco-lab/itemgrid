@@ -111,6 +111,9 @@ fn cmd_status() -> i32 {
     println!("System:    {}, kernel {}, up {h} h {m} min", s.os, s.kernel);
     println!("item:      {} (built {}), {}", s.item, s.item_built, if s.item_running { "running" } else { "not running" });
     println!("Port:      {}, sensorfw {}", s.port, s.sensorfw);
+    if let Some(n) = s.fingers {
+        println!("Fingers:   {n} enrolled");
+    }
     let temp = s.battery_temp.map(|t| format!(", {t:.0} °C")).unwrap_or_default();
     println!("Battery:   {}%, {}{temp}", s.battery.map(|b| b.to_string()).unwrap_or("?".into()), s.battery_status.to_lowercase());
     if let Some(t) = s.cpu_temp {

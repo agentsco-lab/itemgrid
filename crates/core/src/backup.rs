@@ -91,6 +91,10 @@ pub struct Manifest {
     /// The owner says a copy is off this computer (device data).
     #[serde(default)]
     pub off_computer: bool,
+    /// Fingers the reader knew when it was taken (full backups): checked
+    /// after a way back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingers: Option<u32>,
 }
 
 /// A backup on disk: where, and what.
@@ -234,7 +238,7 @@ pub fn take(host: &str, kind: Kind, say: &mut dyn FnMut(String)) -> Result<Backu
             return Err(e);
         }
     };
-    let backup = Backup { dir, manifest: Manifest { kind, created, serial: f.serial.clone(), slot: f.slot, item: f.item, port: f.port, kernel: f.kernel, items, keep: false, off_computer: false } };
+    let backup = Backup { dir, manifest: Manifest { kind, created, serial: f.serial.clone(), slot: f.slot, item: f.item, port: f.port, kernel: f.kernel, items, keep: false, off_computer: false, fingers: None } };
     backup.save()?;
     say(format!("{} backed up: {}", kind.words(), crate::status::size_words(backup.size() / 1024)));
     prune(&f.serial, kind, say);
