@@ -408,6 +408,7 @@ pub fn preflight(host: &str, image: &Path) -> Result<(Image, String, char), Stri
 
 /// The whole RAM boot (steps 1-7). Only with the owner's go.
 pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<(), String> {
+    crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
     say("checking the image and the phone".into());
     let (img, serial, slot) = preflight(host, image)?;

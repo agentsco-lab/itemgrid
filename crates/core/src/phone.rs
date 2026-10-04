@@ -5,14 +5,11 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// The addresses tried, in order: the USB network first, then any listed in
-/// ~/.config/cradle/hosts (one per line, e.g. the phone's Wi-Fi address).
+/// The addresses tried, in order: the USB link first, then where the phones
+/// seen on the cable were on the network (link.rs).
 pub fn hosts() -> Vec<String> {
-    let mut hosts = vec!["172.16.42.1".to_owned()];
-    let path = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".config/cradle/hosts");
-    if let Ok(text) = std::fs::read_to_string(path) {
-        hosts.extend(text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned));
-    }
+    let mut hosts = vec![crate::link::CABLE.to_owned()];
+    hosts.extend(crate::link::wifi_hosts());
     hosts
 }
 
@@ -26,8 +23,12 @@ fn ssh(host: &str, connect_timeout: u32) -> Command {
 fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
     let mut c = Command::new("ssh");
     // The phone's host key changes with each image: it is not written into
-    // the owner's known_hosts.
-    c.args(["-o", "BatchMode=yes", "-o", &format!("ConnectTimeout={connect_timeout}"), "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR"]);
+    // the owner's known_hosts. On the cable (a link to the phone alone) it
+    // is not checked; over Wi-Fi it must be the one the cable showed for that
+    // phone (link.rs), else no connection - an address not found for a known
+    // phone has no key to match.
+    c.args(["-o", "BatchMode=yes", "-o", &format!("ConnectTimeout={connect_timeout}"), "-o", "LogLevel=ERROR"]);
+    c.args(host_key_args(host));
     if shared {
         let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
         c.args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={dir}/cradle-%C"), "-o", "ControlPersist=60", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
@@ -36,6 +37,16 @@ fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
     }
     c.arg(format!("root@{host}"));
     c
+}
+
+/// How ssh (and scp) check the phone's host key at `host`.
+pub fn host_key_args(host: &str) -> Vec<String> {
+    let o = |v: String| ["-o".to_owned(), v];
+    if host == crate::link::CABLE {
+        return [o("UserKnownHostsFile=/dev/null".into()), o("StrictHostKeyChecking=no".into())].concat();
+    }
+    let alias = crate::link::serial_of(host).map(|s| format!("cradle-{s}")).unwrap_or_else(|| "cradle-unknown".into());
+    [o(format!("UserKnownHostsFile={}", crate::link::known_hosts_path().display())), o("StrictHostKeyChecking=yes".into()), o(format!("HostKeyAlias={alias}")), o("GlobalKnownHostsFile=/dev/null".into())].concat()
 }
 
 /// Whether the phone answers ssh at `host`.

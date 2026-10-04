@@ -50,12 +50,15 @@ pub struct Seen {
 
 /// Finds out what the phone is doing.
 pub fn detect() -> Seen {
-    if let Some(host) = crate::phone::hosts().into_iter().find(|h| crate::phone::answers(h)) {
-        return Seen { mode: Mode::Linux, via: host };
+    let cable = crate::link::CABLE;
+    let ignored = crate::link::cable_ignored();
+    if !ignored && crate::phone::answers(cable) {
+        learn_now_and_then();
+        return Seen { mode: Mode::Linux, via: cable.to_owned() };
     }
     // Asleep: the link pings, ssh does not answer until it is woken.
-    if let Some(host) = crate::phone::hosts().into_iter().find(|h| crate::phone::pings(h) && crate::phone::wake(h)) {
-        return Seen { mode: Mode::Linux, via: host };
+    if !ignored && crate::phone::pings(cable) && crate::phone::wake(cable) {
+        return Seen { mode: Mode::Linux, via: cable.to_owned() };
     }
     if let Some(line) = lines("fastboot", &["devices"]).into_iter().next() {
         let serial = line.split_whitespace().next().unwrap_or_default().to_owned();
@@ -71,7 +74,26 @@ pub fn detect() -> Seen {
         };
         return Seen { mode, via: serial.to_owned() };
     }
+    // Off the cable: on the network, where the cable showed it (link.rs).
+    if let Some(host) = crate::link::wifi_hosts().into_iter().find(|h| crate::phone::answers(h)) {
+        return Seen { mode: Mode::Linux, via: host };
+    }
     Seen { mode: Mode::Gone, via: String::new() }
+}
+
+/// The phone on the cable noted for Wi-Fi (link.rs): at the first look, then
+/// every ten minutes.
+fn learn_now_and_then() {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    if last.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    if let Err(e) = crate::link::learn() {
+        eprintln!("cradle: noting the phone for Wi-Fi: {e}");
+    }
 }
 
 /// A tool's output lines, none if it is missing or fails.

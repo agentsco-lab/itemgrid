@@ -174,6 +174,10 @@ struct Ui {
     mode_buttons: gtk::Box,
     /// What needs Linux: the sections and the facts.
     linux_only: gtk::Box,
+    /// What takes the phone out of Linux: the cable only (tracker #156).
+    cable_only: Vec<(gtk::Button, Option<glib::GString>)>,
+    /// Said over Wi-Fi: those need the cable.
+    cable_note: gtk::Label,
     actions: gtk::Box,
     slots: gtk::ListBox,
     backups: gtk::ListBox,
@@ -313,6 +317,15 @@ fn build(app: &adw::Application) {
     sections.append(&mode);
 
     let linux_only = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let cable_note = gtk::Label::builder()
+        .label("On Wi-Fi: status, logs, Update item, backups of home and settings and screenshots work from here. What takes the phone out of Linux - Erase and Install, Return to Android, the whole-system backup, images from RAM - needs the cable.")
+        .wrap(true)
+        .max_width_chars(70)
+        .xalign(0.0)
+        .css_classes(["dim-label", "caption"])
+        .visible(false)
+        .build();
+    linux_only.append(&cable_note);
 
     // Software.
     let soft = section("Software");
@@ -466,6 +479,8 @@ fn build(app: &adw::Application) {
         mode_text,
         mode_buttons,
         linux_only,
+        cable_only: [&reinstall, &restore, &try_ram, &backup_all, &back_full, &to_android].into_iter().map(|b| (b.clone(), b.tooltip_text())).collect(),
+        cable_note,
         actions,
         slots,
         backups,
@@ -638,7 +653,11 @@ fn build(app: &adw::Application) {
                 let st = ui.state.borrow();
                 (st.busy, st.elsewhere)
             };
-            if !busy && !elsewhere {
+            // Over Wi-Fi a look costs the phone's radio: every 10 s with the
+            // window in front, every 30 s behind it.
+            let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| cradle_core::link::Via::of(h) == cradle_core::link::Via::Wifi);
+            let every = if !wifi { 1 } else if ui.window.is_active() { 2 } else { 6 };
+            if !busy && !elsewhere && ticks % every == 0 {
                 look(&ui);
                 live_sync(&ui);
                 // Without the live view (an item without a mirror), a picture
@@ -805,7 +824,14 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
     ui.mode.set_visible(false);
     ui.linux_only.set_visible(true);
     ui.duo_mode.set_visible(false);
-    ui.name_sub.set_label(&format!("Linux · {host}"));
+    // On the cable or on Wi-Fi: what leaves Linux only on the cable.
+    let cable = cradle_core::link::Via::of(host) == cradle_core::link::Via::Cable;
+    ui.name_sub.set_label(&if cable { "Linux · cable".to_owned() } else { format!("Linux · Wi-Fi ({host})") });
+    for (b, tip) in &ui.cable_only {
+        b.set_sensitive(cable);
+        b.set_tooltip_text(if cable { tip.as_deref() } else { Some("Plug in the cable: this takes the phone out of Linux, where Wi-Fi does not reach") });
+    }
+    ui.cable_note.set_visible(!cable);
     match status {
         Some(Ok(s)) => fill(ui, &s),
         Some(Err(e)) => {

@@ -65,8 +65,7 @@ pub fn update(host: &str, build: bool, step: &mut dyn FnMut(Step)) -> Result<(),
     }
     let deb = newest_deb(&tree)?;
     step(Step::Installing);
-    let ssh_opts = ["-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR", "-q"];
-    run(Command::new("scp").args(ssh_opts).arg(&deb).arg(format!("root@{host}:/var/tmp/item.deb")), "copying the package")?;
+    run(Command::new("scp").args(["-o", "LogLevel=ERROR", "-q"]).args(crate::phone::host_key_args(host)).arg(&deb).arg(format!("root@{host}:/var/tmp/item.deb")), "copying the package")?;
     // A changed conffile (the composer drop-in) takes the package's version:
     // there is no one to ask.
     crate::phone::run_checked(host, "apt-get install -y -o Dpkg::Options::=--force-confnew /var/tmp/item.deb >/var/tmp/item-install.log 2>&1; rc=$?; rm -f /var/tmp/item.deb; sync; [ $rc = 0 ] || tail -5 /var/tmp/item-install.log; exit $rc\n")

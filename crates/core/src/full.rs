@@ -168,6 +168,7 @@ fn stream_into(out: impl Read, path: &Path, gunzip: bool, say: &mut dyn FnMut(St
 /// The whole system backed up. The phone is in TWRP from about a minute in,
 /// and back in Linux at the end; `say` hears each step.
 pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
+    crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
     let twrp = twrp().ok_or("no TWRP image: put surfaceduo1-twrp.img in ~/.local/share/cradle/twrp/")?;
     let f = crate::backup::facts(host)?;
