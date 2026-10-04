@@ -1521,7 +1521,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
                 cradle_core::android::go(&host, &plan, &word, true, &mut say)
             }
             Job::AndroidStart(serial) => cradle_core::android::start(&host, &serial, &mut say),
-            Job::AndroidBack(serial) => cradle_core::android::back(&host, &serial, &mut say),
+            Job::AndroidBack(serial) => cradle_core::android::back(&host, &serial, false, &mut say),
             Job::Install(release, mode) => {
                 let word = cradle_core::backup::serial(&host).map(|s| cradle_core::android::confirm_word(&s)).unwrap_or_default();
                 // The number was typed in the window already.

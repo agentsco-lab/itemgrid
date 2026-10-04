@@ -255,6 +255,26 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
 /// finished and closed the connection.
 pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<u64, String> {
     use std::io::Write;
+    // A small send by adb push and the sink run on the file: through the
+    // socket, a few kilobytes went missing (an ssh key, a 21 KB file -
+    // 2026-10-04), while megabytes and gigabytes never did.
+    const SMALL: usize = 4 << 20;
+    let mut head = Vec::new();
+    data.take(SMALL as u64 + 1).read_to_end(&mut head).map_err(|e| format!("reading: {e}"))?;
+    if head.len() <= SMALL {
+        let tmp = std::env::temp_dir().join(format!("cradle-send-{}", std::process::id()));
+        std::fs::write(&tmp, &head).map_err(|e| e.to_string())?;
+        let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg("/tmp/cradle-send").stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
+        let _ = std::fs::remove_file(&tmp);
+        let out = out?;
+        if !out.status.success() {
+            return Err(format!("adb push: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        adb_shell(serial, &format!("cat /tmp/cradle-send | {sink}; rc=$?; rm -f /tmp/cradle-send; exit $rc"))?;
+        return Ok(head.len() as u64);
+    }
+    let mut data = std::io::Cursor::new(head).chain(data);
+    let data: &mut dyn Read = &mut data;
     let port = 5598u16;
     let fwd = Command::new("adb").args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
     if !fwd.status.success() {

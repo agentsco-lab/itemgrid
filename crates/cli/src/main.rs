@@ -733,7 +733,7 @@ fn cmd_android(args: &[String]) -> i32 {
                 println!("misc cleared, the port started. About 30-40 minutes. Run again with --yes to go.");
                 return 0;
             }
-            return done(android::back(&host, &serial, &mut say));
+            return done(android::back(&host, &serial, args.iter().any(|a| a == "--data-only"), &mut say));
         }
         Some("trial") => {
             // The way back tried alone, in TWRP: nothing is erased.
