@@ -107,6 +107,12 @@ open(os.path.join(here, "duo-body.svg"), "w").write(svg(body))
 open(os.path.join(here, "duo-over.svg"), "w").write(svg(over))
 open(os.path.join(here, "duo-left.svg"), "w").write(svg(cut(body_halves, True)))
 open(os.path.join(here, "duo-right.svg"), "w").write(svg(cut(body_halves, False)))
+# The hinge as a strip the barrels' width (Cradle turns it to face the
+# viewer, a cylinder): the barrels and the rods between, at the strip's middle.
+def strip(inner):
+    x0 = MID - BLOCK_W / 2
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0} 0 {BLOCK_W} {BODY_H}" width="{BLOCK_W * 4}" height="{BODY_H * 4}">{DEFS}{inner}</svg>\n'
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "duo-hinge.svg"), "w").write(strip(spine() + block(False) + block(True)))
 # The spine and the hinges alone, over both halves.
 open(os.path.join(here, "duo-spine.svg"), "w").write(svg(spine() + block(False) + block(True)))
 print(f"panel {PANEL_W:.3f} x {SCREEN_H:.3f} mm at ({SIDE}, {SCREEN_TOP:.3f}); right at {COL_X + COL_W:.3f}")

@@ -42,6 +42,8 @@ const DUO_PAD: f32 = 3.0;
 /// A half's thickness (the Duo's 4.8 mm), px, and the layers that make it.
 const DUO_THICK: f32 = 4.8 * DUO_PX_PER_MM as f32;
 const DUO_EDGE_LAYERS: usize = 9;
+/// The hinge's barrels' width, mm.
+const DUO_HINGE_W: f64 = 10.2;
 const DUO_FLOOR_PAD: f32 = 30.0;
 /// The drawn Duo's room, in its body's heights and widths: the raised half
 /// above it, its near edge wider in perspective.
@@ -186,6 +188,10 @@ struct DuoHalf {
     /// Its thickness: its silhouette in the chassis' colour, layer on layer
     /// from the screen's plane to the back's.
     edge: Vec<gtk::Picture>,
+    /// The light on its screen, as it faces the light.
+    glare: gtk::Picture,
+    /// Its shadow on the table.
+    floor: gtk::Picture,
     /// Its pictures far to near, as last drawn.
     order: Rc<RefCell<Vec<gtk::Picture>>>,
 }
@@ -224,7 +230,6 @@ struct Ui {
     duo: gtk::Fixed,
     /// Its halves (left, right): front, back and shade each.
     halves: [DuoHalf; 2],
-    floor: gtk::Picture,
     spine: gtk::Picture,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -340,21 +345,26 @@ fn build(app: &adw::Application) {
                 leaf(&duo_silhouette(body, i, bw, bh, DUO_PAD, [c, c + 0.01, c - 0.03], 0.0), mid + 2 * pad, bh + 2 * pad)
             })
             .collect();
-        DuoHalf { front, back, shade, edge, order: Rc::default() }
+        let glare = leaf(&duo_glare(i, bw, bh), mid + 2 * pad, bh + 2 * pad);
+        glare.set_opacity(0.0);
+        let fpad = DUO_FLOOR_PAD as i32;
+        let floor = leaf(&duo_silhouette(body, i, bw, bh, DUO_FLOOR_PAD, [0.0, 0.0, 0.0], 12.0), mid + 2 * fpad, bh + 2 * fpad);
+        DuoHalf { front, back, shade, edge, glare, floor, order: Rc::default() }
     });
     for i in 0..2 {
         let body = bodies[i].clone();
         let front = halves[i].front.clone();
         screens[i].connect_paintable_notify(move |p| front.set_paintable(Some(&duo_half(body.as_ref(), p.paintable().as_ref(), i, bw, bh))));
     }
-    // Its shadow on the table: the lying half's silhouette, blurred.
-    let fpad = DUO_FLOOR_PAD as i32;
-    let floor = leaf(&duo_silhouette(bodies[1].as_ref(), 1, bw, bh, DUO_FLOOR_PAD, [0.0, 0.0, 0.0], 12.0), mid + 2 * fpad, bh + 2 * fpad);
-    floor.set_opacity(0.55);
-    let spine = leaf(&texture(include_bytes!("../data/duo-spine.svg"), bw).map(|t| t.upcast::<gdk::Paintable>()).unwrap_or_else(|| gdk::Paintable::new_empty(bw, bh)), bw, bh);
-    duo.put(&floor, 0.0, 0.0);
+    // The hinge: a strip the barrels' width, turned to face the viewer - a
+    // cylinder.
+    let hinge_w = px(DUO_HINGE_W);
+    let spine = leaf(&texture(include_bytes!("../data/duo-hinge.svg"), hinge_w).map(|t| t.upcast::<gdk::Paintable>()).unwrap_or_else(|| gdk::Paintable::new_empty(hinge_w, bh)), hinge_w, bh);
     for h in &halves {
-        for w in std::iter::once(&h.back).chain(&h.edge).chain([&h.front, &h.shade]) {
+        duo.put(&h.floor, 0.0, 0.0);
+    }
+    for h in &halves {
+        for w in std::iter::once(&h.back).chain(&h.edge).chain([&h.front, &h.glare, &h.shade]) {
             duo.put(w, 0.0, 0.0);
         }
     }
@@ -661,7 +671,6 @@ fn build(app: &adw::Application) {
         cable_only: [&reinstall, &restore, &try_ram, &backup_all, &back_full, &to_android, &r_reinstall, &r_restore, &r_android].into_iter().map(|b| (b.clone(), b.tooltip_text())).collect(),
         duo: duo.clone(),
         halves: halves.clone(),
-        floor: floor.clone(),
         spine: spine.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1474,6 +1483,27 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
     }
 }
 
+/// The light on a half's screen: a soft band across it, corner to corner.
+fn duo_glare(i: usize, bw: i32, bh: i32) -> gdk::Paintable {
+    use gtk::{graphene, gsk};
+    let k = DUO_PX_PER_MM as f32;
+    let mid = (bw / 2) as f32;
+    let x0 = if i == 0 { 0.0 } else { mid };
+    let sx = [DUO_SCREEN_X.0, DUO_SCREEN_X.1][i] as f32 * k - x0;
+    let (pw, ph) = (DUO_PANEL.0 as f32 * k, DUO_PANEL.1 as f32 * k);
+    let rect = graphene::Rect::new(sx, DUO_SCREEN_TOP as f32 * k, pw, ph);
+    let snap = gtk::Snapshot::new();
+    snap.translate(&graphene::Point::new(DUO_PAD, DUO_PAD));
+    let white = |a: f32, at: f32| gsk::ColorStop::new(at, gdk::RGBA::new(1.0, 1.0, 1.0, a));
+    snap.append_linear_gradient(
+        &rect,
+        &graphene::Point::new(rect.x(), rect.y()),
+        &graphene::Point::new(rect.x() + rect.width(), rect.y() + rect.height()),
+        &[white(0.0, 0.0), white(0.0, 0.28), white(0.55, 0.42), white(0.12, 0.5), white(0.0, 0.62), white(0.0, 1.0)],
+    );
+    flatten(&snap, mid + 2.0 * DUO_PAD, bh as f32 + 2.0 * DUO_PAD)
+}
+
 /// A half's back: frosted glacier glass, lighter toward the spine and the
 /// top, with a thin brighter rim - the body's silhouette as its mask.
 fn duo_back(body: Option<&gdk::Texture>, i: usize, bw: i32, bh: i32) -> gdk::Paintable {
@@ -1591,22 +1621,29 @@ fn show_fold(ui: &Ui, angle: f64) {
         ui.duo.set_child_transform(&half.front, Some(&front));
         ui.duo.set_child_transform(&half.shade, Some(&front));
         ui.duo.set_child_transform(&half.back, Some(&place(at, i, -DUO_THICK, true)));
-        let n = half.edge.len().max(2) as f32 - 1.0;
+        let layers = half.edge.len().max(2) as f32 - 1.0;
         for (k, e) in half.edge.iter().enumerate() {
-            ui.duo.set_child_transform(e, Some(&place(at, i, -DUO_THICK * k as f32 / n, true)));
+            ui.duo.set_child_transform(e, Some(&place(at, i, -DUO_THICK * k as f32 / layers, true)));
         }
         half.front.set_visible(facing);
         half.shade.set_visible(facing);
+        half.glare.set_visible(facing);
         half.back.set_visible(!facing);
+        ui.duo.set_child_transform(&half.glare, Some(&front));
+        // The light from above, a little left and in front: the glare as
+        // the screen mirrors it toward the viewer.
+        let normal = graphene::Vec3::new(n.x() - o.x(), n.y() - o.y(), n.z() - o.z()).normalize();
+        let halfway = graphene::Vec3::new(-0.25, -0.55, 1.75).normalize();
+        half.glare.set_opacity((normal.dot(&halfway).max(0.0).powi(12) as f64) * 0.9);
         // Its layers far to near: the screen's side last when it faces the
         // viewer, the back's last when it does not.
         let mut stack: Vec<&gtk::Picture> = Vec::new();
         if facing {
             stack.push(&half.back);
             stack.extend(half.edge.iter().rev());
-            stack.extend([&half.front, &half.shade]);
+            stack.extend([&half.front, &half.glare, &half.shade]);
         } else {
-            stack.extend([&half.front, &half.shade]);
+            stack.extend([&half.front, &half.glare, &half.shade]);
             stack.extend(half.edge.iter());
             stack.push(&half.back);
         }
@@ -1617,18 +1654,41 @@ fn show_fold(ui: &Ui, angle: f64) {
     ui.halves[1].shade.set_opacity(0.0);
     // Nearer over farther: the shadow first, the spine last.
     let order: [usize; 2] = if depth[0] <= depth[1] { [0, 1] } else { [1, 0] };
-    ui.floor.insert_before(&ui.duo, ui.duo.first_child().as_ref());
+    for h in &ui.halves {
+        h.floor.insert_before(&ui.duo, ui.duo.first_child().as_ref());
+    }
     for i in order {
         for w in ui.halves[i].order.borrow().iter() {
             w.insert_before(&ui.duo, None::<&gtk::Widget>);
         }
     }
+    // The hinge, a cylinder along the spine at the halves' middle depth,
+    // its strip turned to face the viewer.
     ui.spine.insert_before(&ui.duo, None::<&gtk::Widget>);
-    ui.duo.set_child_transform(&ui.spine, Some(&view(at, true)));
-    let floor = view(at, true).translate_3d(&graphene::Point3D::new(mid - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0, -DUO_THICK));
-    ui.duo.set_child_transform(&ui.floor, Some(&floor));
+    let vm = view(at, false).to_matrix();
+    let (dx, dz) = (vm.transform_vec3(&graphene::Vec3::x_axis()), vm.transform_vec3(&graphene::Vec3::z_axis()));
+    let face = dx.z().atan2(dz.z()).to_degrees();
+    let hw = ui.spine.width().max(1) as f32;
+    let hinge = view(at, true)
+        .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK / 2.0))
+        .rotate_3d(face, &graphene::Vec3::y_axis())
+        .translate(&graphene::Point::new(-hw / 2.0, 0.0));
+    ui.duo.set_child_transform(&ui.spine, Some(&hinge));
+    // The shadows on the table: the right half's under it; the left's under
+    // it while it lies there, narrowing toward the spine as it rises, gone
+    // when it folds under.
     let lying = (pitch.to_radians().cos() * roll.to_radians().cos()).clamp(0.0, 1.0);
-    ui.floor.set_opacity(0.55 * lying * lying);
+    let table = |dx: f32| view(at, true).translate_3d(&graphene::Point3D::new(dx - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0, -DUO_THICK));
+    ui.duo.set_child_transform(&ui.halves[1].floor, Some(&table(mid)));
+    ui.halves[1].floor.set_opacity(0.55 * lying * lying);
+    let rise = lift.max(0.0).min(90.0).to_radians();
+    let narrow = view(at, true)
+        .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK))
+        .scale(rise.cos().max(0.08), 1.0)
+        .translate(&graphene::Point::new(-mid - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0));
+    ui.duo.set_child_transform(&ui.halves[0].floor, Some(&narrow));
+    ui.halves[0].floor.set_visible(lift > -5.0 && lift < 120.0);
+    ui.halves[0].floor.set_opacity(0.55 * lying * lying * (1.0 - 0.75 * rise.sin() as f64));
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
