@@ -39,6 +39,9 @@ const DUO_PX_PER_MM: f64 = 2.35;
 /// Transparent room round each drawn half and its shadow, px: their edges
 /// smoothed as they turn.
 const DUO_PAD: f32 = 3.0;
+/// A half's thickness (the Duo's 4.8 mm), px, and the layers that make it.
+const DUO_THICK: f32 = 4.8 * DUO_PX_PER_MM as f32;
+const DUO_EDGE_LAYERS: usize = 9;
 const DUO_FLOOR_PAD: f32 = 30.0;
 /// The drawn Duo's room, in its body's heights and widths: the raised half
 /// above it, its near edge wider in perspective.
@@ -180,6 +183,11 @@ struct DuoHalf {
     front: gtk::Picture,
     back: gtk::Picture,
     shade: gtk::Picture,
+    /// Its thickness: its silhouette in the chassis' colour, layer on layer
+    /// from the screen's plane to the back's.
+    edge: Vec<gtk::Picture>,
+    /// Its pictures far to near, as last drawn.
+    order: Rc<RefCell<Vec<gtk::Picture>>>,
 }
 
 struct Ui {
@@ -324,7 +332,15 @@ fn build(app: &adw::Application) {
         let back = leaf(&duo_back(body, i, bw, bh), mid + 2 * pad, bh + 2 * pad);
         let shade = leaf(&duo_silhouette(body, i, bw, bh, DUO_PAD, [0.0, 0.0, 0.0], 0.0), mid + 2 * pad, bh + 2 * pad);
         shade.set_opacity(0.0);
-        DuoHalf { front, back, shade }
+        // The layers lighter toward the screen: the rim catches the light.
+        let edge = (0..DUO_EDGE_LAYERS)
+            .map(|k| {
+                let t = k as f32 / (DUO_EDGE_LAYERS - 1) as f32;
+                let c = 0.62 + 0.18 * (1.0 - t);
+                leaf(&duo_silhouette(body, i, bw, bh, DUO_PAD, [c, c + 0.01, c - 0.03], 0.0), mid + 2 * pad, bh + 2 * pad)
+            })
+            .collect();
+        DuoHalf { front, back, shade, edge, order: Rc::default() }
     });
     for i in 0..2 {
         let body = bodies[i].clone();
@@ -338,7 +354,7 @@ fn build(app: &adw::Application) {
     let spine = leaf(&texture(include_bytes!("../data/duo-spine.svg"), bw).map(|t| t.upcast::<gdk::Paintable>()).unwrap_or_else(|| gdk::Paintable::new_empty(bw, bh)), bw, bh);
     duo.put(&floor, 0.0, 0.0);
     for h in &halves {
-        for w in [&h.back, &h.front, &h.shade] {
+        for w in std::iter::once(&h.back).chain(&h.edge).chain([&h.front, &h.shade]) {
             duo.put(w, 0.0, 0.0);
         }
     }
@@ -1523,39 +1539,78 @@ fn show_fold(ui: &Ui, angle: f64) {
     let lift = (180.0 - angle).clamp(-178.0, 178.0) as f32;
     let (mid, h) = ui.duo_size;
     let room = h * DUO_ROOM as f32;
-    let centre = ui.duo.width().max(1) as f32 / 2.0;
+    let width = ui.duo.width().max(1) as f32;
     let [pitch, roll] = ui.tilt.get().0;
-    // The phone in the view: tipped back on the table, then as it is held -
-    // with the perspective for drawing, without it for which way a half
-    // faces and how near it is.
-    let view = |persp: bool| {
-        let t = gsk::Transform::new().translate(&graphene::Point::new(centre, room - h * 0.42));
+    // The phone in the view, about its middle at `at`: tipped back on the
+    // table, then as it is held - with the perspective for drawing, without
+    // it for which way a half faces and how near it is.
+    let view = |at: (f32, f32), persp: bool| {
+        let t = gsk::Transform::new().translate(&graphene::Point::new(at.0, at.1));
         let t = if persp { t.perspective(3.2 * h) } else { t };
         t.rotate_3d(TILT, &graphene::Vec3::x_axis())
             .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
             .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
             .translate(&graphene::Point::new(-mid, -h / 2.0))
     };
-    // Each half's place: the right flat beside the spine, the left turned
-    // about it; then the transparent room round its pictures.
-    let place = |i: usize, persp: bool| {
-        let t = view(persp).translate(&graphene::Point::new(mid, 0.0));
-        let t = if i == 0 { t.rotate_3d(lift, &graphene::Vec3::y_axis()).translate(&graphene::Point::new(-mid, 0.0)) } else { t };
-        t.translate(&graphene::Point::new(-DUO_PAD, -DUO_PAD))
+    // Each half's plane: the right flat beside the spine, the left turned
+    // about it; its screen at `z` 0, its back at -DUO_THICK; then the
+    // transparent room round its pictures.
+    let place = |at: (f32, f32), i: usize, z: f32, persp: bool| {
+        let t = view(at, persp).translate(&graphene::Point::new(mid, 0.0));
+        // Folding toward the screens it turns about their plane, back to back
+        // about the backs' (the halves meet face to face, or back to back).
+        let axis = if lift >= 0.0 { 0.0 } else { -DUO_THICK };
+        let t = if i == 0 {
+            t.translate_3d(&graphene::Point3D::new(0.0, 0.0, axis))
+                .rotate_3d(lift, &graphene::Vec3::y_axis())
+                .translate_3d(&graphene::Point3D::new(-mid, 0.0, -axis))
+        } else {
+            t
+        };
+        t.translate_3d(&graphene::Point3D::new(-DUO_PAD, -DUO_PAD, z))
     };
+    // In the middle of the room: where the phone is seen now, centred.
+    let quad = graphene::Rect::new(0.0, 0.0, mid + 2.0 * DUO_PAD, h + 2.0 * DUO_PAD);
+    let first = (width / 2.0, room / 2.0);
+    let mut seen: Option<graphene::Rect> = None;
+    for i in 0..2 {
+        for z in [0.0, -DUO_THICK] {
+            let b = place(first, i, z, true).transform_bounds(&quad);
+            seen = Some(seen.map_or(b, |s| s.union(&b)));
+        }
+    }
+    let at = seen.map_or(first, |b| (first.0 + width / 2.0 - (b.x() + b.width() / 2.0), first.1 + room / 2.0 - (b.y() + b.height() / 2.0)));
     let mut depth = [0.0f32; 2];
     for (i, half) in ui.halves.iter().enumerate() {
-        let m = place(i, false).to_matrix();
-        let at = |x: f32, y: f32, z: f32| m.transform_point3d(&graphene::Point3D::new(x, y, z));
-        let (o, n) = (at(0.0, 0.0, 0.0), at(0.0, 0.0, 1.0));
+        let m = place(at, i, 0.0, false).to_matrix();
+        let p = |x: f32, y: f32, z: f32| m.transform_point3d(&graphene::Point3D::new(x, y, z));
+        let (o, n) = (p(0.0, 0.0, 0.0), p(0.0, 0.0, 1.0));
         let facing = n.z() - o.z() > 0.0;
-        depth[i] = at(DUO_PAD + mid / 2.0, DUO_PAD + h / 2.0, 0.0).z();
-        let t = place(i, true);
-        for w in [&half.front, &half.back, &half.shade] {
-            ui.duo.set_child_transform(w, Some(&t));
+        depth[i] = p(DUO_PAD + mid / 2.0, DUO_PAD + h / 2.0, -DUO_THICK / 2.0).z();
+        let front = place(at, i, 0.0, true);
+        ui.duo.set_child_transform(&half.front, Some(&front));
+        ui.duo.set_child_transform(&half.shade, Some(&front));
+        ui.duo.set_child_transform(&half.back, Some(&place(at, i, -DUO_THICK, true)));
+        let n = half.edge.len().max(2) as f32 - 1.0;
+        for (k, e) in half.edge.iter().enumerate() {
+            ui.duo.set_child_transform(e, Some(&place(at, i, -DUO_THICK * k as f32 / n, true)));
         }
         half.front.set_visible(facing);
+        half.shade.set_visible(facing);
         half.back.set_visible(!facing);
+        // Its layers far to near: the screen's side last when it faces the
+        // viewer, the back's last when it does not.
+        let mut stack: Vec<&gtk::Picture> = Vec::new();
+        if facing {
+            stack.push(&half.back);
+            stack.extend(half.edge.iter().rev());
+            stack.extend([&half.front, &half.shade]);
+        } else {
+            stack.extend([&half.front, &half.shade]);
+            stack.extend(half.edge.iter());
+            stack.push(&half.back);
+        }
+        *half.order.borrow_mut() = stack.into_iter().cloned().collect();
     }
     // The light: the raised half darker the more it turns.
     ui.halves[0].shade.set_opacity(((lift.abs().min(90.0) as f64).to_radians().sin() * 0.35).min(0.35));
@@ -1564,14 +1619,13 @@ fn show_fold(ui: &Ui, angle: f64) {
     let order: [usize; 2] = if depth[0] <= depth[1] { [0, 1] } else { [1, 0] };
     ui.floor.insert_before(&ui.duo, ui.duo.first_child().as_ref());
     for i in order {
-        let half = &ui.halves[i];
-        for w in [&half.back, &half.front, &half.shade] {
+        for w in ui.halves[i].order.borrow().iter() {
             w.insert_before(&ui.duo, None::<&gtk::Widget>);
         }
     }
     ui.spine.insert_before(&ui.duo, None::<&gtk::Widget>);
-    ui.duo.set_child_transform(&ui.spine, Some(&view(true)));
-    let floor = view(true).translate(&graphene::Point::new(mid - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0));
+    ui.duo.set_child_transform(&ui.spine, Some(&view(at, true)));
+    let floor = view(at, true).translate_3d(&graphene::Point3D::new(mid - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0, -DUO_THICK));
     ui.duo.set_child_transform(&ui.floor, Some(&floor));
     let lying = (pitch.to_radians().cos() * roll.to_radians().cos()).clamp(0.0, 1.0);
     ui.floor.set_opacity(0.55 * lying * lying);
