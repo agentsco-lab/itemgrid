@@ -63,8 +63,8 @@ const CSS: &str = "
 .duo-half-left { border-radius: 23px 0 0 23px; }
 .duo-half-right { border-radius: 0 23px 23px 0; }
 .duo-back { border-radius: 0 23px 23px 0; background: linear-gradient(to right, #b9bcb4, #d4d7cf); }
-.duo-shadow-left { border-radius: 23px 0 0 23px; box-shadow: 0 18px 34px alpha(black, 0.55); }
-.duo-shadow-right { border-radius: 0 23px 23px 0; box-shadow: 0 18px 34px alpha(black, 0.55); }
+.duo-floor { background: radial-gradient(ellipse closest-side at center, alpha(black, 0.55) 0%, alpha(black, 0.25) 55%, alpha(black, 0.0) 100%); }
+.duo-shade { background: black; }
 .duo-mode {
   background: alpha(black, 0.62);
   color: white;
@@ -198,9 +198,11 @@ struct Ui {
     /// The Duo drawn: the right half (and its back) turned as the phone
     /// folds; the angle shown and the one to go to.
     duo: gtk::Fixed,
+    duo_left: gtk::Fixed,
     duo_right: gtk::Fixed,
     duo_back: gtk::Box,
-    shadow_right: gtk::Box,
+    shades: [gtk::Box; 2],
+    floor: gtk::Box,
     /// The angle the drawn Duo shows, and the one to go to.
     fold: std::cell::Cell<(f64, f64)>,
     /// The simple page and its parts.
@@ -299,19 +301,19 @@ fn build(app: &adw::Application) {
         f.set_size_request(mid, bh);
         f.put(&layer(svg), -x0 as f64, 0.0);
         f.put(screen, px(screen_x) as f64 - x0 as f64, px(DUO_SCREEN_TOP) as f64);
-        f
+        // Its light: darker the more it turns from the viewer.
+        let shade = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-shade", class]).opacity(0.0).can_target(false).build();
+        f.put(&shade, 0.0, 0.0);
+        (f, shade)
     };
-    let duo_left = half("duo-half-left", include_bytes!("../data/duo-left.svg"), &screens[0], 0, DUO_SCREEN_X.0);
-    let duo_right = half("duo-half-right", include_bytes!("../data/duo-right.svg"), &screens[1], mid, DUO_SCREEN_X.1);
+    let (duo_left, shade_left) = half("duo-half-left", include_bytes!("../data/duo-left.svg"), &screens[0], 0, DUO_SCREEN_X.0);
+    let (duo_right, shade_right) = half("duo-half-right", include_bytes!("../data/duo-right.svg"), &screens[1], mid, DUO_SCREEN_X.1);
     // Its back, glacier, seen when it folds over past a right angle.
     let duo_back = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-back"]).visible(false).build();
-    // The shadows on the table, under each half: the right one narrows as
-    // the half turns.
-    let shadow_left = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-shadow-left"]).build();
-    let shadow_right = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-shadow-right"]).build();
+    // Its shadow on the table: one soft oval under it, as wide as it looks.
+    let floor = gtk::Box::builder().width_request(bw).height_request(48).css_classes(["duo-floor"]).can_target(false).build();
     let spine = layer(include_bytes!("../data/duo-spine.svg"));
-    duo.put(&shadow_left, 0.0, 0.0);
-    duo.put(&shadow_right, mid as f64, 0.0);
+    duo.put(&floor, 0.0, (bh - 18) as f64);
     duo.put(&duo_left, 0.0, 0.0);
     duo.put(&duo_back, mid as f64, 0.0);
     duo.put(&duo_right, mid as f64, 0.0);
@@ -617,9 +619,11 @@ fn build(app: &adw::Application) {
         linux_only,
         cable_only: [&reinstall, &restore, &try_ram, &backup_all, &back_full, &to_android, &r_reinstall, &r_restore, &r_android].into_iter().map(|b| (b.clone(), b.tooltip_text())).collect(),
         duo: duo.clone(),
+        duo_left: duo_left.clone(),
         duo_right: duo_right.clone(),
         duo_back: duo_back.clone(),
-        shadow_right: shadow_right.clone(),
+        shades: [shade_left.clone(), shade_right.clone()],
+        floor: floor.clone(),
         fold: std::cell::Cell::new((180.0, 180.0)),
         home,
         status_dot,
@@ -1331,28 +1335,34 @@ fn fold_to(ui: &Ui, angle: f64) {
     ui.fold.set((shown, angle.clamp(0.0, 360.0)));
 }
 
-/// The right half turned about the spine for a hinge at `angle`: 180 flat,
-/// less toward the viewer like a book (its glacier back showing past a
-/// right angle, coming over the left), more away behind the left (gone past
-/// a right angle); its shadow on the table narrowed with it.
+/// Both halves turned about the spine for a hinge at `angle` (180 flat),
+/// each by half of the fold, their outer edges going away from the viewer
+/// like a book's pages folding toward them (folded back: coming toward the
+/// viewer); each no further than 70 degrees, darker as it turns; the shadow
+/// on the table as wide as the phone looks.
 fn show_fold(ui: &Ui, angle: f64) {
     use gtk::{graphene, gsk};
-    let turn = 180.0 - angle;
+    let each = ((180.0 - angle) / 2.0).clamp(-70.0, 70.0);
     let h = ui.duo_right.height().max(1) as f32;
     let mid = ui.duo_right.width().max(1) as f32;
-    let turned = gsk::Transform::new()
-        .translate(&graphene::Point::new(mid, h / 2.0))
-        .perspective(2.4 * h)
-        .rotate_3d(-turn as f32, &graphene::Vec3::y_axis())
-        .translate(&graphene::Point::new(0.0, -h / 2.0));
-    ui.duo_right.set_visible(turn.abs() < 90.0);
-    ui.duo_back.set_visible(turn >= 90.0);
-    ui.duo.set_child_transform(&ui.duo_right, Some(&turned));
-    ui.duo.set_child_transform(&ui.duo_back, Some(&turned));
-    let k = (turn.to_radians().cos().abs() as f32).max(0.02);
-    ui.shadow_right.set_visible(turn > -90.0);
-    let shadow = gsk::Transform::new().translate(&graphene::Point::new(mid, 0.0)).scale(if turn >= 90.0 { -k } else { k }, 1.0);
-    ui.duo.set_child_transform(&ui.shadow_right, Some(&shadow));
+    let about = |x: f32, deg: f64| {
+        gsk::Transform::new()
+            .translate(&graphene::Point::new(mid, h / 2.0))
+            .perspective(3.0 * h)
+            .rotate_3d(deg as f32, &graphene::Vec3::y_axis())
+            .translate(&graphene::Point::new(x, -h / 2.0))
+    };
+    // The left half's right edge, the right half's left edge, on the spine.
+    ui.duo.set_child_transform(&ui.duo_left, Some(&about(-mid, -each)));
+    ui.duo.set_child_transform(&ui.duo_right, Some(&about(0.0, each)));
+    ui.duo_back.set_visible(false);
+    let dark = (each.abs().to_radians().sin() * 0.45) as f64;
+    for s in &ui.shades {
+        s.set_opacity(dark);
+    }
+    let k = each.to_radians().cos() as f32;
+    let floor = gsk::Transform::new().translate(&graphene::Point::new(mid, h - 18.0)).scale(k, 1.0).translate(&graphene::Point::new(-mid, 0.0));
+    ui.duo.set_child_transform(&ui.floor, Some(&floor));
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
