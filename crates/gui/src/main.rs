@@ -1,4 +1,12 @@
-//! Cradle's window, in the spirit of Finder's page for a connected iPhone:
+//! Cradle's window, in the spirit of Finder's page for a connected iPhone.
+//!
+//! Simple by default: the Duo on the left; on the right one sentence on how
+//! it is (a coloured dot), one button for what to do now, backups, updates
+//! and the storage; Repair & Reset on a page of its own (all needing the
+//! cable). Developer Mode (the menu) shows what was here before - slots,
+//! images from RAM, every kind of backup, the logs.
+//!
+//! Before the simple page, the window was:
 //! the Duo on the left - its two panels showing what is on them - with its
 //! name, mode and battery; on the right Software, Backups, Screen and System;
 //! the storage as one bar along the bottom. Over cradle-core: the same
@@ -70,6 +78,13 @@ const CSS: &str = "
 }
 .mode-card.moving image { animation: duo-breathe 1.8s ease-in-out infinite; }
 .mode-title { font-weight: 800; font-size: 1.2em; }
+.status-dot { min-width: 12px; min-height: 12px; border-radius: 6px; }
+.status-dot.fine { background: #33d17a; }
+.status-dot.look { background: #f6d32d; }
+.status-dot.busy { background: #62a0ea; }
+.status-dot.away { background: #77767b; }
+.status-title { font-weight: 800; font-size: 1.9em; }
+.repair-row-title { font-weight: 700; }
 ";
 
 fn main() -> glib::ExitCode {
@@ -174,6 +189,16 @@ struct Ui {
     mode_buttons: gtk::Box,
     /// What needs Linux: the sections and the facts.
     linux_only: gtk::Box,
+    /// The simple page and its parts.
+    home: gtk::Box,
+    status_dot: gtk::Box,
+    status_title: gtk::Label,
+    status_lines: gtk::Label,
+    backups_row: adw::ActionRow,
+    updates_row: adw::ActionRow,
+    /// The page on the right: the main one, or Repair & Reset.
+    right: gtk::Stack,
+    repair_note: gtk::Label,
     /// What takes the phone out of Linux: the cable only (tracker #156).
     cable_only: Vec<(gtk::Button, Option<glib::GString>)>,
     /// Said over Wi-Fi: those need the cable.
@@ -215,6 +240,11 @@ fn build(app: &adw::Application) {
     let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
     refresh.set_tooltip_text(Some("Look again"));
     header.pack_end(&refresh);
+    // The menu: Developer Mode.
+    let menu = gio::Menu::new();
+    menu.append(Some("Developer Mode"), Some("win.developer"));
+    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Menu").build();
+    header.pack_end(&menu_button);
 
     // General: the Duo on the left, the sections on the right.
     let general = gtk::Box::new(gtk::Orientation::Horizontal, 40);
@@ -408,10 +438,67 @@ fn build(app: &adw::Application) {
     let facts = gtk::Grid::builder().row_spacing(6).column_spacing(18).build();
     sys.append(&facts);
     linux_only.append(&sys);
+    // The simple page: how the Duo is, what to do now.
+    let home = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let status_head = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    let status_dot = gtk::Box::builder().css_classes(["status-dot", "fine"]).valign(gtk::Align::Center).build();
+    let status_title = gtk::Label::builder().label("Your Duo is fine").xalign(0.0).wrap(true).css_classes(["status-title"]).build();
+    status_head.append(&status_dot);
+    status_head.append(&status_title);
+    let status_lines = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(60).css_classes(["dim-label"]).margin_start(26).build();
+    let status_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    status_box.append(&status_head);
+    status_box.append(&status_lines);
+    home.append(&status_box);
+    let primary_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    primary_row.set_margin_start(26);
+    let back_up_now = pill("Back Up Now");
+    back_up_now.add_css_class("suggested-action");
+    back_up_now.set_tooltip_text(Some("Your home folder and settings, copied to this computer - over the cable or Wi-Fi, about a minute"));
+    primary_row.append(&back_up_now);
+    home.append(&primary_row);
+    let home_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+    let backups_row = adw::ActionRow::builder().title("Backups").subtitle("Not backed up yet").build();
+    let updates_row = adw::ActionRow::builder().title("Updates").build();
+    home_list.append(&backups_row);
+    home_list.append(&updates_row);
+    home.append(&home_list);
+    let to_repair = gtk::Button::builder().label("Repair & Reset…").css_classes(["flat"]).halign(gtk::Align::Start).build();
+    home.append(&to_repair);
+    home.set_visible(false);
+    sections.append(&home);
     sections.append(&linux_only);
 
     let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&sections).hexpand(true).build();
-    general.append(&scroll);
+    // Repair & Reset: what is done once in a while, each asking first, all
+    // on the cable.
+    let repair = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    let repair_back = gtk::Button::builder().icon_name("go-previous-symbolic").css_classes(["flat", "circular"]).halign(gtk::Align::Start).tooltip_text("Back").build();
+    repair.append(&repair_back);
+    repair.append(&gtk::Label::builder().label("Repair & Reset").xalign(0.0).css_classes(["status-title"]).build());
+    repair.append(&body("Things to do once in a while. Each asks before it starts, and needs the USB cable."));
+    let repair_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+    let repair_row = |title: &str, text: &str, button: &str, destructive: bool| {
+        let row = adw::ActionRow::builder().title(title).subtitle(text).subtitle_lines(4).build();
+        let b = gtk::Button::builder().label(button).valign(gtk::Align::Center).css_classes(["pill"]).build();
+        if destructive {
+            b.add_css_class("destructive-action");
+        }
+        row.add_suffix(&b);
+        repair_list.append(&row);
+        b
+    };
+    let r_reinstall = repair_row("Reinstall item", "A fresh system from the latest release. You choose: keep your files and Wi-Fi, or erase everything. About 10 minutes.", "Reinstall…", false);
+    let r_restore = repair_row("Restore the whole system", "The phone exactly as it was in your last full backup. What is on it now goes. About 40 minutes.", "Restore…", true);
+    let r_android = repair_row("Go back to Android", "Microsoft's Android, for a while. Everything is backed up first and the way back is tested. About 40 minutes.", "Android…", false);
+    repair.append(&repair_list);
+    let repair_note = body("On Wi-Fi now: plug in the cable to use these.");
+    repair.append(&repair_note);
+    let repair_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&repair).hexpand(true).build();
+    let right = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeftRight).transition_duration(250).hexpand(true).build();
+    right.add_named(&scroll, Some("main"));
+    right.add_named(&repair_scroll, Some("repair"));
+    general.append(&right);
 
     // The storage along the bottom.
     let storage = gtk::DrawingArea::builder().content_height(18).hexpand(true).build();
@@ -432,8 +519,8 @@ fn build(app: &adw::Application) {
     // The page asking for the phone, when it has not been seen for a while.
     let away = adw::StatusPage::builder()
         .icon_name("phone-symbolic")
-        .title("Connect your Surface Duo")
-        .description("Plug it in with a USB cable. Cradle finds it in Linux, in Android, in the bootloader or in the recovery.")
+        .title("Looking for your Duo")
+        .description("Plug it in with the USB cable, or connect it to the same Wi-Fi as this computer. If it is off, hold the power key for a few seconds.")
         .build();
 
     let pages = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(400).build();
@@ -479,7 +566,15 @@ fn build(app: &adw::Application) {
         mode_text,
         mode_buttons,
         linux_only,
-        cable_only: [&reinstall, &restore, &try_ram, &backup_all, &back_full, &to_android].into_iter().map(|b| (b.clone(), b.tooltip_text())).collect(),
+        cable_only: [&reinstall, &restore, &try_ram, &backup_all, &back_full, &to_android, &r_reinstall, &r_restore, &r_android].into_iter().map(|b| (b.clone(), b.tooltip_text())).collect(),
+        home,
+        status_dot,
+        status_title,
+        status_lines,
+        backups_row,
+        updates_row,
+        right: right.clone(),
+        repair_note,
         cable_note,
         actions,
         slots,
@@ -523,6 +618,47 @@ fn build(app: &adw::Application) {
         }
     });
 
+    // Developer Mode, kept between runs.
+    let developer = gio::SimpleAction::new_stateful("developer", None, &developer_mode().to_variant());
+    developer.connect_activate({
+        let ui = Rc::downgrade(&ui);
+        move |action, _| {
+            let on = !action.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
+            action.set_state(&on.to_variant());
+            set_developer_mode(on);
+            if let Some(ui) = ui.upgrade() {
+                ui.state.borrow_mut().pictured = false;
+                look(&ui);
+            }
+        }
+    });
+    window.add_action(&developer);
+    back_up_now.connect_clicked({
+        let ui = ui.clone();
+        move |_| run_job(&ui, Job::Backup)
+    });
+    to_repair.connect_clicked({
+        let right = right.clone();
+        move |_| right.set_visible_child_name("repair")
+    });
+    repair_back.connect_clicked({
+        let right = right.clone();
+        move |_| right.set_visible_child_name("main")
+    });
+    r_reinstall.connect_clicked({
+        let ui = ui.clone();
+        move |_| erase_and_install(&ui)
+    });
+    r_restore.connect_clicked({
+        let back_full = back_full.clone();
+        move |_| {
+            back_full.emit_clicked();
+        }
+    });
+    r_android.connect_clicked({
+        let ui = ui.clone();
+        move |_| return_to_android(&ui)
+    });
     refresh.connect_clicked({
         let ui = ui.clone();
         move |_| {
@@ -820,9 +956,14 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
         return;
     };
     ui.pages.set_visible_child_name("phone");
-    ui.switcher.set_visible(true);
+    let dev = developer_mode();
+    ui.switcher.set_visible(dev);
+    if !dev {
+        ui.tabs.set_visible_child_name("general");
+    }
     ui.mode.set_visible(false);
-    ui.linux_only.set_visible(true);
+    ui.linux_only.set_visible(dev);
+    ui.home.set_visible(!dev);
     ui.duo_mode.set_visible(false);
     // On the cable or on Wi-Fi: what leaves Linux only on the cable.
     let cable = cradle_core::link::Via::of(host) == cradle_core::link::Via::Cable;
@@ -832,11 +973,16 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
         b.set_tooltip_text(if cable { tip.as_deref() } else { Some("Plug in the cable: this takes the phone out of Linux, where Wi-Fi does not reach") });
     }
     ui.cable_note.set_visible(!cable);
+    ui.repair_note.set_visible(!cable);
     match status {
         Some(Ok(s)) => fill(ui, &s),
         Some(Err(e)) => {
-            ui.banner.set_title(&format!("Could not read the phone: {e}"));
-            ui.banner.set_revealed(true);
+            // Said plainly on the simple page; the error itself for developers.
+            if dev {
+                ui.banner.set_title(&format!("Could not read the phone: {e}"));
+                ui.banner.set_revealed(true);
+            }
+            say_status(ui, "look", "Your Duo is not answering", &format!("It is there, but did not answer just now. Cradle keeps trying.\n{e}"));
         }
         None => {}
     }
@@ -874,6 +1020,8 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     ui.tabs.set_visible_child_name("general");
     ui.switcher.set_visible(false);
     ui.linux_only.set_visible(false);
+    ui.home.set_visible(false);
+    ui.right.set_visible_child_name("main");
     ui.mode.set_visible(true);
     bottom_shown(ui);
     for s in &ui.screens {
@@ -961,6 +1109,105 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     ui.battery.set_label("");
 }
 
+/// Developer Mode: on, the window shows slots, images from RAM, every kind
+/// of backup and the logs (~/.config/cradle/gui).
+fn developer_mode() -> bool {
+    std::fs::read_to_string(gui_settings()).is_ok_and(|t| t.lines().any(|l| l.trim() == "developer=1"))
+}
+
+fn set_developer_mode(on: bool) {
+    let path = gui_settings();
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let _ = std::fs::write(path, if on { "developer=1\n" } else { "developer=0\n" });
+}
+
+fn gui_settings() -> std::path::PathBuf {
+    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".config/cradle/gui")
+}
+
+/// The simple page's sentence: its dot (fine, look, busy, away), its title
+/// and the lines under it.
+fn say_status(ui: &Ui, dot: &str, title: &str, lines: &str) {
+    for c in ["fine", "look", "busy", "away"] {
+        ui.status_dot.remove_css_class(c);
+    }
+    ui.status_dot.add_css_class(dot);
+    ui.status_title.set_label(title);
+    ui.status_lines.set_label(lines);
+}
+
+/// How long ago, in words: "today at 09:12", "yesterday", "3 days ago".
+fn ago(created: &str) -> (String, i64) {
+    let day = |d: &str| glib::DateTime::from_local(d.get(0..4).and_then(|y| y.parse().ok()).unwrap_or(1970), d.get(5..7).and_then(|m| m.parse().ok()).unwrap_or(1), d.get(8..10).and_then(|x| x.parse().ok()).unwrap_or(1), 0, 0, 0.0).ok();
+    let now = glib::DateTime::now_local().ok();
+    let today = now.as_ref().map(|n| n.format("%Y-%m-%d").map(|s| s.to_string()).unwrap_or_default()).unwrap_or_default();
+    let days = match (day(created), day(&today)) {
+        (Some(a), Some(b)) => b.difference(&a).as_days(),
+        _ => 999,
+    };
+    let time = created.get(11..16).unwrap_or("");
+    let words = match days {
+        0 => format!("today at {time}"),
+        1 => format!("yesterday at {time}"),
+        n if n < 999 => format!("{n} days ago"),
+        _ => created.to_owned(),
+    };
+    (words, days)
+}
+
+/// The simple page from the phone's state: fine, or what needs a look.
+fn simple_status(ui: &Ui, s: &status::Status, problems: &[String]) {
+    use cradle_core::backup::{self, Kind};
+    let charge = s.battery.map(|b| format!("Battery {b}%")).unwrap_or_else(|| "Battery ?".into());
+    let charging = match s.battery_status.as_str() {
+        "Charging" => " · charging",
+        "Full" => " · full",
+        _ => "",
+    };
+    // The newest backup of the phone's own things (home and settings, or
+    // everything).
+    let newest = backup::list(Some(&s.serial)).into_iter().find(|b| matches!(b.manifest.kind, Kind::Quick | Kind::Full));
+    let (backed, days) = match &newest {
+        Some(b) => {
+            let (w, d) = ago(&b.manifest.created);
+            (format!("Backed up {w}"), d)
+        }
+        None => ("Not backed up yet".to_owned(), 999),
+    };
+    ui.backups_row.set_subtitle(&match &newest {
+        Some(b) => format!("Last {} · {}", ago(&b.manifest.created).0, status::size_words(b.size() / 1024)),
+        None => "None yet: Back Up Now copies your home folder and settings here".to_owned(),
+    });
+    let version = s.item.split('~').next().unwrap_or(&s.item);
+    let dev_build = s.item.contains("~git");
+    ui.updates_row.set_subtitle(&format!("item {version}{}", if dev_build { " · a development build" } else { "" }));
+    let lines = format!("{charge}{charging}\n{backed}");
+    if !s.item_running {
+        say_status(ui, "look", "item is not running", &format!("The phone is up, but its shell is not. A restart usually brings it back.\n{lines}"));
+    } else if !problems.is_empty() {
+        let plain: Vec<String> = problems
+            .iter()
+            .filter(|p| !p.contains("item is not running"))
+            .map(|p| {
+                if p.contains("nearly full") {
+                    format!("Storage is almost full ({})", p.rsplit(": ").next().unwrap_or(""))
+                } else if p.contains("battery is low") {
+                    "The battery is low: plug it in".to_owned()
+                } else if p.contains("CPU is hot") {
+                    "The phone is hot: let it rest a while".to_owned()
+                } else {
+                    p.clone()
+                }
+            })
+            .collect();
+        say_status(ui, "look", "Your Duo needs a look", &format!("{}\n{lines}", plain.join("\n")));
+    } else if days > 7 {
+        say_status(ui, "look", "Time for a backup", &lines);
+    } else {
+        say_status(ui, "fine", "Your Duo is fine", &lines);
+    }
+}
+
 fn fill(ui: &Ui, s: &status::Status) {
     // The club's number, if this computer knows it.
     *ui.serial.borrow_mut() = s.serial.clone();
@@ -975,8 +1222,13 @@ fn fill(ui: &Ui, s: &status::Status) {
         }
     }
     let problems: Vec<String> = s.warnings().into_iter().chain(s.failed.iter().map(|u| format!("{u} failed"))).collect();
+    let dev = developer_mode();
     ui.banner.set_title(&problems.join(" · "));
-    ui.banner.set_revealed(!problems.is_empty());
+    ui.banner.set_revealed(dev && !problems.is_empty());
+    // The simple page: only what its owner can do something about (a failed
+    // background unit - fstrim on the loop rootfs, a suspend the cable kept
+    // busy - is for Developer Mode).
+    simple_status(ui, s, &s.warnings());
 
     let charge = s.battery.map(|b| format!("{b}%")).unwrap_or_else(|| "?".into());
     let bolt = if s.battery_status == "Charging" { "⚡ " } else { "" };
