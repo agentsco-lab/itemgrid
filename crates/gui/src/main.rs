@@ -210,6 +210,8 @@ struct Ui {
     spine: gtk::Picture,
     /// The angle the drawn Duo shows, and the one to go to.
     fold: std::cell::Cell<(f64, f64)>,
+    /// The hinge followed (posture.rs): where, and its stop.
+    following: RefCell<Option<(String, cradle_core::posture::Stop)>>,
     /// The simple page and its parts.
     home: gtk::Box,
     status_dot: gtk::Box,
@@ -624,6 +626,7 @@ fn build(app: &adw::Application) {
         floor: floor.clone(),
         spine: spine.clone(),
         fold: std::cell::Cell::new((180.0, 180.0)),
+        following: RefCell::default(),
         home,
         status_dot,
         status_title,
@@ -876,7 +879,7 @@ fn build(app: &adw::Application) {
             if (shown - to).abs() > 0.05 {
                 // A spring-like follow: most of the way in ~0.4 s.
                 let _ = clock;
-                let k = 1.0 - (-1.0f64 / 60.0 / 0.12).exp();
+                let k = 1.0 - (-1.0f64 / 60.0 / 0.05).exp();
                 let now = shown + (to - shown) * k;
                 ui.fold.set((now, to));
                 show_fold(&ui, now);
@@ -884,24 +887,12 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
+    // The hinge followed while the phone is in Linux and no job runs: its
+    // angle as it changes (posture.rs), over one ssh.
     glib::timeout_add_seconds_local(1, {
         let ui = ui.clone();
-        let mut tick = 0u32;
         move || {
-            tick += 1;
-            let host = ui.state.borrow().host.clone();
-            let (busy, elsewhere) = {
-                let st = ui.state.borrow();
-                (st.busy, st.elsewhere)
-            };
-            if let Some(host) = host.filter(|_| !busy && !elsewhere && (ui.window.is_active() || tick % 5 == 0)) {
-                let ui = ui.clone();
-                glib::spawn_future_local(async move {
-                    if let Ok(Some(a)) = gio::spawn_blocking(move || status::hinge(&host)).await {
-                        fold_to(&ui, a);
-                    }
-                });
-            }
+            follow_hinge(&ui);
             glib::ControlFlow::Continue
         }
     });
@@ -1326,6 +1317,44 @@ fn simple_status(ui: &Ui, s: &status::Status, problems: &[String], link: &str) {
     } else {
         say_status(ui, "fine", "Your Duo is fine", &lines);
     }
+}
+
+/// The hinge followed while the phone is in Linux and no job runs (started
+/// again if it ended); stopped otherwise.
+fn follow_hinge(ui: &Rc<Ui>) {
+    let want = {
+        let st = ui.state.borrow();
+        st.host.clone().filter(|_| !st.busy && !st.elsewhere)
+    };
+    let running = ui.following.borrow().as_ref().map(|(h, _)| h.clone());
+    if running == want {
+        return;
+    }
+    if let Some((_, stop)) = ui.following.borrow_mut().take() {
+        stop.stop();
+    }
+    let Some(host) = want else { return };
+    let Ok((mut follow, stop)) = cradle_core::posture::follow(&host) else { return };
+    *ui.following.borrow_mut() = Some((host, stop.clone()));
+    let (tx, rx) = async_channel::bounded::<f64>(8);
+    gio::spawn_blocking(move || {
+        while let Some(a) = follow.next() {
+            if tx.send_blocking(a).is_err() {
+                break;
+            }
+        }
+    });
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        while let Ok(a) = rx.recv().await {
+            fold_to(&ui, a);
+        }
+        // It ended (the phone went, or was stopped): started again next second.
+        let mine = ui.following.borrow().as_ref().is_some_and(|(_, s)| s.same(&stop));
+        if mine {
+            ui.following.borrow_mut().take();
+        }
+    });
 }
 
 /// The phone's fold, to be shown: eased there (the tick above).
