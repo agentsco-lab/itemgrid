@@ -7,10 +7,10 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 
-const FOLLOW: &str = "busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Gravity 2>/dev/null; exec gdbus monitor --session --dest org.sfduo.Posture --object-path /org/sfduo/Posture";
+const FOLLOW: &str = "busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Gravity 2>/dev/null; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Posture; exec gdbus monitor --session --dest org.sfduo.Posture --object-path /org/sfduo/Posture";
 
 /// What the phone says of itself as it moves.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Reading {
     /// The hinge, degrees: 180 flat.
     Angle(f64),
@@ -18,11 +18,15 @@ pub enum Reading {
     /// panel, y along it toward its top, z out of its screen): lying flat
     /// face up about (0, 0, 1). From a port with Gravity in sfduo-posture.
     Gravity([f64; 3]),
+    /// The posture by the hinge: closed, laptop, flat, folded or between.
+    Posture(String),
 }
 
 /// The readings, one after another.
 pub struct Follow {
     lines: BufReader<ChildStdout>,
+    /// A line's readings not yet given (a change can carry several).
+    queued: std::collections::VecDeque<Reading>,
 }
 
 /// Stops following, from anywhere.
@@ -44,7 +48,7 @@ impl Stop {
 pub fn follow(host: &str) -> Result<(Follow, Stop), String> {
     let mut child = crate::phone::spawn(host, &crate::phone::as_owner(FOLLOW), Stdio::piped())?;
     let out = child.stdout.take().ok_or("no output")?;
-    Ok((Follow { lines: BufReader::new(out) }, Stop(Arc::new(Mutex::new(child)))))
+    Ok((Follow { lines: BufReader::new(out), queued: Default::default() }, Stop(Arc::new(Mutex::new(child)))))
 }
 
 impl Follow {
@@ -52,47 +56,69 @@ impl Follow {
     pub fn next(&mut self) -> Option<Reading> {
         let mut line = String::new();
         loop {
+            if let Some(r) = self.queued.pop_front() {
+                return Some(r);
+            }
             line.clear();
             if self.lines.read_line(&mut line).ok()? == 0 {
                 return None;
             }
-            if let Some(r) = reading(&line) {
-                return Some(r);
-            }
+            self.queued.extend(readings(&line));
         }
     }
 }
 
-/// A reading from busctl ("d 151", "ad 3 0.04 -0.01 1.02") or a
-/// PropertiesChanged ('Angle': <151.0>, 'Gravity': <[0.04, -0.01, 1.02]>):
-/// the gravity if the line has it, else the angle.
-fn reading(line: &str) -> Option<Reading> {
+/// The readings in a line from busctl ("d 151", "ad 3 0.04 -0.01 1.02",
+/// "s \"laptop\"") or a PropertiesChanged ('Angle': <151.0>, 'Gravity':
+/// <[0.04, -0.01, 1.02]>, 'Posture': <'laptop'>), all it has.
+fn readings(line: &str) -> Vec<Reading> {
     let line = line.trim();
     if let Some(rest) = line.strip_prefix("d ") {
-        return rest.trim().parse().ok().map(Reading::Angle);
+        return rest.trim().parse().ok().map(Reading::Angle).into_iter().collect();
     }
+    if let Some(rest) = line.strip_prefix("s \"") {
+        return vec![Reading::Posture(rest.trim_end_matches('"').to_owned())];
+    }
+    let three = |text: &str, sep: char| -> Option<Reading> {
+        let v: Vec<f64> = text.split(sep).filter_map(|x| x.trim().parse().ok()).collect();
+        (v.len() == 3).then(|| Reading::Gravity([v[0], v[1], v[2]]))
+    };
     if let Some(rest) = line.strip_prefix("ad 3 ") {
-        let v: Vec<f64> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-        return (v.len() == 3).then(|| Reading::Gravity([v[0], v[1], v[2]]));
+        return three(rest, ' ').into_iter().collect();
     }
-    if let Some(at) = line.find("'Gravity': <[") {
-        let rest = &line[at + 13..];
-        let v: Vec<f64> = rest[..rest.find(']')?].split(',').filter_map(|x| x.trim().parse().ok()).collect();
-        return (v.len() == 3).then(|| Reading::Gravity([v[0], v[1], v[2]]));
+    let mut out = Vec::new();
+    let after = |key: &str| line.find(key).map(|at| &line[at + key.len()..]);
+    if let Some(rest) = after("'Angle': <") {
+        if let Some(a) = rest.find('>').and_then(|e| rest[..e].trim().parse().ok()) {
+            out.push(Reading::Angle(a));
+        }
     }
-    let rest = &line[line.find("'Angle': <")? + 10..];
-    rest[..rest.find('>')?].trim().parse().ok().map(Reading::Angle)
+    if let Some(rest) = after("'Gravity': <[") {
+        if let Some(g) = rest.find(']').and_then(|e| three(&rest[..e], ',')) {
+            out.push(g);
+        }
+    }
+    if let Some(rest) = after("'Posture': <'") {
+        if let Some(e) = rest.find('\'') {
+            out.push(Reading::Posture(rest[..e].to_owned()));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn reads_both_forms() {
-        use super::{reading, Reading};
+        use super::{readings, Reading};
+        let reading = |l: &str| readings(l).into_iter().next();
         assert_eq!(reading("d 151\n"), Some(Reading::Angle(151.0)));
         assert_eq!(reading("/org/sfduo/Posture: org.freedesktop.DBus.Properties.PropertiesChanged ('org.sfduo.Posture', {'Angle': <104.5>, 'Moving': <true>}, @as [])"), Some(Reading::Angle(104.5)));
         assert_eq!(reading("ad 3 0.0491367 -0.00868073 1.02411"), Some(Reading::Gravity([0.0491367, -0.00868073, 1.02411])));
         assert_eq!(reading("/org/sfduo/Posture: org.freedesktop.DBus.Properties.PropertiesChanged ('org.sfduo.Posture', {'Gravity': <[0.05, -0.5, 0.86]>}, @as [])"), Some(Reading::Gravity([0.05, -0.5, 0.86])));
+        assert_eq!(reading("s \"laptop\""), Some(Reading::Posture("laptop".into())));
+        assert_eq!(reading("/org/sfduo/Posture: org.freedesktop.DBus.Properties.PropertiesChanged ('org.sfduo.Posture', {'Posture': <'closed'>}, @as [])"), Some(Reading::Posture("closed".into())));
         assert_eq!(reading("Monitoring signals on object"), None);
+        assert_eq!(readings("('org.sfduo.Posture', {'Angle': <88.0>, 'Posture': <'laptop'>}, @as [])"), vec![Reading::Angle(88.0), Reading::Posture("laptop".into())]);
     }
 }

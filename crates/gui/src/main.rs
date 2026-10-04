@@ -238,6 +238,11 @@ struct Ui {
     /// How the phone is tipped from lying flat (pitch about its width, roll
     /// about its length, degrees, from its gravity): shown, and to go to.
     tilt: std::cell::Cell<([f64; 2], [f64; 2])>,
+    /// The posture in words under the Duo; what it is made from: the
+    /// hinge's posture by name, the gravities lately (in a hand: they move).
+    pose: gtk::Label,
+    pose_name: RefCell<String>,
+    gravities: RefCell<std::collections::VecDeque<(std::time::Instant, [f64; 3])>>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, cradle_core::posture::Stop)>>,
     /// The simple page and its parts.
@@ -384,6 +389,9 @@ fn build(app: &adw::Application) {
     duo_over.set_child(Some(&duo_sized));
     duo_over.add_overlay(&duo_mode);
     device.append(&duo_over);
+    // The posture, in words.
+    let pose = gtk::Label::builder().css_classes(["dim-label"]).margin_top(4).build();
+    device.append(&pose);
     let live_badge = gtk::Label::builder().label("● LIVE").css_classes(["live-badge"]).build();
     live_badge.set_visible(false);
     device.append(&live_badge);
@@ -676,6 +684,9 @@ fn build(app: &adw::Application) {
         fold: std::cell::Cell::new((180.0, 180.0)),
         following: RefCell::default(),
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
+        pose: pose.clone(),
+        pose_name: RefCell::default(),
+        gravities: RefCell::default(),
         home,
         status_dot,
         status_title,
@@ -1373,10 +1384,14 @@ fn simple_status(ui: &Ui, s: &status::Status, problems: &[String], link: &str) {
 /// The hinge followed while the phone is in Linux and no job runs (started
 /// again if it ended); stopped otherwise.
 fn follow_hinge(ui: &Rc<Ui>) {
+    say_pose(ui);
     let want = {
         let st = ui.state.borrow();
         st.host.clone().filter(|_| !st.busy && !st.elsewhere)
     };
+    if want.is_none() {
+        ui.pose_name.borrow_mut().clear();
+    }
     let running = ui.following.borrow().as_ref().map(|(h, _)| h.clone());
     if running == want {
         return;
@@ -1400,8 +1415,17 @@ fn follow_hinge(ui: &Rc<Ui>) {
         while let Ok(r) = rx.recv().await {
             match r {
                 cradle_core::posture::Reading::Angle(a) => fold_to(&ui, a),
-                cradle_core::posture::Reading::Gravity(g) => tilt_to(&ui, g),
+                cradle_core::posture::Reading::Gravity(g) => {
+                    tilt_to(&ui, g);
+                    let mut gs = ui.gravities.borrow_mut();
+                    gs.push_back((std::time::Instant::now(), g));
+                    while gs.len() > 40 {
+                        gs.pop_front();
+                    }
+                }
+                cradle_core::posture::Reading::Posture(p) => *ui.pose_name.borrow_mut() = p,
             }
+            say_pose(&ui);
         }
         // It ended (the phone went, or was stopped): started again next second.
         let mine = ui.following.borrow().as_ref().is_some_and(|(_, s)| s.same(&stop));
@@ -1409,6 +1433,39 @@ fn follow_hinge(ui: &Rc<Ui>) {
             ui.following.borrow_mut().take();
         }
     });
+}
+
+/// The posture in words, from the hinge's posture, its angle and the right
+/// half's gravity (x across, y along, z out of its screen): closed, laptop
+/// (the right half lying) or book (held with the spine upright), open
+/// flat, tent, folded back, partly open; "in your hand" when its gravity
+/// moved within the last two seconds.
+fn say_pose(ui: &Ui) {
+    let name = ui.pose_name.borrow().clone();
+    let angle = ui.fold.get().1;
+    let gs = ui.gravities.borrow();
+    let g = gs.back().map(|(_, g)| *g).unwrap_or([0.0, 0.0, 1.0]);
+    let recent: Vec<[f64; 3]> = gs.iter().filter(|(t, _)| t.elapsed().as_secs_f64() < 2.0).map(|(_, g)| *g).collect();
+    let spread = (0..3).map(|i| recent.iter().map(|g| g[i]).fold(f64::MIN, f64::max) - recent.iter().map(|g| g[i]).fold(f64::MAX, f64::min)).fold(0.0, f64::max);
+    let held = recent.len() >= 3 && spread > 0.06;
+    let words = match name.as_str() {
+        "" => "",
+        "closed" => "Closed",
+        "folded" => "Folded back",
+        "flat" => "Open flat",
+        "laptop" if g[1].abs() > 0.7 => "Book",
+        "laptop" => "Laptop",
+        _ if (200.0..340.0).contains(&angle) => "Tent",
+        _ => "Partly open",
+    };
+    let line = match (words, held) {
+        ("", _) => String::new(),
+        (w, true) => format!("{w} · in your hand"),
+        (w, false) => w.to_owned(),
+    };
+    if ui.pose.label() != line {
+        ui.pose.set_label(&line);
+    }
 }
 
 /// How the phone is tipped, from its gravity (the right half's frame: x
@@ -1900,11 +1957,14 @@ fn bottom_shown(ui: &Ui) {
 /// there, off otherwise.
 fn live_sync(ui: &Rc<Ui>) {
     let host = ui.state.borrow().host.clone();
-    // The live view only in Developer Mode, and kept while the window is
-    // behind others: on the phone each start and stop of it reads the
-    // screen anew, and item crashed in the GPU driver there (2026-10-05);
-    // the simple window has a picture every few seconds instead.
-    let wanted = developer_mode() && host.is_some() && !ui.state.borrow().busy && ui.tabs.visible_child_name().as_deref() == Some("general");
+    // Kept while the window is behind others: each start and stop of it
+    // made item read the screen anew (item crashed in the GPU driver there
+    // on 2026-10-05, since fixed).
+    // On the cable in the simple window too (the crash is fixed: item drew
+    // the mirror's frame by a scaled blit); over Wi-Fi only in Developer
+    // Mode - ten frames a second are some 8 MB/s of the phone's radio.
+    let cable = host.as_deref().is_some_and(|h| cradle_core::link::Via::of(h) == cradle_core::link::Via::Cable);
+    let wanted = (developer_mode() || cable) && host.is_some() && !ui.state.borrow().busy && ui.tabs.visible_child_name().as_deref() == Some("general");
     if !wanted {
         if let Some(stop) = ui.live.borrow_mut().take() {
             stop.stop();
@@ -1942,7 +2002,7 @@ fn live_sync(ui: &Rc<Ui>) {
             }
             frames += 1;
             if frames == 1 {
-                ui.live_badge.set_visible(true);
+                ui.live_badge.set_visible(developer_mode());
             }
         }
         let _ = work.await;
