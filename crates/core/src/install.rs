@@ -82,7 +82,7 @@ pub fn public_key() -> Result<String, String> {
 
 /// Erase and install, from Linux. `confirm` must be the phone's word
 /// (android::confirm_word).
-pub fn erase_and_install(host: &str, release: &Release, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
+pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
     use crate::full::adb_shell;
     let serial = crate::backup::serial(host)?;
     if confirm.trim() != crate::android::confirm_word(&serial) {
@@ -98,17 +98,28 @@ pub fn erase_and_install(host: &str, release: &Release, confirm: &str, say: crat
         return Err("the release image does not match its manifest - nothing is changed".into());
     }
 
-    let full = match crate::android::fresh_full(host, &serial)? {
-        Some(b) => {
-            say(format!("the whole system was backed up {} - fresh", b.manifest.created));
-            b
+    // What is kept, taken first. The device data (not on userdata, never
+    // touched here) is backed up once in any case.
+    if !crate::backup::has_device_data(&serial) {
+        say("backing up the device data first (radio calibration, IMEI)".into());
+        crate::backup::take(host, crate::backup::Kind::Device, say)?;
+    }
+    let mut quick = None;
+    match mode {
+        Mode::Erase => say("nothing is kept: the phone starts afresh".into()),
+        Mode::KeepFiles => {
+            say("backing up your files and settings".into());
+            quick = Some(crate::backup::take(host, crate::backup::Kind::Quick, say)?);
         }
-        None => {
-            say("taking the whole system's backup first".into());
-            crate::full::take(host, say)?
-        }
-    };
-    crate::flash::log(&serial, &format!("erase and install {} begun: the system backed up in {} - cradle", release.name, full.dir.display()))?;
+        Mode::FullCopy => match crate::android::fresh_full(host, &serial)? {
+            Some(b) => say(format!("the whole system was backed up {} - fresh", b.manifest.created)),
+            None => {
+                say("taking the whole system's backup first".into());
+                crate::full::take(host, say)?;
+            }
+        },
+    }
+    crate::flash::log(&serial, &format!("erase and install {} begun ({}) - cradle", release.name, mode.words()))?;
 
     say("into TWRP".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
@@ -151,8 +162,13 @@ pub fn erase_and_install(host: &str, release: &Release, confirm: &str, say: crat
         )
         .map(|_| ())
     })();
+    let kept = match (&quick, &put_key) {
+        (Some(q), Ok(())) => put_kept(&serial, q, say),
+        _ => Ok(()),
+    };
     adb_shell(&serial, "sync; umount /tmp/r; sync; umount /tmp/ud").ok();
     put_key?;
+    kept?;
 
     say("clearing misc".into());
     adb_shell(&serial, &format!("dd if=/dev/zero of={blk}/misc bs=2048 count=1 2>/dev/null; sync"))?;
@@ -170,7 +186,7 @@ pub fn erase_and_install(host: &str, release: &Release, confirm: &str, say: crat
     }
     crate::ramboot::arm_brake_linux(host)?;
     crate::flash::log(&serial, "the new system answers, parking brake armed - cradle")?;
-    say("the new system is up: unlock with 1234, then choose your own PIN".into());
+    say(if mode == Mode::KeepFiles { "the new system is up: unlock with your PIN".into() } else { "the new system is up: unlock with 1234, then choose your own PIN".into() });
     Ok(())
 }
 
@@ -199,4 +215,112 @@ fn hash_stream(r: &mut dyn Read) -> Result<(u64, String), String> {
         n += k as u64;
     }
     Ok((n, format!("{:x}", h.finalize())))
+}
+
+// ---- the modes -----------------------------------------------------------------
+
+/// What happens to what the phone holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mode {
+    /// Nothing kept: the fastest (minutes).
+    Erase,
+    /// The home folder, Wi-Fi networks, time zone and PIN kept, from a quick
+    /// backup taken first, put into the new system before its first start.
+    KeepFiles,
+    /// The whole system backed up first, to be brought back exactly (Back to
+    /// Linux) - for trying images; ~20 minutes more.
+    FullCopy,
+}
+
+impl Mode {
+    pub fn words(self) -> &'static str {
+        match self {
+            Mode::Erase => "nothing kept",
+            Mode::KeepFiles => "your files, Wi-Fi networks, time zone and PIN kept",
+            Mode::FullCopy => "a full copy of the current system kept on this computer",
+        }
+    }
+}
+
+/// From the quick backup, what a new system takes: the home folder, the
+/// Wi-Fi networks, the time zone.
+fn kept(path: &str) -> bool {
+    path.starts_with("home/") || path == "home" || path.starts_with("etc/NetworkManager/system-connections") || path == "etc/localtime" || path == "etc/timezone"
+}
+
+/// Files bigger than this go part by part (TWRP's tar writes a big file from
+/// a stream as empty); the rest in one tar stream.
+const BIG: u64 = 32 << 20;
+
+/// The kept part of a quick backup put into the new system, mounted at /tmp/r
+/// in TWRP: small files through tar, big ones part by part, every file's size
+/// checked after; the owner's password hash (the PIN) carried over.
+fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Say) -> Result<(), String> {
+    use crate::full::{adb_send, adb_shell};
+    let archive = quick.dir.join("home-etc.tar.gz");
+    let open = || -> Result<tar::Archive<flate2::read::MultiGzDecoder<std::io::BufReader<std::fs::File>>>, String> {
+        let f = std::fs::File::open(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
+        Ok(tar::Archive::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(f))))
+    };
+    // Pass one: the small entries into a tar of their own, the big ones and
+    // the sizes noted, the PIN's line kept.
+    let mut small = tar::Builder::new(Vec::new());
+    let (mut big, mut sizes, mut shadow) = (Vec::new(), String::new(), None);
+    let mut a = open()?;
+    for entry in a.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().trim_start_matches("./").to_owned();
+        if path == "etc/shadow" {
+            let mut text = String::new();
+            entry.read_to_string(&mut text).map_err(|e| e.to_string())?;
+            shadow = text.lines().find(|l| l.starts_with("droidian:")).map(str::to_owned);
+            continue;
+        }
+        if !kept(&path) || path.contains('\'') || path.contains('\n') {
+            continue;
+        }
+        let header = entry.header().clone();
+        let size = header.size().unwrap_or(0);
+        if header.entry_type() == tar::EntryType::Regular && size > BIG {
+            big.push((path, size, header.mode().unwrap_or(0o644), header.uid().unwrap_or(0), header.gid().unwrap_or(0)));
+            continue;
+        }
+        if header.entry_type() == tar::EntryType::Regular {
+            sizes.push_str(&format!("{size} /tmp/r/{path}\n"));
+        }
+        let mut h = header.clone();
+        small.append_data(&mut h, &path, &mut entry).map_err(|e| format!("{path}: {e}"))?;
+    }
+    let small = small.into_inner().map_err(|e| e.to_string())?;
+    say(format!("putting back your files ({} MB, {} big)", small.len() >> 20, big.len()));
+    adb_send(serial, "tar -C /tmp/r -xpf -", &mut &small[..])?;
+    for (path, size, mode, uid, gid) in &big {
+        say(format!("putting back {path} ({} MB)", size >> 20));
+        let mut a = open()?;
+        let mut found = false;
+        for entry in a.entries().map_err(|e| e.to_string())? {
+            let mut entry = entry.map_err(|e| e.to_string())?;
+            if entry.path().map(|p| p.to_string_lossy().trim_start_matches("./") == path.as_str()).unwrap_or(false) {
+                crate::android::put_file(serial, &format!("/tmp/r/{path}"), &mut entry, path, say)?;
+                adb_shell(serial, &format!("chmod {mode:o} '/tmp/r/{path}'; chown {uid}:{gid} '/tmp/r/{path}'"))?;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(format!("{path} went missing from the backup"));
+        }
+    }
+    // Every small file there, at its size.
+    adb_send(serial, "cat > /tmp/kept-sizes", &mut sizes.as_bytes())?;
+    let bad = adb_shell(serial, "n=0; while read s p; do [ \"$(stat -c %s \"$p\" 2>/dev/null)\" = \"$s\" ] || n=$((n+1)); done < /tmp/kept-sizes; rm -f /tmp/kept-sizes; echo $n")?;
+    if bad.trim() != "0" {
+        return Err(format!("{} of your files did not arrive whole - stopping in TWRP", bad.trim()));
+    }
+    // The PIN: the owner's password hash in place of the image's.
+    if let Some(line) = shadow {
+        adb_send(serial, "cat > /tmp/kept-shadow", &mut line.as_bytes())?;
+        adb_shell(serial, "l=$(cat /tmp/kept-shadow); rm -f /tmp/kept-shadow; grep -v '^droidian:' /tmp/r/etc/shadow > /tmp/shadow.new && echo \"$l\" >> /tmp/shadow.new && cat /tmp/shadow.new > /tmp/r/etc/shadow && rm -f /tmp/shadow.new && grep -c '^droidian:' /tmp/r/etc/shadow")?;
+    }
+    Ok(())
 }

@@ -550,7 +550,8 @@ pub fn on_usb_quietly() -> Option<String> {
 /// left as holes. Returns its size and sha256.
 pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, label: &str, say: crate::ramboot::Say) -> Result<(u64, String), String> {
     use sha2::{Digest, Sha256};
-    let path = format!("/tmp/ud/{name}");
+    // A name is on userdata; a path (from /) is anywhere.
+    let path = if name.starts_with('/') { name.to_owned() } else { format!("/tmp/ud/{name}") };
     let part = 512usize << 20;
     let mut buf = vec![0u8; part];
     let mut whole = Sha256::new();

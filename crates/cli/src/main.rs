@@ -19,7 +19,13 @@ fn main() {
             "back" => "android-back",
             _ => "android-trial",
         }),
-        (Some("install"), _) if args.iter().any(|a| a == "--yes") => Some("install"),
+        (Some("install"), _) if args.iter().any(|a| a == "--yes") => Some(if args.iter().any(|a| a == "--full-copy") {
+            "install-full"
+        } else if args.iter().any(|a| a == "--keep-files") {
+            "install-keep"
+        } else {
+            "install"
+        }),
         (Some(c @ ("update" | "reboot" | "backup" | "ramboot" | "recovery-exit" | "restore")), _) => Some(&*Box::leak(c.to_owned().into_boxed_str())),
         _ => None,
     };
@@ -482,15 +488,19 @@ fn cmd_install(args: &[String]) -> i32 {
         },
     };
     let Some(host) = linux() else { return 1 };
+    let mode = if args.iter().any(|a| a == "--full-copy") {
+        install::Mode::FullCopy
+    } else if args.iter().any(|a| a == "--keep-files") {
+        install::Mode::KeepFiles
+    } else {
+        install::Mode::Erase
+    };
     println!("Erase and install - the plan\n");
     println!("Image:     {} ({} MB; adaptation {}, item {})", release.name, release.size >> 20, release.adaptation, release.item);
     let serial = cradle_core::backup::serial(&host).unwrap_or_default();
-    match cradle_core::android::fresh_full(&host, &serial) {
-        Ok(Some(b)) => println!("Backup:    the whole system, {} - fresh", b.manifest.created),
-        _ => println!("Backup:    the whole system is backed up first (~20 min)"),
-    }
+    println!("Kept:      {} (--keep-files: home, Wi-Fi, time zone, PIN; --full-copy: the whole system, ~20 min more)", mode.words());
     println!("Erased:    everything on userdata - the system, home, settings, the Android container");
-    println!("Kept:      the device data, the boot chain, the unlocked bootloader");
+    println!("Untouched: the device data, the boot chain, the unlocked bootloader");
     println!("After:     the new system's first start; unlock with 1234, then choose a PIN");
     if !args.iter().any(|a| a == "--yes") {
         println!("\nRun again with --yes to go (the phone's number is asked before anything is erased).");
@@ -501,7 +511,7 @@ fn cmd_install(args: &[String]) -> i32 {
     let mut typed = String::new();
     let _ = std::io::stdin().read_line(&mut typed);
     let start = std::time::Instant::now();
-    match install::erase_and_install(&host, &release, &typed, &mut |l| said(&start, &l)) {
+    match install::erase_and_install(&host, &release, mode, &typed, &mut |l| said(&start, &l)) {
         Ok(()) => 0,
         Err(e) => {
             stop(&e);
@@ -853,7 +863,8 @@ fn usage() {
     println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go;");
     println!("               a TWRP image, or --recovery, is awaited in the recovery)");
     println!("  recovery-exit  out of the recovery, back into Linux");
-    println!("  install      erase and install item from a release image ([DIR]; the plan; --yes to go)");
+    println!("  install      erase and install item from a release image ([DIR]; the plan; --yes to go;
+               --keep-files keeps home, Wi-Fi, time zone, PIN; --full-copy backs up the whole system)");
     println!("  stock        Microsoft's packages here, their boot chain taken out and checked ([PACKAGE])");
     println!("  brake        arm the parking brake (misc): the next restart stops in the bootloader");
     println!("  club         the Duo owners' club: club token (paste one from the site), club forget");

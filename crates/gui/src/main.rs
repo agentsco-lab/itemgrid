@@ -1215,7 +1215,7 @@ enum Job {
     /// Microsoft's package from a link, then its boot chain taken out.
     StockDownload(String, String),
     /// A release image put on the phone, userdata made anew.
-    Install(Box<cradle_core::install::Release>),
+    Install(Box<cradle_core::install::Release>, cradle_core::install::Mode),
 }
 
 impl Job {
@@ -1233,7 +1233,11 @@ impl Job {
             Job::AndroidStart(_) => "android-start",
             Job::AndroidBack(_) => "android-back",
             Job::StockDownload(..) => "stock-download",
-            Job::Install(_) => "install",
+            Job::Install(_, m) => match m {
+                cradle_core::install::Mode::Erase => "install",
+                cradle_core::install::Mode::KeepFiles => "install-keep",
+                cradle_core::install::Mode::FullCopy => "install-full",
+            },
         }
     }
 }
@@ -1447,7 +1451,7 @@ fn ask(ui: &Rc<Ui>, heading: &str, body: &str, yes: &str, job: Job) {
 /// another Cradle too.
 fn run_job(ui: &Rc<Ui>, job: Job) {
     let host = ui.state.borrow().host.clone();
-    let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_) | Job::Install(_));
+    let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_) | Job::Install(..));
     if needs_linux && host.is_none() {
         stopped(ui, "The phone is not in Linux just now.");
         return;
@@ -1488,10 +1492,10 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
             }
             Job::AndroidStart(serial) => cradle_core::android::start(&host, &serial, &mut say),
             Job::AndroidBack(serial) => cradle_core::android::back(&host, &serial, &mut say),
-            Job::Install(release) => {
+            Job::Install(release, mode) => {
                 let word = cradle_core::backup::serial(&host).map(|s| cradle_core::android::confirm_word(&s)).unwrap_or_default();
                 // The number was typed in the window already.
-                cradle_core::install::erase_and_install(&host, &release, &word, &mut say)
+                cradle_core::install::erase_and_install(&host, &release, mode, &word, &mut say)
             }
             Job::StockDownload(url, label) => (|| {
                 say(format!("downloading {label}"));
@@ -1692,23 +1696,26 @@ fn erase_and_install(ui: &Rc<Ui>) {
                 return;
             }
         };
+        let _ = fresh;
         let body = format!(
             "{} - item {}, the port {}.\n\n\
-             1. {}\n\
-             2. The recovery starts and the way in is tested - nothing is erased if it fails.\n\
-             3. The phone's data partition is made anew: the system, your home and settings, the Android container go.\n\
-             4. The new system is written in checked parts (about 5 GB) and this computer's key put in.\n\
-             5. Its first start grows it to fill the phone. Unlock with 1234, then choose your own PIN.\n\n\
-             Kept: the device data, the boot chain, the unlocked bootloader. Your old system stays in the backup - Back to Linux brings it back.\n\n\
+             The recovery starts, the way in is tested (nothing is erased if it fails), the phone's data partition is made anew and the new system written in checked parts; its first start grows it to fill the phone. The device data, the boot chain and the unlocked bootloader are not touched.\n\n\
              Type {word} - this Duo's number - to go on.",
-            release.name,
-            release.item,
-            release.adaptation,
-            if fresh { "The whole-system backup taken a moment ago is used." } else { "Everything is backed up to this computer first (about 20 minutes)." },
+            release.name, release.item, release.adaptation,
         );
+        let erase = gtk::CheckButton::builder().label("Erase everything - about 10 minutes").active(true).build();
+        let keep = gtk::CheckButton::builder().label("Keep my files, Wi-Fi networks and PIN - about 15 minutes").group(&erase).build();
+        let full = gtk::CheckButton::builder().label("Keep a full copy of this system on the computer - about 35 minutes").group(&erase).build();
+        let choices = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        choices.append(&erase);
+        choices.append(&keep);
+        choices.append(&full);
         let entry = gtk::Entry::builder().placeholder_text(word.as_str()).input_purpose(gtk::InputPurpose::Digits).build();
         let dialog = adw::AlertDialog::new(Some("Erase and install item?"), Some(&body));
-        dialog.set_extra_child(Some(&entry));
+        let extra = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        extra.append(&choices);
+        extra.append(&entry);
+        dialog.set_extra_child(Some(&extra));
         dialog.add_responses(&[("cancel", "Cancel"), ("go", "Erase and Install")]);
         dialog.set_response_appearance("go", adw::ResponseAppearance::Destructive);
         dialog.set_response_enabled("go", false);
@@ -1722,7 +1729,14 @@ fn erase_and_install(ui: &Rc<Ui>) {
         let ui2 = ui.clone();
         dialog.connect_response(None, move |_, response| {
             if response == "go" {
-                run_job(&ui2, Job::Install(Box::new(release.clone())));
+                let mode = if keep.is_active() {
+                    cradle_core::install::Mode::KeepFiles
+                } else if full.is_active() {
+                    cradle_core::install::Mode::FullCopy
+                } else {
+                    cradle_core::install::Mode::Erase
+                };
+                run_job(&ui2, Job::Install(Box::new(release.clone()), mode));
             }
         });
         dialog.present(Some(&ui.window));
