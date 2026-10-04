@@ -1432,7 +1432,30 @@ fn duo_half(body: Option<&gdk::Texture>, screen: Option<&gdk::Paintable>, i: usi
         snap.pop();
         snap.restore();
     }
-    snap.to_paintable(Some(&graphene::Size::new(mid + 2.0 * DUO_PAD, bh as f32 + 2.0 * DUO_PAD))).unwrap_or_else(|| gdk::Paintable::new_empty(bw / 2, bh))
+    flatten(&snap, mid + 2.0 * DUO_PAD, bh as f32 + 2.0 * DUO_PAD)
+}
+
+/// What a snapshot drew, made one texture (`w` x `h`, twice as dense): a
+/// picture turned in 3D is drawn whole then - GTK drew the clips, masks and
+/// blurs of a turned render node in pieces and in the wrong places.
+fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
+    use gtk::{graphene, gsk};
+    thread_local! {
+        static RENDERER: Option<gsk::CairoRenderer> = gdk::Display::default().and_then(|d| {
+            let r = gsk::CairoRenderer::new();
+            let _ = d;
+            r.realize(None::<&gdk::Surface>).ok().map(|_| r)
+        });
+    }
+    let node = snap.clone().to_node();
+    let texture = node.and_then(|node| {
+        let scaled = gsk::TransformNode::new(&node, &gsk::Transform::new().scale(2.0, 2.0));
+        RENDERER.with(|r| r.as_ref().map(|r| r.render_texture(&scaled, Some(&graphene::Rect::new(0.0, 0.0, 2.0 * w, 2.0 * h)))))
+    });
+    match texture {
+        Some(t) => t.upcast(),
+        None => gdk::Paintable::new_empty(w as i32, h as i32),
+    }
 }
 
 /// A half's back: frosted glacier glass, lighter toward the spine and the
@@ -1457,7 +1480,7 @@ fn duo_back(body: Option<&gdk::Texture>, i: usize, bw: i32, bh: i32) -> gdk::Pai
     let (from, to) = if i == 0 { (graphene::Point::new(0.0, h), graphene::Point::new(mid, 0.0)) } else { (graphene::Point::new(mid, h), graphene::Point::new(0.0, 0.0)) };
     snap.append_linear_gradient(&rect, &from, &to, &[stop(0.0, 0.70, 0.71, 0.67), stop(0.6, 0.79, 0.80, 0.76), stop(1.0, 0.86, 0.87, 0.83)]);
     snap.pop();
-    snap.to_paintable(Some(&graphene::Size::new(mid + 2.0 * DUO_PAD, h + 2.0 * DUO_PAD))).unwrap_or_else(|| gdk::Paintable::new_empty(bw / 2, bh))
+    flatten(&snap, mid + 2.0 * DUO_PAD, h + 2.0 * DUO_PAD)
 }
 
 /// A half's silhouette in one colour (its shade, its shadow -
@@ -1484,7 +1507,7 @@ fn duo_silhouette(body: Option<&gdk::Texture>, i: usize, bw: i32, bh: i32, pad: 
     if blur > 0.0 {
         snap.pop();
     }
-    snap.to_paintable(Some(&graphene::Size::new(mid + 2.0 * pad, bh as f32 + 2.0 * pad))).unwrap_or_else(|| gdk::Paintable::new_empty(bw / 2, bh))
+    flatten(&snap, mid + 2.0 * pad, bh as f32 + 2.0 * pad)
 }
 
 /// The Duo as it lies on a table, seen from a little above, tipped as it is
