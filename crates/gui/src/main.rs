@@ -353,9 +353,12 @@ fn build(app: &adw::Application) {
     let backup_all = pill("Back Up Everything…");
     let restore = pill("Restore Backup…");
     restore.set_tooltip_text(Some("A slot's boot chain put back from a backup - one slot at a time, a changed boot tried from RAM first"));
+    let back_full = pill("Back to a Full Backup…");
+    back_full.set_tooltip_text(Some("The whole system as the newest full backup has it - exactly, part by part; what the phone holds now goes"));
     back_row.append(&backup);
     back_row.append(&backup_all);
     back_row.append(&restore);
+    back_row.append(&back_full);
     back.append(&back_row);
     let backups = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).margin_top(6).build();
     back.append(&backups);
@@ -555,6 +558,33 @@ fn build(app: &adw::Application) {
     get_android.connect_clicked({
         let ui = ui.clone();
         move |_| get_android_from_microsoft(&ui)
+    });
+    back_full.connect_clicked({
+        let ui = ui.clone();
+        move |_| {
+            let serial = ui.serial.borrow().clone();
+            let newest = cradle_core::backup::list(Some(&serial)).into_iter().find(|b| b.manifest.kind == cradle_core::backup::Kind::Full);
+            let Some(b) = newest else {
+                stopped(&ui, "No full backup of this phone yet: Back Up Everything makes one.");
+                return;
+            };
+            let body = format!(
+                "The whole system goes back as it was on {} (item {}): the recovery starts, the data partition is made anew, the system and the Android apps' data are written back part by part, each checked. About 40 minutes. What the phone holds now goes.",
+                b.manifest.created, b.manifest.item
+            );
+            let dialog = adw::AlertDialog::new(Some("Back to the full backup?"), Some(&body));
+            dialog.add_responses(&[("cancel", "Cancel"), ("go", "Go Back")]);
+            dialog.set_response_appearance("go", adw::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+            let ui2 = ui.clone();
+            dialog.connect_response(None, move |_, response| {
+                if response == "go" {
+                    run_job(&ui2, Job::AndroidBack(serial.clone()));
+                }
+            });
+            dialog.present(Some(&ui.window));
+        }
     });
     to_android.connect_clicked({
         let ui = ui.clone();

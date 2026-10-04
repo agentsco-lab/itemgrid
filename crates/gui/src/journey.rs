@@ -136,7 +136,7 @@ pub fn title(job: &str) -> &'static str {
         "full-backup" => "Backing up the whole system",
         "android-go" => "Returning to Android",
         "android-start" => "Starting Android",
-        "android-back" => "Back to Linux",
+        "android-back" => "Back to the full backup",
         "android-trial" => "Testing the way back",
         "stock-download" => "Getting Android from Microsoft",
         "install" | "install-keep" | "install-full" => "Erase and install item",
