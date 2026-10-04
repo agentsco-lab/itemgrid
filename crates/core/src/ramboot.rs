@@ -305,7 +305,7 @@ pub fn adb_to_bootloader(serial: &str) -> Result<(), String> {
 }
 
 /// Whether this phone is in recovery over adb.
-fn in_recovery(serial: &str) -> bool {
+pub fn in_recovery(serial: &str) -> bool {
     adb(&["devices"], Duration::from_secs(10)).is_ok_and(|o| o.lines().any(|l| {
         let mut w = l.split_whitespace();
         w.next() == Some(serial) && w.next() == Some("recovery")

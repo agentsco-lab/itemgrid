@@ -258,7 +258,7 @@ mod tests {
 // ---- going: from Linux to stock Android -------------------------------------
 
 /// The partitions by name in TWRP.
-const BLK: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name";
+pub(crate) const BLK: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name";
 /// The way back is tried with this much before anything is erased.
 const TEST_BYTES: u64 = 512 << 20;
 /// sha256 of 1 MiB of zeros.
@@ -266,6 +266,10 @@ const ZERO_MB: &str = "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af9
 
 /// Which stock kernel and slot the guest Android runs from: kept per phone
 /// so a restart picks the same, not a guess.
+pub(crate) fn guest_path_of(serial: &str) -> PathBuf {
+    guest_path(serial)
+}
+
 fn guest_path(serial: &str) -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/cradle/android").join(format!("{serial}.json"))
 }
@@ -447,12 +451,17 @@ pub fn back(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), St
     let twrp_img = crate::ramboot::check_image(&twrp)?;
     say(format!("coming back from the backup of {}", full.manifest.created));
 
-    // Into TWRP, from wherever the phone is.
-    if !crate::ramboot::in_fastboot(serial) {
-        say("into the bootloader".into());
-        crate::ramboot::adb_to_bootloader(serial)?;
+    // Into TWRP, from wherever the phone is: Linux (a system installed
+    // afresh), the recovery already, the bootloader, or Android.
+    if crate::phone::answers_fresh(host) {
+        crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
+    } else if !crate::ramboot::in_recovery(serial) {
+        if !crate::ramboot::in_fastboot(serial) {
+            say("into the bootloader".into());
+            crate::ramboot::adb_to_bootloader(serial)?;
+        }
+        crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
     }
-    crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
     if !crate::full::fast_tools(serial) {
         return Err("this TWRP lacks pigz or nc - the way back needs them".into());
     }
@@ -539,7 +548,7 @@ pub fn on_usb_quietly() -> Option<String> {
 /// A file put onto userdata (mounted at /tmp/ud in TWRP) in 512 MB parts,
 /// each checked on the phone and sent again if it differs; parts all zeros
 /// left as holes. Returns its size and sha256.
-fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, label: &str, say: crate::ramboot::Say) -> Result<(u64, String), String> {
+pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, label: &str, say: crate::ramboot::Say) -> Result<(u64, String), String> {
     use sha2::{Digest, Sha256};
     let path = format!("/tmp/ud/{name}");
     let part = 512usize << 20;
@@ -627,4 +636,16 @@ fn put_tree(serial: &str, archive: std::fs::File, say: crate::ramboot::Say) -> R
         crate::full::adb_shell(serial, &format!("chmod {mode:o} '/tmp/ud/{name}'; chown {}:{} '/tmp/ud/{name}'; touch -d @{mtime} '/tmp/ud/{name}' 2>/dev/null; true", header.uid().unwrap_or(0), header.gid().unwrap_or(0)))?;
     }
     Ok(())
+}
+
+/// The newest whole-system backup of this phone, if it is fresh: taken
+/// within the hour and after the phone's last boot.
+pub fn fresh_full(host: &str, serial: &str) -> Result<Option<Backup>, String> {
+    let full = crate::backup::list(Some(serial)).into_iter().find(|b| b.manifest.kind == Kind::Full);
+    let times: Vec<i64> = crate::phone::run(host, "date +%s; awk '/^btime/ {print $2}' /proc/stat\n")?.lines().filter_map(|l| l.trim().parse().ok()).collect();
+    let (phone_now, booted) = (times.first().copied().unwrap_or(0), times.get(1).copied().unwrap_or(0));
+    Ok(full.filter(|b| {
+        let taken = local_secs(&b.manifest.created);
+        taken > booted && phone_now - taken < FRESH_SECS
+    }))
 }

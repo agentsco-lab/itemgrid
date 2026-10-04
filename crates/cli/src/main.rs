@@ -19,6 +19,7 @@ fn main() {
             "back" => "android-back",
             _ => "android-trial",
         }),
+        (Some("install"), _) if args.iter().any(|a| a == "--yes") => Some("install"),
         (Some(c @ ("update" | "reboot" | "backup" | "ramboot" | "recovery-exit" | "restore")), _) => Some(&*Box::leak(c.to_owned().into_boxed_str())),
         _ => None,
     };
@@ -42,6 +43,7 @@ fn main() {
         Some("recovery-exit") => cmd_recovery_exit(),
         Some("brake") => cmd_brake(),
         Some("stock") => cmd_stock(&args[1..]),
+        Some("install") => cmd_install(&args[1..]),
         Some("club") => cmd_club(&args[1..]),
         Some("register") => cmd_register(),
         Some("restore") => cmd_restore(&args[1..]),
@@ -461,6 +463,53 @@ fn cmd_ramboot(args: &[String]) -> i32 {
     }
 }
 
+fn cmd_install(args: &[String]) -> i32 {
+    use cradle_core::install;
+    let release = match args.iter().find(|a| !a.starts_with('-')) {
+        Some(d) => match install::read(std::path::Path::new(d)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("cradle: {e}");
+                return 1;
+            }
+        },
+        None => match install::releases().pop() {
+            Some(r) => r,
+            None => {
+                eprintln!("cradle: no release image here ({})", install::places().iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+                return 1;
+            }
+        },
+    };
+    let Some(host) = linux() else { return 1 };
+    println!("Erase and install - the plan\n");
+    println!("Image:     {} ({} MB; adaptation {}, item {})", release.name, release.size >> 20, release.adaptation, release.item);
+    let serial = cradle_core::backup::serial(&host).unwrap_or_default();
+    match cradle_core::android::fresh_full(&host, &serial) {
+        Ok(Some(b)) => println!("Backup:    the whole system, {} - fresh", b.manifest.created),
+        _ => println!("Backup:    the whole system is backed up first (~20 min)"),
+    }
+    println!("Erased:    everything on userdata - the system, home, settings, the Android container");
+    println!("Kept:      the device data, the boot chain, the unlocked bootloader");
+    println!("After:     the new system's first start; unlock with 1234, then choose a PIN");
+    if !args.iter().any(|a| a == "--yes") {
+        println!("\nRun again with --yes to go (the phone's number is asked before anything is erased).");
+        return 0;
+    }
+    let word = cradle_core::android::confirm_word(&serial);
+    println!("\nThis ERASES the phone's userdata. Type {word} to go on:");
+    let mut typed = String::new();
+    let _ = std::io::stdin().read_line(&mut typed);
+    let start = std::time::Instant::now();
+    match install::erase_and_install(&host, &release, &typed, &mut |l| said(&start, &l)) {
+        Ok(()) => 0,
+        Err(e) => {
+            stop(&e);
+            1
+        }
+    }
+}
+
 fn cmd_stock(args: &[String]) -> i32 {
     use cradle_core::stock;
     // A package named, or those kept in ~/.cache/cradle/stock.
@@ -652,7 +701,9 @@ fn cmd_android(args: &[String]) -> i32 {
     };
     match args.first().map(String::as_str) {
         Some("start") | Some("back") => {
-            let Some(serial) = android::away_serial() else {
+            // In Linux (a system installed afresh): its serial over ssh.
+            let in_linux = cradle_core::phone::hosts().into_iter().find(|h| cradle_core::phone::answers(h)).and_then(|h| cradle_core::backup::serial(&h).ok());
+            let Some(serial) = in_linux.or_else(android::away_serial) else {
                 if android::port_without_system() {
                     eprintln!("cradle: the phone restarted into the port's kernel, which finds no system on the erased userdata.");
                     eprintln!("        Hold Power ~15 s until it is off, then Volume Down + Power for the bootloader; run this again.");
@@ -802,6 +853,7 @@ fn usage() {
     println!("  ramboot      try a boot image from RAM, by SAFETY.md's rules (shows the checks; --yes to go;");
     println!("               a TWRP image, or --recovery, is awaited in the recovery)");
     println!("  recovery-exit  out of the recovery, back into Linux");
+    println!("  install      erase and install item from a release image ([DIR]; the plan; --yes to go)");
     println!("  stock        Microsoft's packages here, their boot chain taken out and checked ([PACKAGE])");
     println!("  brake        arm the parking brake (misc): the next restart stops in the bootloader");
     println!("  club         the Duo owners' club: club token (paste one from the site), club forget");

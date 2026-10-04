@@ -324,8 +324,11 @@ fn build(app: &adw::Application) {
     let update = pill("Update item");
     update.add_css_class("suggested-action");
     let reboot = pill("Restart");
+    let reinstall = pill("Erase and Install…");
+    reinstall.set_tooltip_text(Some("A fresh item from a release image: everything on the phone's data partition goes (backed up first)"));
     soft_row.append(&update);
     soft_row.append(&reboot);
+    soft_row.append(&reinstall);
     soft.append(&soft_row);
     actions.append(&soft);
 
@@ -516,6 +519,10 @@ fn build(app: &adw::Application) {
     reboot.connect_clicked({
         let ui = ui.clone();
         move |_| ask(&ui, "Restart the phone?", "Enter the PIN when it is back.", "Restart", Job::Reboot)
+    });
+    reinstall.connect_clicked({
+        let ui = ui.clone();
+        move |_| erase_and_install(&ui)
     });
     join.connect_clicked({
         let ui = ui.clone();
@@ -1207,6 +1214,8 @@ enum Job {
     AndroidBack(String),
     /// Microsoft's package from a link, then its boot chain taken out.
     StockDownload(String, String),
+    /// A release image put on the phone, userdata made anew.
+    Install(Box<cradle_core::install::Release>),
 }
 
 impl Job {
@@ -1224,6 +1233,7 @@ impl Job {
             Job::AndroidStart(_) => "android-start",
             Job::AndroidBack(_) => "android-back",
             Job::StockDownload(..) => "stock-download",
+            Job::Install(_) => "install",
         }
     }
 }
@@ -1437,7 +1447,7 @@ fn ask(ui: &Rc<Ui>, heading: &str, body: &str, yes: &str, job: Job) {
 /// another Cradle too.
 fn run_job(ui: &Rc<Ui>, job: Job) {
     let host = ui.state.borrow().host.clone();
-    let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_));
+    let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_) | Job::Install(_));
     if needs_linux && host.is_none() {
         stopped(ui, "The phone is not in Linux just now.");
         return;
@@ -1478,6 +1488,11 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
             }
             Job::AndroidStart(serial) => cradle_core::android::start(&host, &serial, &mut say),
             Job::AndroidBack(serial) => cradle_core::android::back(&host, &serial, &mut say),
+            Job::Install(release) => {
+                let word = cradle_core::backup::serial(&host).map(|s| cradle_core::android::confirm_word(&s)).unwrap_or_default();
+                // The number was typed in the window already.
+                cradle_core::install::erase_and_install(&host, &release, &word, &mut say)
+            }
             Job::StockDownload(url, label) => (|| {
                 say(format!("downloading {label}"));
                 let pkg = cradle_core::stock::download(&url, &mut |done, whole| say(format!("  downloaded: {} of {} MB", done >> 20, whole >> 20)))?;
@@ -1650,6 +1665,68 @@ fn microsoft_only(uri: &str) -> bool {
     ["microsoft.com", "live.com", "microsoftonline.com", "msauth.net", "msftauth.net", "msidentity.com", "office.com", "aka.ms"]
         .iter()
         .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
+/// Erase and install: the newest release image, what goes and what stays
+/// told plainly, the phone's number typed before anything is erased.
+fn erase_and_install(ui: &Rc<Ui>) {
+    let Some(host) = ui.state.borrow().host.clone() else { return };
+    let Some(release) = cradle_core::install::releases().pop() else {
+        stopped(ui, "No release image on this computer yet (the port's tools/build-release-image.sh makes one).");
+        return;
+    };
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let h = host.clone();
+        let read = gio::spawn_blocking(move || {
+            let serial = cradle_core::backup::serial(&h)?;
+            let fresh = cradle_core::android::fresh_full(&h, &serial)?.is_some();
+            Ok::<_, String>((cradle_core::android::confirm_word(&serial), fresh))
+        })
+        .await
+        .unwrap_or_else(|_| Err("the work stopped".into()));
+        let (word, fresh) = match read {
+            Ok(r) => r,
+            Err(e) => {
+                stopped(&ui, &e);
+                return;
+            }
+        };
+        let body = format!(
+            "{} - item {}, the port {}.\n\n\
+             1. {}\n\
+             2. The recovery starts and the way in is tested - nothing is erased if it fails.\n\
+             3. The phone's data partition is made anew: the system, your home and settings, the Android container go.\n\
+             4. The new system is written in checked parts (about 5 GB) and this computer's key put in.\n\
+             5. Its first start grows it to fill the phone. Unlock with 1234, then choose your own PIN.\n\n\
+             Kept: the device data, the boot chain, the unlocked bootloader. Your old system stays in the backup - Back to Linux brings it back.\n\n\
+             Type {word} - this Duo's number - to go on.",
+            release.name,
+            release.item,
+            release.adaptation,
+            if fresh { "The whole-system backup taken a moment ago is used." } else { "Everything is backed up to this computer first (about 20 minutes)." },
+        );
+        let entry = gtk::Entry::builder().placeholder_text(word.as_str()).input_purpose(gtk::InputPurpose::Digits).build();
+        let dialog = adw::AlertDialog::new(Some("Erase and install item?"), Some(&body));
+        dialog.set_extra_child(Some(&entry));
+        dialog.add_responses(&[("cancel", "Cancel"), ("go", "Erase and Install")]);
+        dialog.set_response_appearance("go", adw::ResponseAppearance::Destructive);
+        dialog.set_response_enabled("go", false);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        entry.connect_changed({
+            let dialog = dialog.clone();
+            let word = word.clone();
+            move |e| dialog.set_response_enabled("go", e.text().trim() == word)
+        });
+        let ui2 = ui.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "go" {
+                run_job(&ui2, Job::Install(Box::new(release.clone())));
+            }
+        });
+        dialog.present(Some(&ui.window));
+    });
 }
 
 /// Return to Android: the plan read off the main thread, then told plainly -

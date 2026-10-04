@@ -11,6 +11,7 @@ pub mod detect;
 pub mod flash;
 pub mod full;
 pub mod guard;
+pub mod install;
 pub mod live;
 pub mod logs;
 pub mod phone;

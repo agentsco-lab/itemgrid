@@ -103,6 +103,15 @@ pub fn stages(job: &str) -> Vec<Stage> {
             st("Downloading Android from Microsoft", "Microsoft's own package for this Duo - about 2.6 GB - comes straight from Microsoft's servers, asked for by its serial number. A break is no loss: it goes on from where it stopped.", "Linux", &["downloading"], 600.0),
             st("Checking and preparing", "The package is checked, and the stock boot chain taken out of it against the package's own hashes - so a return to Android never depends on a backup.", "Linux", &["taking boot out"], 8.0),
         ],
+        "install" => vec![
+            st("Checking the image", "The release image is checked here against its manifest before anything happens.", "Linux", &["checking the image"], 60.0),
+            st("Backing up everything", "Everything on the phone is copied to this computer first - or a fresh copy is used - so nothing is lost for good.", "TWRP", &["the whole system was backed up", "taking the whole system's backup first"], 1250.0),
+            st("Starting the recovery", "TWRP starts from RAM to do the work.", "TWRP", &["=into TWRP"], 50.0),
+            st("Testing the way in", "512 MB are sent to the phone and checked there. If this fails, nothing is erased.", "TWRP", &["trying the way in"], 30.0),
+            st("Putting the new system on", "The data partition is made anew and the new system written in checked parts - about 5 GB.", "TWRP", &["making userdata anew", "putting "], 240.0),
+            st("Checking it on the phone", "The whole system on the phone is checked against the release; then this computer's key is put in, so Cradle can reach it.", "TWRP", &["checking the whole image on the phone"], 70.0),
+            st("First start", "The new system starts for the first time and grows to fill the phone - a little longer than usual. Then unlock with 1234 and choose your own PIN.", "Starting", &["clearing misc", "starting the new system"], 180.0),
+        ],
         "android-trial" => vec![st("Testing the way back", "512 MB are sent to the phone and checked there.", "TWRP", &["trying the way back"], 30.0)],
         "restore" => vec![st("Restoring the boot chain", "A changed boot is tried from RAM first; then each partition is written and read back.", "Restarting", &[""], 180.0)],
         // backup and anything new: one stage.
@@ -123,6 +132,7 @@ pub fn title(job: &str) -> &'static str {
         "android-back" => "Back to Linux",
         "android-trial" => "Testing the way back",
         "stock-download" => "Getting Android from Microsoft",
+        "install" => "Erase and install item",
         "restore" => "Restoring a boot chain",
         _ => "Backing up",
     }
@@ -133,6 +143,7 @@ pub fn after(job: &str) -> &'static str {
     match job {
         "android-go" | "android-start" => "Android is on the phone. To come back to Linux, use Back to Linux here. Don't restart Android plainly: hold Volume Down + Power from off to reach the bootloader instead.",
         "full-backup" => "Everything is on this computer. Enter the PIN on the phone.",
+        "install" => "item is installed afresh. Unlock with 1234, then choose your own PIN in Settings. Your old system is in the backup: Back to Linux can bring it back.",
         "backup" => "The backup is on this computer.",
         "android-trial" => "The way back works.",
         "stock-download" => "Microsoft's Android for this Duo is on this computer: Cradle uses it to return to Android, and to repair it.",
