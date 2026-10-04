@@ -450,17 +450,8 @@ fn build(app: &adw::Application) {
     status_box.append(&status_head);
     status_box.append(&status_lines);
     home.append(&status_box);
-    let primary_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    primary_row.set_margin_start(26);
-    let back_up_now = pill("Back Up Now");
-    back_up_now.add_css_class("suggested-action");
-    back_up_now.set_tooltip_text(Some("Your home folder and settings, copied to this computer - over the cable or Wi-Fi, about a minute"));
-    primary_row.append(&back_up_now);
-    home.append(&primary_row);
     let home_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
-    let backups_row = adw::ActionRow::builder().title("Backups").subtitle("Not backed up yet").build();
     let updates_row = adw::ActionRow::builder().title("Updates").build();
-    home_list.append(&backups_row);
     home_list.append(&updates_row);
     home.append(&home_list);
     let to_repair = gtk::Button::builder().label("Repair & Reset…").css_classes(["flat"]).halign(gtk::Align::Start).build();
@@ -476,7 +467,7 @@ fn build(app: &adw::Application) {
     let repair_back = gtk::Button::builder().icon_name("go-previous-symbolic").css_classes(["flat", "circular"]).halign(gtk::Align::Start).tooltip_text("Back").build();
     repair.append(&repair_back);
     repair.append(&gtk::Label::builder().label("Repair & Reset").xalign(0.0).css_classes(["status-title"]).build());
-    repair.append(&body("Things to do once in a while. Each asks before it starts, and needs the USB cable."));
+    repair.append(&body("Things to do once in a while. Each asks before it starts; all but the backup need the USB cable."));
     let repair_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     let repair_row = |title: &str, text: &str, button: &str, destructive: bool| {
         let row = adw::ActionRow::builder().title(title).subtitle(text).subtitle_lines(4).build();
@@ -488,11 +479,17 @@ fn build(app: &adw::Application) {
         repair_list.append(&row);
         b
     };
+    // A copy of home and settings: here, out of the way - asked for only
+    // when wanted (over Wi-Fi too).
+    let backups_row = adw::ActionRow::builder().title("Back up your files").subtitle("Your home folder and settings, copied to this computer. About a minute, over the cable or Wi-Fi.").subtitle_lines(4).build();
+    let back_up_now = gtk::Button::builder().label("Back Up Now").valign(gtk::Align::Center).css_classes(["pill"]).build();
+    backups_row.add_suffix(&back_up_now);
+    repair_list.append(&backups_row);
     let r_reinstall = repair_row("Reinstall item", "A fresh system from the latest release. You choose: keep your files and Wi-Fi, or erase everything. About 10 minutes.", "Reinstall…", false);
     let r_restore = repair_row("Restore the whole system", "The phone exactly as it was in your last full backup. What is on it now goes. About 40 minutes.", "Restore…", true);
     let r_android = repair_row("Go back to Android", "Microsoft's Android, for a while. Everything is backed up first and the way back is tested. About 40 minutes.", "Android…", false);
     repair.append(&repair_list);
-    let repair_note = body("On Wi-Fi now: plug in the cable to use these.");
+    let repair_note = body("On Wi-Fi now: plug in the cable for all but the backup.");
     repair.append(&repair_note);
     let repair_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&repair).hexpand(true).build();
     let right = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeftRight).transition_duration(250).hexpand(true).build();
@@ -1167,21 +1164,14 @@ fn simple_status(ui: &Ui, s: &status::Status, problems: &[String]) {
     // The newest backup of the phone's own things (home and settings, or
     // everything).
     let newest = backup::list(Some(&s.serial)).into_iter().find(|b| matches!(b.manifest.kind, Kind::Quick | Kind::Full));
-    let (backed, days) = match &newest {
-        Some(b) => {
-            let (w, d) = ago(&b.manifest.created);
-            (format!("Backed up {w}"), d)
-        }
-        None => ("Not backed up yet".to_owned(), 999),
-    };
     ui.backups_row.set_subtitle(&match &newest {
-        Some(b) => format!("Last {} · {}", ago(&b.manifest.created).0, status::size_words(b.size() / 1024)),
-        None => "None yet: Back Up Now copies your home folder and settings here".to_owned(),
+        Some(b) => format!("Your home folder and settings, copied to this computer. Last {} · {}.", ago(&b.manifest.created).0, status::size_words(b.size() / 1024)),
+        None => "Your home folder and settings, copied to this computer. About a minute, over the cable or Wi-Fi.".to_owned(),
     });
     let version = s.item.split('~').next().unwrap_or(&s.item);
     let dev_build = s.item.contains("~git");
     ui.updates_row.set_subtitle(&format!("item {version}{}", if dev_build { " · a development build" } else { "" }));
-    let lines = format!("{charge}{charging}\n{backed}");
+    let lines = format!("{charge}{charging}");
     if !s.item_running {
         say_status(ui, "look", "item is not running", &format!("The phone is up, but its shell is not. A restart usually brings it back.\n{lines}"));
     } else if !problems.is_empty() {
@@ -1201,8 +1191,6 @@ fn simple_status(ui: &Ui, s: &status::Status, problems: &[String]) {
             })
             .collect();
         say_status(ui, "look", "Your Duo needs a look", &format!("{}\n{lines}", plain.join("\n")));
-    } else if days > 7 {
-        say_status(ui, "look", "Time for a backup", &lines);
     } else {
         say_status(ui, "fine", "Your Duo is fine", &lines);
     }
