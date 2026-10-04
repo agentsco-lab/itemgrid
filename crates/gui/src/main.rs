@@ -66,8 +66,8 @@ const CSS: &str = "
 .live-badge { color: #ff4f4f; font-weight: 700; font-size: 0.85em; letter-spacing: 1px; }
 .duo-half-left { border-radius: 23px 0 0 23px; }
 .duo-half-right { border-radius: 0 23px 23px 0; }
-.duo-back { border-radius: 0 23px 23px 0; background: linear-gradient(to right, #b9bcb4, #d4d7cf); }
-.duo-floor { background: alpha(black, 0.5); border-radius: 23px; filter: blur(14px); }
+.duo-back { border-radius: 23px 0 0 23px; background: linear-gradient(to left, #b9bcb4, #d4d7cf); }
+.duo-floor { background: alpha(black, 0.5); border-radius: 0 23px 23px 0; filter: blur(14px); }
 .duo-shade { background: black; }
 .duo-mode {
   background: alpha(black, 0.62);
@@ -1363,11 +1363,11 @@ fn duo_half(body: Option<&gdk::Texture>, screen: Option<&gdk::Paintable>, i: usi
     snap.to_paintable(Some(&graphene::Size::new(mid, bh as f32))).unwrap_or_else(|| gdk::Paintable::new_empty(bw / 2, bh))
 }
 
-/// The Duo as it lies on a table, seen from a little above: the left half
-/// flat on the table, the right one raised about the spine by the fold (180
-/// flat, 90 standing up like a laptop's lid, less folding over the left -
+/// The Duo as it lies on a table, seen from a little above: the right half
+/// flat on the table, the left one raised about the spine by the fold (180
+/// flat, 90 standing up like a laptop's lid, less folding over the right -
 /// its glacier back then showing); folded back it goes under the table's
-/// line a little, no more. Its shadow lies under the left half; the raised
+/// line a little, no more. Its shadow lies under the right half; the raised
 /// half darkens as it turns from the light.
 fn show_fold(ui: &Ui, angle: f64) {
     use gtk::{graphene, gsk};
@@ -1385,20 +1385,23 @@ fn show_fold(ui: &Ui, angle: f64) {
             .rotate_3d(TILT, &graphene::Vec3::x_axis())
             .translate(&graphene::Point::new(-mid, -h / 2.0))
     };
-    let raised = table().translate(&graphene::Point::new(mid, 0.0)).rotate_3d(-lift as f32, &graphene::Vec3::y_axis());
-    for w in [ui.duo_left.upcast_ref::<gtk::Widget>(), ui.shades[0].upcast_ref(), ui.spine.upcast_ref()] {
-        ui.duo.set_child_transform(w, Some(&table()));
+    let flat = table().translate(&graphene::Point::new(mid, 0.0));
+    // The left half turned about its right edge, the spine.
+    let raised = table().translate(&graphene::Point::new(mid, 0.0)).rotate_3d(lift as f32, &graphene::Vec3::y_axis()).translate(&graphene::Point::new(-mid, 0.0));
+    for w in [ui.duo_right.upcast_ref::<gtk::Widget>(), ui.shades[1].upcast_ref()] {
+        ui.duo.set_child_transform(w, Some(&flat));
     }
-    ui.duo.set_child_transform(&ui.floor, Some(&table().translate(&graphene::Point::new(4.0, 10.0))));
+    ui.duo.set_child_transform(&ui.spine, Some(&table()));
+    ui.duo.set_child_transform(&ui.floor, Some(&flat.clone().translate(&graphene::Point::new(4.0, 10.0))));
     let front = lift < 90.0;
-    ui.duo_right.set_visible(front);
-    ui.shades[1].set_visible(front);
+    ui.duo_left.set_visible(front);
+    ui.shades[0].set_visible(front);
     ui.duo_back.set_visible(!front);
-    for w in [ui.duo_right.upcast_ref::<gtk::Widget>(), ui.shades[1].upcast_ref(), ui.duo_back.upcast_ref()] {
+    for w in [ui.duo_left.upcast_ref::<gtk::Widget>(), ui.shades[0].upcast_ref(), ui.duo_back.upcast_ref()] {
         ui.duo.set_child_transform(w, Some(&raised));
     }
-    ui.shades[0].set_opacity(0.0);
-    ui.shades[1].set_opacity((lift.max(0.0).to_radians().sin() * 0.35).min(0.35));
+    ui.shades[1].set_opacity(0.0);
+    ui.shades[0].set_opacity((lift.max(0.0).to_radians().sin() * 0.35).min(0.35));
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
