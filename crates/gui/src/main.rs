@@ -36,6 +36,10 @@ const DUO_PANEL: (f64, f64) = (86.654, 115.539);
 const DUO_SCREEN_X: (f64, f64) = (4.1, 96.146);
 const DUO_SCREEN_TOP: f64 = 14.831;
 const DUO_PX_PER_MM: f64 = 2.35;
+/// The drawn Duo's room, in its body's heights and widths: the raised half
+/// above it, its near edge wider in perspective.
+const DUO_ROOM: f64 = 1.25;
+const DUO_ROOM_W: f64 = 1.3;
 /// The storage bar's parts' colours, in the order of `Parts::list`.
 const PART_COLOURS: [(f64, f64, f64); 4] = [(0.21, 0.52, 0.89), (0.20, 0.82, 0.48), (1.0, 0.47, 0.0), (0.57, 0.25, 0.67)];
 
@@ -63,7 +67,7 @@ const CSS: &str = "
 .duo-half-left { border-radius: 23px 0 0 23px; }
 .duo-half-right { border-radius: 0 23px 23px 0; }
 .duo-back { border-radius: 0 23px 23px 0; background: linear-gradient(to right, #b9bcb4, #d4d7cf); }
-.duo-floor { background: radial-gradient(ellipse closest-side at center, alpha(black, 0.55) 0%, alpha(black, 0.25) 55%, alpha(black, 0.0) 100%); }
+.duo-floor { background: alpha(black, 0.5); border-radius: 23px; filter: blur(14px); }
 .duo-shade { background: black; }
 .duo-mode {
   background: alpha(black, 0.62);
@@ -198,11 +202,12 @@ struct Ui {
     /// The Duo drawn: the right half (and its back) turned as the phone
     /// folds; the angle shown and the one to go to.
     duo: gtk::Fixed,
-    duo_left: gtk::Fixed,
-    duo_right: gtk::Fixed,
+    duo_left: gtk::Picture,
+    duo_right: gtk::Picture,
     duo_back: gtk::Box,
     shades: [gtk::Box; 2],
     floor: gtk::Box,
+    spine: gtk::Picture,
     /// The angle the drawn Duo shows, and the one to go to.
     fold: std::cell::Cell<(f64, f64)>,
     /// The simple page and its parts.
@@ -272,54 +277,47 @@ fn build(app: &adw::Application) {
 
     let device = gtk::Box::new(gtk::Orientation::Vertical, 14);
     device.set_valign(gtk::Align::Start);
-    // The Duo as it is, open flat (data/duo-body.py: agentsco.uk's drawing,
-    // in mm): its body under the two live screens, the spine and the hinges
-    // over them.
-    // Laid over a placeholder of the body's size: the folded half's
-    // perspective reaching past it does not widen the column.
+    // The Duo as it lies on a table (data/duo-body.py: agentsco.uk's
+    // drawing, in mm): each half one picture - its body with its live screen
+    // in it (duo_half) - turned whole in 3D by show_fold; the spine and the
+    // hinges over them. Laid over a placeholder with room above for the
+    // raised half: its perspective does not widen the column.
     let duo = gtk::Fixed::new();
     let px = |mm: f64| (mm * DUO_PX_PER_MM).round() as i32;
     let (bw, bh) = (px(DUO_BODY.0), px(DUO_BODY.1));
     let mid = bw / 2;
-    duo.set_size_request(bw, bh);
-    let layer = |svg: &'static [u8]| {
-        let picture = gtk::Picture::builder().content_fit(gtk::ContentFit::Fill).width_request(bw).height_request(bh).can_shrink(true).build();
+    let room = (bh as f64 * DUO_ROOM) as i32;
+    let texture = |svg: &'static [u8], w: i32| -> Option<gdk::Texture> {
         let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(svg));
-        if let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(&stream, bw * 2, bh * 2, true, gio::Cancellable::NONE) {
-            #[allow(deprecated)]
-            picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&pixbuf)));
-        }
-        picture
+        let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(&stream, w * 2, bh * 2, false, gio::Cancellable::NONE).ok()?;
+        #[allow(deprecated)]
+        Some(gdk::Texture::for_pixbuf(&pixbuf))
     };
-    let screens = [0, 1].map(|_| {
-        gtk::Picture::builder().content_fit(gtk::ContentFit::Cover).width_request(px(DUO_PANEL.0)).height_request(px(DUO_PANEL.1)).can_shrink(true).build()
-    });
-    // Each half in a box of its own size, its shadow its shape: the right
-    // one turns about the spine as the phone folds (fold_to).
-    let half = |class: &str, svg: &'static [u8], screen: &gtk::Picture, x0: i32, screen_x: f64| {
-        let f = gtk::Fixed::builder().width_request(mid).height_request(bh).overflow(gtk::Overflow::Hidden).css_classes([class]).build();
-        f.set_size_request(mid, bh);
-        f.put(&layer(svg), -x0 as f64, 0.0);
-        f.put(screen, px(screen_x) as f64 - x0 as f64, px(DUO_SCREEN_TOP) as f64);
-        // Its light: darker the more it turns from the viewer.
-        let shade = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-shade", class]).opacity(0.0).can_target(false).build();
-        f.put(&shade, 0.0, 0.0);
-        (f, shade)
-    };
-    let (duo_left, shade_left) = half("duo-half-left", include_bytes!("../data/duo-left.svg"), &screens[0], 0, DUO_SCREEN_X.0);
-    let (duo_right, shade_right) = half("duo-half-right", include_bytes!("../data/duo-right.svg"), &screens[1], mid, DUO_SCREEN_X.1);
-    // Its back, glacier, seen when it folds over past a right angle.
+    let leaf = |paintable: Option<&gdk::Texture>, w: i32| gtk::Picture::builder().content_fit(gtk::ContentFit::Fill).width_request(w).height_request(bh).can_shrink(true).paintable(paintable.map(|t| t.clone().upcast::<gdk::Paintable>()).as_ref().unwrap_or(&gdk::Paintable::new_empty(w, bh))).build();
+    // The live screens: pictures held, not shown - each half drawn with its.
+    let screens = [0, 1].map(|_| gtk::Picture::new());
+    let bodies = [texture(include_bytes!("../data/duo-left.svg"), bw), texture(include_bytes!("../data/duo-right.svg"), bw)];
+    let halves = [0, 1].map(|_| leaf(None, mid));
+    for i in 0..2 {
+        let body = bodies[i].clone();
+        let half = halves[i].clone();
+        let draw = move |screen: Option<gdk::Paintable>| half.set_paintable(Some(&duo_half(body.as_ref(), screen.as_ref(), i, bw, bh)));
+        draw(None);
+        screens[i].connect_paintable_notify(move |p| draw(p.paintable()));
+    }
+    let [duo_left, duo_right] = halves.clone();
+    // Its light on the raised half; its glacier back past a right angle.
+    let shade = |class: &str| gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-shade", class]).opacity(0.0).can_target(false).build();
+    let (shade_left, shade_right) = (shade("duo-half-left"), shade("duo-half-right"));
     let duo_back = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-back"]).visible(false).build();
-    // Its shadow on the table: one soft oval under it, as wide as it looks.
-    let floor = gtk::Box::builder().width_request(bw).height_request(48).css_classes(["duo-floor"]).can_target(false).build();
-    let spine = layer(include_bytes!("../data/duo-spine.svg"));
-    duo.put(&floor, 0.0, (bh - 18) as f64);
-    duo.put(&duo_left, 0.0, 0.0);
-    duo.put(&duo_back, mid as f64, 0.0);
-    duo.put(&duo_right, mid as f64, 0.0);
-    duo.put(&spine, 0.0, 0.0);
+    // Its shadow on the table, soft, under the half lying there.
+    let floor = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-floor"]).can_target(false).build();
+    let spine = leaf(texture(include_bytes!("../data/duo-spine.svg"), bw).as_ref(), bw);
+    for w in [floor.upcast_ref::<gtk::Widget>(), duo_left.upcast_ref(), shade_left.upcast_ref(), duo_back.upcast_ref(), duo_right.upcast_ref(), shade_right.upcast_ref(), spine.upcast_ref()] {
+        duo.put(w, 0.0, 0.0);
+    }
     let duo_sized = gtk::Overlay::builder().halign(gtk::Align::Center).build();
-    duo_sized.set_child(Some(&gtk::Box::builder().width_request(bw).height_request(bh).build()));
+    duo_sized.set_child(Some(&gtk::Box::builder().width_request((bw as f64 * DUO_ROOM_W) as i32).height_request(room).build()));
     duo_sized.add_overlay(&duo);
     // How the phone looks when not in Linux, over its screens.
     let duo_mode = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -624,6 +622,7 @@ fn build(app: &adw::Application) {
         duo_back: duo_back.clone(),
         shades: [shade_left.clone(), shade_right.clone()],
         floor: floor.clone(),
+        spine: spine.clone(),
         fold: std::cell::Cell::new((180.0, 180.0)),
         home,
         status_dot,
@@ -1335,34 +1334,71 @@ fn fold_to(ui: &Ui, angle: f64) {
     ui.fold.set((shown, angle.clamp(0.0, 360.0)));
 }
 
-/// Both halves turned about the spine for a hinge at `angle` (180 flat),
-/// each by half of the fold, their outer edges going away from the viewer
-/// like a book's pages folding toward them (folded back: coming toward the
-/// viewer); each no further than 70 degrees, darker as it turns; the shadow
-/// on the table as wide as the phone looks.
+/// One half of the drawn Duo: its body (the left or the right, drawn over
+/// the whole width) and its live screen in its panel.
+fn duo_half(body: Option<&gdk::Texture>, screen: Option<&gdk::Paintable>, i: usize, bw: i32, bh: i32) -> gdk::Paintable {
+    use gtk::graphene;
+    let k = DUO_PX_PER_MM as f32;
+    let mid = (bw / 2) as f32;
+    let x0 = if i == 0 { 0.0 } else { mid };
+    let snap = gtk::Snapshot::new();
+    if let Some(body) = body {
+        snap.append_texture(body, &graphene::Rect::new(-x0, 0.0, bw as f32, bh as f32));
+    }
+    if let Some(screen) = screen {
+        let sx = [DUO_SCREEN_X.0, DUO_SCREEN_X.1][i] as f32 * k - x0;
+        let (pw, ph) = (DUO_PANEL.0 as f32 * k, DUO_PANEL.1 as f32 * k);
+        snap.save();
+        snap.translate(&graphene::Point::new(sx, DUO_SCREEN_TOP as f32 * k));
+        snap.push_clip(&graphene::Rect::new(0.0, 0.0, pw, ph));
+        // Covering the panel, as the picture did.
+        let (iw, ih) = (screen.intrinsic_width().max(1) as f32, screen.intrinsic_height().max(1) as f32);
+        let scale = (pw / iw).max(ph / ih);
+        let (dw, dh) = (iw * scale, ih * scale);
+        snap.translate(&graphene::Point::new((pw - dw) / 2.0, (ph - dh) / 2.0));
+        screen.snapshot(&snap, dw as f64, dh as f64);
+        snap.pop();
+        snap.restore();
+    }
+    snap.to_paintable(Some(&graphene::Size::new(mid, bh as f32))).unwrap_or_else(|| gdk::Paintable::new_empty(bw / 2, bh))
+}
+
+/// The Duo as it lies on a table, seen from a little above: the left half
+/// flat on the table, the right one raised about the spine by the fold (180
+/// flat, 90 standing up like a laptop's lid, less folding over the left -
+/// its glacier back then showing); folded back it goes under the table's
+/// line a little, no more. Its shadow lies under the left half; the raised
+/// half darkens as it turns from the light.
 fn show_fold(ui: &Ui, angle: f64) {
     use gtk::{graphene, gsk};
-    let each = ((180.0 - angle) / 2.0).clamp(-70.0, 70.0);
+    const TILT: f32 = 50.0;
+    let lift = (180.0 - angle).clamp(-25.0, 178.0);
     let h = ui.duo_right.height().max(1) as f32;
     let mid = ui.duo_right.width().max(1) as f32;
-    let about = |x: f32, deg: f64| {
+    let room = h * DUO_ROOM as f32;
+    let centre = ui.duo.width().max(1) as f32 / 2.0;
+    // The table: the whole body tipped back about its middle, low in the room.
+    let table = || {
         gsk::Transform::new()
-            .translate(&graphene::Point::new(mid, h / 2.0))
-            .perspective(3.0 * h)
-            .rotate_3d(deg as f32, &graphene::Vec3::y_axis())
-            .translate(&graphene::Point::new(x, -h / 2.0))
+            .translate(&graphene::Point::new(centre, room - h * 0.42))
+            .perspective(3.2 * h)
+            .rotate_3d(TILT, &graphene::Vec3::x_axis())
+            .translate(&graphene::Point::new(-mid, -h / 2.0))
     };
-    // The left half's right edge, the right half's left edge, on the spine.
-    ui.duo.set_child_transform(&ui.duo_left, Some(&about(-mid, -each)));
-    ui.duo.set_child_transform(&ui.duo_right, Some(&about(0.0, each)));
-    ui.duo_back.set_visible(false);
-    let dark = (each.abs().to_radians().sin() * 0.45) as f64;
-    for s in &ui.shades {
-        s.set_opacity(dark);
+    let raised = table().translate(&graphene::Point::new(mid, 0.0)).rotate_3d(-lift as f32, &graphene::Vec3::y_axis());
+    for w in [ui.duo_left.upcast_ref::<gtk::Widget>(), ui.shades[0].upcast_ref(), ui.spine.upcast_ref()] {
+        ui.duo.set_child_transform(w, Some(&table()));
     }
-    let k = each.to_radians().cos() as f32;
-    let floor = gsk::Transform::new().translate(&graphene::Point::new(mid, h - 18.0)).scale(k, 1.0).translate(&graphene::Point::new(-mid, 0.0));
-    ui.duo.set_child_transform(&ui.floor, Some(&floor));
+    ui.duo.set_child_transform(&ui.floor, Some(&table().translate(&graphene::Point::new(4.0, 10.0))));
+    let front = lift < 90.0;
+    ui.duo_right.set_visible(front);
+    ui.shades[1].set_visible(front);
+    ui.duo_back.set_visible(!front);
+    for w in [ui.duo_right.upcast_ref::<gtk::Widget>(), ui.shades[1].upcast_ref(), ui.duo_back.upcast_ref()] {
+        ui.duo.set_child_transform(w, Some(&raised));
+    }
+    ui.shades[0].set_opacity(0.0);
+    ui.shades[1].set_opacity((lift.max(0.0).to_radians().sin() * 0.35).min(0.35));
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
