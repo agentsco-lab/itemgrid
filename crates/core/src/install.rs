@@ -153,7 +153,9 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     say("putting this computer's ssh key in".into());
     adb_shell(&serial, "mkdir -p /tmp/r && mount -o loop,rw /tmp/ud/rootfs.img /tmp/r && echo ok")?;
     let put_key = (|| -> Result<(), String> {
-        crate::full::adb_send(&serial, "cat > /tmp/cradle.pub", &mut key.as_bytes())?;
+        // A small text by adb push: through the socket it did not arrive
+        // (2026-10-04) - the big transfers go that way, this need not.
+        push_text(&serial, &key, "/tmp/cradle.pub")?;
         adb_shell(
             &serial,
             "for d in /tmp/r/root /tmp/r/home/droidian; do mkdir -p $d/.ssh && cat /tmp/cradle.pub > $d/.ssh/authorized_keys && chmod 700 $d/.ssh && chmod 600 $d/.ssh/authorized_keys; done; \
@@ -312,15 +314,27 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
         }
     }
     // Every small file there, at its size.
-    adb_send(serial, "cat > /tmp/kept-sizes", &mut sizes.as_bytes())?;
+    push_text(serial, &sizes, "/tmp/kept-sizes")?;
     let bad = adb_shell(serial, "n=0; while read s p; do [ \"$(stat -c %s \"$p\" 2>/dev/null)\" = \"$s\" ] || n=$((n+1)); done < /tmp/kept-sizes; rm -f /tmp/kept-sizes; echo $n")?;
     if bad.trim() != "0" {
         return Err(format!("{} of your files did not arrive whole - stopping in TWRP", bad.trim()));
     }
     // The PIN: the owner's password hash in place of the image's.
     if let Some(line) = shadow {
-        adb_send(serial, "cat > /tmp/kept-shadow", &mut line.as_bytes())?;
+        push_text(serial, &line, "/tmp/kept-shadow")?;
         adb_shell(serial, "l=$(cat /tmp/kept-shadow); rm -f /tmp/kept-shadow; grep -v '^droidian:' /tmp/r/etc/shadow > /tmp/shadow.new && echo \"$l\" >> /tmp/shadow.new && cat /tmp/shadow.new > /tmp/r/etc/shadow && rm -f /tmp/shadow.new && grep -c '^droidian:' /tmp/r/etc/shadow")?;
+    }
+    Ok(())
+}
+
+/// A small text put at `to` in TWRP, by adb push.
+fn push_text(serial: &str, text: &str, to: &str) -> Result<(), String> {
+    let tmp = std::env::temp_dir().join(format!("cradle-push-{}", std::process::id()));
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
+    let _ = std::fs::remove_file(&tmp);
+    if !out.status.success() {
+        return Err(format!("adb push: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(())
 }

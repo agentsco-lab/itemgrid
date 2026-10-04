@@ -9,7 +9,8 @@ echo "os=$(. /etc/os-release; echo "$PRETTY_NAME")"
 echo "kernel=$(uname -r)"
 for w in $(cat /proc/cmdline); do case "$w" in androidboot.serialno=*) echo "serial=${w#*=}";; esac; done
 echo "uptime=$(cut -d. -f1 /proc/uptime)"
-echo "item=$(v item-shell)"
+i=$(v item); [ -n "$i" ] || i=$(v item-shell)
+echo "item=$i"
 echo "item_built=$(date -r /usr/libexec/item/item-compositor '+%F %R' 2>/dev/null)"
 echo "item_running=$(systemctl is-active item.service 2>/dev/null)"
 echo "port=$(v adaptation-droidian-surfaceduo)"
