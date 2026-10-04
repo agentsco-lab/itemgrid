@@ -29,9 +29,13 @@ const REFRESH_S: u32 = 5;
 /// The screens on the Duo drawn here, taken again this often while the
 /// window is in front on General (each frame is ~20 MB over USB).
 const SCREENS_EVERY: u32 = 3;
-/// The Duo drawn on the left: a panel's size (logical px).
-const PANEL_W: i32 = 186;
-const PANEL_H: i32 = 248;
+/// The Duo drawn on the left (data/duo-body.py, mm): its body, a panel, the
+/// panels' left edges and their top; drawn at this many px a mm.
+const DUO_BODY: (f64, f64) = (186.9, 145.2);
+const DUO_PANEL: (f64, f64) = (86.654, 115.539);
+const DUO_SCREEN_X: (f64, f64) = (4.1, 96.146);
+const DUO_SCREEN_TOP: f64 = 14.831;
+const DUO_PX_PER_MM: f64 = 2.35;
 /// The storage bar's parts' colours, in the order of `Parts::list`.
 const PART_COLOURS: [(f64, f64, f64); 4] = [(0.21, 0.52, 0.89), (0.20, 0.82, 0.48), (1.0, 0.47, 0.0), (0.57, 0.25, 0.67)];
 
@@ -85,6 +89,8 @@ const CSS: &str = "
 .status-dot.away { background: #77767b; }
 .status-title { font-weight: 800; font-size: 1.9em; }
 .repair-row-title { font-weight: 700; }
+.wordmark { font-family: Lato, Ubuntu, sans-serif; font-weight: 300; font-size: 54px; letter-spacing: 0.32em; opacity: 0.88; }
+.free-label { opacity: 0.6; font-size: 0.9em; }
 ";
 
 fn main() -> glib::ExitCode {
@@ -197,6 +203,8 @@ struct Ui {
     backups_row: adw::ActionRow,
     updates_row: adw::ActionRow,
     repair_note: gtk::Label,
+    free_label: gtk::Label,
+    refresh: gtk::Button,
     /// What takes the phone out of Linux: the cable only (tracker #156).
     cable_only: Vec<(gtk::Button, Option<glib::GString>)>,
     /// Said over Wi-Fi: those need the cable.
@@ -238,6 +246,7 @@ fn build(app: &adw::Application) {
     let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
     refresh.set_tooltip_text(Some("Look again"));
     header.pack_end(&refresh);
+    refresh.set_visible(developer_mode());
     // The menu: Developer Mode.
     let menu = gio::Menu::new();
     menu.append(Some("Settings"), Some("win.settings"));
@@ -253,25 +262,30 @@ fn build(app: &adw::Application) {
 
     let device = gtk::Box::new(gtk::Orientation::Vertical, 14);
     device.set_valign(gtk::Align::Start);
-    let duo = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+    // The Duo as it is, open flat (data/duo-body.py: agentsco.uk's drawing,
+    // in mm): its body under the two live screens, the spine and the hinges
+    // over them.
+    let duo = gtk::Fixed::new();
     duo.set_halign(gtk::Align::Center);
-    let screens = [0, 1].map(|_| {
-        let picture = gtk::Picture::builder().content_fit(gtk::ContentFit::Cover).width_request(PANEL_W).height_request(PANEL_H).build();
-        picture.add_css_class("duo-screen");
-        picture.set_overflow(gtk::Overflow::Hidden);
-        picture
-    });
-    for (i, screen) in screens.iter().enumerate() {
-        if i == 1 {
-            let hinge = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            hinge.add_css_class("duo-hinge");
-            duo.append(&hinge);
+    let px = |mm: f64| (mm * DUO_PX_PER_MM).round() as i32;
+    let (bw, bh) = (px(DUO_BODY.0), px(DUO_BODY.1));
+    duo.set_size_request(bw, bh);
+    let layer = |svg: &'static [u8]| {
+        let picture = gtk::Picture::builder().content_fit(gtk::ContentFit::Fill).width_request(bw).height_request(bh).can_shrink(true).build();
+        let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(svg));
+        if let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(&stream, bw * 2, bh * 2, true, gio::Cancellable::NONE) {
+            #[allow(deprecated)]
+            picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&pixbuf)));
         }
-        let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        panel.add_css_class("duo-panel");
-        panel.append(screen);
-        duo.append(&panel);
-    }
+        picture
+    };
+    duo.put(&layer(include_bytes!("../data/duo-body.svg")), 0.0, 0.0);
+    let screens = [0, 1].map(|_| {
+        gtk::Picture::builder().content_fit(gtk::ContentFit::Cover).width_request(px(DUO_PANEL.0)).height_request(px(DUO_PANEL.1)).can_shrink(true).build()
+    });
+    duo.put(&screens[0], px(DUO_SCREEN_X.0) as f64, px(DUO_SCREEN_TOP) as f64);
+    duo.put(&screens[1], px(DUO_SCREEN_X.1) as f64, px(DUO_SCREEN_TOP) as f64);
+    duo.put(&layer(include_bytes!("../data/duo-over.svg")), 0.0, 0.0);
     // How the phone looks when not in Linux, over its screens.
     let duo_mode = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     duo_mode.add_css_class("duo-mode");
@@ -452,6 +466,8 @@ fn build(app: &adw::Application) {
     let updates_row = adw::ActionRow::builder().title("Updates").build();
     home_list.append(&updates_row);
     home.append(&home_list);
+    // Updates come as a row once there is one to give (from releases).
+    home_list.set_visible(false);
     home.set_visible(false);
     sections.append(&home);
     sections.append(&linux_only);
@@ -500,12 +516,14 @@ fn build(app: &adw::Application) {
     general.append(&right);
 
     // The storage along the bottom.
-    let storage = gtk::DrawingArea::builder().content_height(18).hexpand(true).build();
+    let storage = gtk::DrawingArea::builder().content_height(8).hexpand(true).build();
     let legend = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let bottom = gtk::Box::new(gtk::Orientation::Vertical, 8);
     bottom.add_css_class("bottom-bar");
     bottom.append(&storage);
     bottom.append(&legend);
+    let free_label = gtk::Label::builder().xalign(0.0).css_classes(["free-label"]).build();
+    bottom.append(&free_label);
 
     general.set_vexpand(true);
     stack.add_titled_with_icon(&general, Some("general"), "General", "phone-symbolic");
@@ -525,7 +543,10 @@ fn build(app: &adw::Application) {
     let pages = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(400).build();
     pages.add_named(&stack, Some("phone"));
     pages.add_named(&away, Some("away"));
-    pages.set_visible_child_name("away");
+    // The start: the word, while the phone is first looked for.
+    let splash = gtk::Label::builder().label("cradle").css_classes(["wordmark"]).halign(gtk::Align::Center).valign(gtk::Align::Center).build();
+    pages.add_named(&splash, Some("splash"));
+    pages.set_visible_child_name("splash");
 
     let banner = adw::Banner::new("");
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -573,6 +594,8 @@ fn build(app: &adw::Application) {
         backups_row,
         updates_row,
         repair_note,
+        free_label,
+        refresh: refresh.clone(),
         cable_note,
         actions,
         slots,
@@ -776,7 +799,10 @@ fn build(app: &adw::Application) {
             }
         }
     });
-    look(&ui);
+    glib::timeout_add_local_once(std::time::Duration::from_millis(900), {
+        let ui = ui.clone();
+        move || look(&ui)
+    });
     glib::timeout_add_seconds_local(REFRESH_S, {
         let ui = ui.clone();
         let mut ticks = 0u32;
@@ -961,6 +987,10 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
     ui.mode.set_visible(false);
     ui.linux_only.set_visible(dev);
     ui.home.set_visible(!dev);
+    ui.battery.set_visible(dev);
+    ui.refresh.set_visible(dev);
+    ui.legend.set_visible(dev);
+    ui.free_label.set_visible(!dev);
     ui.duo_mode.set_visible(false);
     // On the cable or on Wi-Fi: what leaves Linux only on the cable.
     let cable = cradle_core::link::Via::of(host) == cradle_core::link::Via::Cable;
@@ -972,7 +1002,7 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
     ui.cable_note.set_visible(!cable);
     ui.repair_note.set_visible(!cable);
     match status {
-        Some(Ok(s)) => fill(ui, &s),
+        Some(Ok(s)) => fill(ui, &s, if cable { "cable" } else { "Wi-Fi" }),
         Some(Err(e)) => {
             // Said plainly on the simple page; the error itself for developers.
             if dev {
@@ -1152,7 +1182,7 @@ fn ago(created: &str) -> (String, i64) {
 }
 
 /// The simple page from the phone's state: fine, or what needs a look.
-fn simple_status(ui: &Ui, s: &status::Status, problems: &[String]) {
+fn simple_status(ui: &Ui, s: &status::Status, problems: &[String], link: &str) {
     use cradle_core::backup::{self, Kind};
     let charge = s.battery.map(|b| format!("Battery {b}%")).unwrap_or_else(|| "Battery ?".into());
     let charging = match s.battery_status.as_str() {
@@ -1170,7 +1200,17 @@ fn simple_status(ui: &Ui, s: &status::Status, problems: &[String]) {
     let version = s.item.split('~').next().unwrap_or(&s.item);
     let dev_build = s.item.contains("~git");
     ui.updates_row.set_subtitle(&format!("item {version}{}", if dev_build { " · a development build" } else { "" }));
-    let lines = format!("{charge}{charging}");
+    let lines = format!("{charge}{charging} · {link}");
+    // The firmware under the phone: item and the system; the port and the
+    // kernel on hovering.
+    let os = s.os.split(" (").next().unwrap_or(&s.os);
+    let built = s.item_built.get(5..10).and_then(|md| {
+        let m: usize = md.get(0..2)?.parse().ok()?;
+        let d: u32 = md.get(3..5)?.parse().ok()?;
+        Some(format!("{d} {}", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].get(m.checked_sub(1)?)?))
+    });
+    ui.name_sub.set_label(&if dev_build { format!("item {version} (dev, {}) · {os}", built.unwrap_or_default()) } else { format!("item {version} · {os}") });
+    ui.name_sub.set_tooltip_text(Some(&format!("Port {} · kernel {}", s.port, s.kernel)));
     if !s.item_running {
         say_status(ui, "look", "item is not running", &format!("The phone is up, but its shell is not. A restart usually brings it back.\n{lines}"));
     } else if !problems.is_empty() {
@@ -1195,7 +1235,7 @@ fn simple_status(ui: &Ui, s: &status::Status, problems: &[String]) {
     }
 }
 
-fn fill(ui: &Ui, s: &status::Status) {
+fn fill(ui: &Ui, s: &status::Status, link: &str) {
     // The club's number, if this computer knows it.
     *ui.serial.borrow_mut() = s.serial.clone();
     match cradle_core::club::known(&s.serial) {
@@ -1215,7 +1255,7 @@ fn fill(ui: &Ui, s: &status::Status) {
     // The simple page: only what its owner can do something about (a failed
     // background unit - fstrim on the loop rootfs, a suspend the cable kept
     // busy - is for Developer Mode).
-    simple_status(ui, s, &s.warnings());
+    simple_status(ui, s, &s.warnings(), link);
 
     let charge = s.battery.map(|b| format!("{b}%")).unwrap_or_else(|| "?".into());
     let bolt = if s.battery_status == "Charging" { "⚡ " } else { "" };
@@ -1269,6 +1309,9 @@ fn count_storage(ui: &Rc<Ui>) {
             ui.legend.append(&dot);
             ui.legend.append(&gtk::Label::builder().label(name).build());
             ui.legend.append(&gtk::Label::builder().label(status::size_words(kib)).css_classes(["dim-label"]).margin_end(14).build());
+        }
+        if let Some((_, kib)) = parts.list().into_iter().find(|(n, _)| *n == "Free") {
+            ui.free_label.set_label(&format!("{} free", status::size_words(kib)));
         }
         *ui.parts.borrow_mut() = Some(parts);
         ui.storage.queue_draw();
