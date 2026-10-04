@@ -15,6 +15,7 @@ echo "item_built=$(date -r /usr/libexec/item/item-compositor '+%F %R' 2>/dev/nul
 echo "item_running=$(systemctl is-active item.service 2>/dev/null)"
 echo "port=$(v adaptation-droidian-surfaceduo)"
 echo "sensorfw=$(v sensorfw-qt6)"
+echo "hinge=$(runuser -u droidian -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u droidian)/bus busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle 2>/dev/null | awk '{print $2}')"
 echo "fingers=$(busctl --system call org.droidian.fingerprint /org/droidian/fingerprint org.droidian.fingerprint GetAll 2>/dev/null | awk '{print $2}')"
 b=/sys/class/power_supply/battery
 echo "battery=$(cat $b/capacity 2>/dev/null)"
@@ -41,6 +42,9 @@ pub struct Status {
     pub item_running: bool,
     pub port: String,
     pub sensorfw: String,
+    /// The hinge's angle (180 flat, less like a book, more folded back), as
+    /// the port's posture service last had it.
+    pub hinge: Option<f64>,
     /// Fingers the reader knows, if its daemon answered.
     pub fingers: Option<u32>,
     pub battery: Option<u32>,
@@ -108,6 +112,7 @@ pub fn read(host: &str) -> Result<Status, String> {
     s.port = get("port");
     s.sensorfw = get("sensorfw");
     s.fingers = get("fingers").parse().ok();
+    s.hinge = get("hinge").parse().ok();
     s.battery = get("battery").parse().ok();
     s.battery_status = get("battery_status");
     s.battery_temp = get("battery_temp").parse::<f64>().ok().map(|t| t / 10.0);
@@ -119,4 +124,10 @@ pub fn read(host: &str) -> Result<Status, String> {
 pub fn size_words(kib: u64) -> String {
     let gb = kib as f64 / 1024.0 / 1024.0;
     if gb >= 1.0 { format!("{gb:.1} GB") } else { format!("{:.0} MB", kib as f64 / 1024.0) }
+}
+
+/// The hinge's angle alone, quickly (the window follows the fold with it).
+pub fn hinge(host: &str) -> Option<f64> {
+    let out = crate::phone::run(host, "runuser -u droidian -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u droidian)/bus busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle 2>/dev/null\n").ok()?;
+    out.split_whitespace().nth(1)?.parse().ok()
 }

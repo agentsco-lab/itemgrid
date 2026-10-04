@@ -3,7 +3,8 @@
 Cradle's window: duo-body.svg under the live screens, duo-over.svg over them
 (the inner bezels, the spine, the hinges). In millimetres, from agentsco.uk's
 DuoBody (measured off a straight-on photo and Microsoft's spec sheet:
-186.9 x 145.2 mm open). Run it to make the two files beside it."""
+186.9 x 145.2 mm open). Run it to make the files beside it: the body whole and the over layer, and
+for folding, each half (duo-left, duo-right) and the spine with its hinges."""
 import os
 
 BODY_W, BODY_H = 186.9, 145.2
@@ -94,7 +95,18 @@ body += f'<rect x="{SIDE}" y="{SCREEN_TOP}" width="{SCREEN_W}" height="{SCREEN_H
 
 over = f'<rect x="{COL_X}" y="{SCREEN_TOP}" width="{COL_W}" height="{SCREEN_H}" fill="#0c0c0d"/>' + spine() + block(False) + block(True)
 
+# Each half on its own (Cradle folds the right one about the spine): the
+# body and the dead column cut at the middle.
+body_halves = body + f'<rect x="{COL_X}" y="{SCREEN_TOP}" width="{COL_W}" height="{SCREEN_H}" fill="#0c0c0d"/>'
+def cut(inner, left):
+    x, w = (0, MID) if left else (MID, BODY_W - MID)
+    return f'<clipPath id="cut"><rect x="{x}" y="0" width="{w}" height="{BODY_H}"/></clipPath><g clip-path="url(#cut)">{inner}</g>'
+
 here = os.path.dirname(os.path.abspath(__file__))
 open(os.path.join(here, "duo-body.svg"), "w").write(svg(body))
 open(os.path.join(here, "duo-over.svg"), "w").write(svg(over))
+open(os.path.join(here, "duo-left.svg"), "w").write(svg(cut(body_halves, True)))
+open(os.path.join(here, "duo-right.svg"), "w").write(svg(cut(body_halves, False)))
+# The spine and the hinges alone, over both halves.
+open(os.path.join(here, "duo-spine.svg"), "w").write(svg(spine() + block(False) + block(True)))
 print(f"panel {PANEL_W:.3f} x {SCREEN_H:.3f} mm at ({SIDE}, {SCREEN_TOP:.3f}); right at {COL_X + COL_W:.3f}")

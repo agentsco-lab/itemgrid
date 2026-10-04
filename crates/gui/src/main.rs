@@ -60,11 +60,11 @@ const CSS: &str = "
 .dot-free { background: alpha(currentColor, 0.18); }
 .bottom-bar { padding: 14px 24px 16px 24px; }
 .live-badge { color: #ff4f4f; font-weight: 700; font-size: 0.85em; letter-spacing: 1px; }
-.duo-floor {
-  min-height: 26px;
-  margin: -6px 10px 0 10px;
-  background: radial-gradient(ellipse at center, alpha(black, 0.55) 0%, alpha(black, 0.0) 70%);
-}
+.duo-half-left { border-radius: 23px 0 0 23px; }
+.duo-half-right { border-radius: 0 23px 23px 0; }
+.duo-back { border-radius: 0 23px 23px 0; background: linear-gradient(to right, #b9bcb4, #d4d7cf); }
+.duo-shadow-left { border-radius: 23px 0 0 23px; box-shadow: 0 18px 34px alpha(black, 0.55); }
+.duo-shadow-right { border-radius: 0 23px 23px 0; box-shadow: 0 18px 34px alpha(black, 0.55); }
 .duo-mode {
   background: alpha(black, 0.62);
   color: white;
@@ -195,6 +195,14 @@ struct Ui {
     mode_buttons: gtk::Box,
     /// What needs Linux: the sections and the facts.
     linux_only: gtk::Box,
+    /// The Duo drawn: the right half (and its back) turned as the phone
+    /// folds; the angle shown and the one to go to.
+    duo: gtk::Fixed,
+    duo_right: gtk::Fixed,
+    duo_back: gtk::Box,
+    shadow_right: gtk::Box,
+    /// The angle the drawn Duo shows, and the one to go to.
+    fold: std::cell::Cell<(f64, f64)>,
     /// The simple page and its parts.
     home: gtk::Box,
     status_dot: gtk::Box,
@@ -240,7 +248,7 @@ fn build(app: &adw::Application) {
 
     // The tabs, in the header as Finder has them.
     let stack = adw::ViewStack::new();
-    let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
+    let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).visible(false).build();
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&switcher));
     let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
@@ -265,10 +273,12 @@ fn build(app: &adw::Application) {
     // The Duo as it is, open flat (data/duo-body.py: agentsco.uk's drawing,
     // in mm): its body under the two live screens, the spine and the hinges
     // over them.
+    // Laid over a placeholder of the body's size: the folded half's
+    // perspective reaching past it does not widen the column.
     let duo = gtk::Fixed::new();
-    duo.set_halign(gtk::Align::Center);
     let px = |mm: f64| (mm * DUO_PX_PER_MM).round() as i32;
     let (bw, bh) = (px(DUO_BODY.0), px(DUO_BODY.1));
+    let mid = bw / 2;
     duo.set_size_request(bw, bh);
     let layer = |svg: &'static [u8]| {
         let picture = gtk::Picture::builder().content_fit(gtk::ContentFit::Fill).width_request(bw).height_request(bh).can_shrink(true).build();
@@ -279,13 +289,36 @@ fn build(app: &adw::Application) {
         }
         picture
     };
-    duo.put(&layer(include_bytes!("../data/duo-body.svg")), 0.0, 0.0);
     let screens = [0, 1].map(|_| {
         gtk::Picture::builder().content_fit(gtk::ContentFit::Cover).width_request(px(DUO_PANEL.0)).height_request(px(DUO_PANEL.1)).can_shrink(true).build()
     });
-    duo.put(&screens[0], px(DUO_SCREEN_X.0) as f64, px(DUO_SCREEN_TOP) as f64);
-    duo.put(&screens[1], px(DUO_SCREEN_X.1) as f64, px(DUO_SCREEN_TOP) as f64);
-    duo.put(&layer(include_bytes!("../data/duo-over.svg")), 0.0, 0.0);
+    // Each half in a box of its own size, its shadow its shape: the right
+    // one turns about the spine as the phone folds (fold_to).
+    let half = |class: &str, svg: &'static [u8], screen: &gtk::Picture, x0: i32, screen_x: f64| {
+        let f = gtk::Fixed::builder().width_request(mid).height_request(bh).overflow(gtk::Overflow::Hidden).css_classes([class]).build();
+        f.set_size_request(mid, bh);
+        f.put(&layer(svg), -x0 as f64, 0.0);
+        f.put(screen, px(screen_x) as f64 - x0 as f64, px(DUO_SCREEN_TOP) as f64);
+        f
+    };
+    let duo_left = half("duo-half-left", include_bytes!("../data/duo-left.svg"), &screens[0], 0, DUO_SCREEN_X.0);
+    let duo_right = half("duo-half-right", include_bytes!("../data/duo-right.svg"), &screens[1], mid, DUO_SCREEN_X.1);
+    // Its back, glacier, seen when it folds over past a right angle.
+    let duo_back = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-back"]).visible(false).build();
+    // The shadows on the table, under each half: the right one narrows as
+    // the half turns.
+    let shadow_left = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-shadow-left"]).build();
+    let shadow_right = gtk::Box::builder().width_request(mid).height_request(bh).css_classes(["duo-shadow-right"]).build();
+    let spine = layer(include_bytes!("../data/duo-spine.svg"));
+    duo.put(&shadow_left, 0.0, 0.0);
+    duo.put(&shadow_right, mid as f64, 0.0);
+    duo.put(&duo_left, 0.0, 0.0);
+    duo.put(&duo_back, mid as f64, 0.0);
+    duo.put(&duo_right, mid as f64, 0.0);
+    duo.put(&spine, 0.0, 0.0);
+    let duo_sized = gtk::Overlay::builder().halign(gtk::Align::Center).build();
+    duo_sized.set_child(Some(&gtk::Box::builder().width_request(bw).height_request(bh).build()));
+    duo_sized.add_overlay(&duo);
     // How the phone looks when not in Linux, over its screens.
     let duo_mode = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     duo_mode.add_css_class("duo-mode");
@@ -295,13 +328,9 @@ fn build(app: &adw::Application) {
     duo_mode.append(&duo_mode_label);
     duo_mode.set_visible(false);
     let duo_over = gtk::Overlay::new();
-    duo_over.set_child(Some(&duo));
+    duo_over.set_child(Some(&duo_sized));
     duo_over.add_overlay(&duo_mode);
     device.append(&duo_over);
-    // Its shadow on the table.
-    let floor = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    floor.add_css_class("duo-floor");
-    device.append(&floor);
     let live_badge = gtk::Label::builder().label("● LIVE").css_classes(["live-badge"]).build();
     live_badge.set_visible(false);
     device.append(&live_badge);
@@ -587,6 +616,11 @@ fn build(app: &adw::Application) {
         mode_buttons,
         linux_only,
         cable_only: [&reinstall, &restore, &try_ram, &backup_all, &back_full, &to_android, &r_reinstall, &r_restore, &r_android].into_iter().map(|b| (b.clone(), b.tooltip_text())).collect(),
+        duo: duo.clone(),
+        duo_right: duo_right.clone(),
+        duo_back: duo_back.clone(),
+        shadow_right: shadow_right.clone(),
+        fold: std::cell::Cell::new((180.0, 180.0)),
         home,
         status_dot,
         status_title,
@@ -829,6 +863,62 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
+    // The fold, eased toward the hinge's angle each frame; the angle read
+    // each second while the window is in front (each 5 s behind it).
+    ui.duo.add_tick_callback({
+        let ui = Rc::downgrade(&ui);
+        move |_, clock| {
+            let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
+            let (shown, to) = ui.fold.get();
+            if (shown - to).abs() > 0.05 {
+                // A spring-like follow: most of the way in ~0.4 s.
+                let _ = clock;
+                let k = 1.0 - (-1.0f64 / 60.0 / 0.12).exp();
+                let now = shown + (to - shown) * k;
+                ui.fold.set((now, to));
+                show_fold(&ui, now);
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+    glib::timeout_add_seconds_local(1, {
+        let ui = ui.clone();
+        let mut tick = 0u32;
+        move || {
+            tick += 1;
+            let host = ui.state.borrow().host.clone();
+            let (busy, elsewhere) = {
+                let st = ui.state.borrow();
+                (st.busy, st.elsewhere)
+            };
+            if let Some(host) = host.filter(|_| !busy && !elsewhere && (ui.window.is_active() || tick % 5 == 0)) {
+                let ui = ui.clone();
+                glib::spawn_future_local(async move {
+                    if let Ok(Some(a)) = gio::spawn_blocking(move || status::hinge(&host)).await {
+                        fold_to(&ui, a);
+                    }
+                });
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+    // CRADLE_SHOT=file.png: the window drawn into a picture 4 s after the start
+    // (to see it without a screen grab).
+    if let Some(path) = std::env::var_os("CRADLE_SHOT") {
+        let window = ui.window.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(std::env::var("CRADLE_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(4)), move || {
+            let paintable = gtk::WidgetPaintable::new(Some(&window));
+            let (w, h) = (window.width() as f64, window.height() as f64);
+            let snap = gtk::Snapshot::new();
+            paintable.snapshot(&snap, w, h);
+            if let (Some(node), Some(native)) = (snap.to_node(), window.native()) {
+                let texture = native.renderer().map(|r| r.render_texture(&node, None));
+                if let Some(t) = texture {
+                    let _ = t.save_to_png(&path);
+                }
+            }
+        });
+    }
     // The job under way, told each second: this window's, or the command
     // line's.
     glib::timeout_add_seconds_local(1, {
@@ -1235,7 +1325,40 @@ fn simple_status(ui: &Ui, s: &status::Status, problems: &[String], link: &str) {
     }
 }
 
+/// The phone's fold, to be shown: eased there (the tick above).
+fn fold_to(ui: &Ui, angle: f64) {
+    let (shown, _) = ui.fold.get();
+    ui.fold.set((shown, angle.clamp(0.0, 360.0)));
+}
+
+/// The right half turned about the spine for a hinge at `angle`: 180 flat,
+/// less toward the viewer like a book (its glacier back showing past a
+/// right angle, coming over the left), more away behind the left (gone past
+/// a right angle); its shadow on the table narrowed with it.
+fn show_fold(ui: &Ui, angle: f64) {
+    use gtk::{graphene, gsk};
+    let turn = 180.0 - angle;
+    let h = ui.duo_right.height().max(1) as f32;
+    let mid = ui.duo_right.width().max(1) as f32;
+    let turned = gsk::Transform::new()
+        .translate(&graphene::Point::new(mid, h / 2.0))
+        .perspective(2.4 * h)
+        .rotate_3d(-turn as f32, &graphene::Vec3::y_axis())
+        .translate(&graphene::Point::new(0.0, -h / 2.0));
+    ui.duo_right.set_visible(turn.abs() < 90.0);
+    ui.duo_back.set_visible(turn >= 90.0);
+    ui.duo.set_child_transform(&ui.duo_right, Some(&turned));
+    ui.duo.set_child_transform(&ui.duo_back, Some(&turned));
+    let k = (turn.to_radians().cos().abs() as f32).max(0.02);
+    ui.shadow_right.set_visible(turn > -90.0);
+    let shadow = gsk::Transform::new().translate(&graphene::Point::new(mid, 0.0)).scale(if turn >= 90.0 { -k } else { k }, 1.0);
+    ui.duo.set_child_transform(&ui.shadow_right, Some(&shadow));
+}
+
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
+    if let Some(a) = s.hinge {
+        fold_to(ui, a);
+    }
     // The club's number, if this computer knows it.
     *ui.serial.borrow_mut() = s.serial.clone();
     match cradle_core::club::known(&s.serial) {
