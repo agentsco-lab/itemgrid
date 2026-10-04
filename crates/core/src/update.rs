@@ -69,7 +69,7 @@ pub fn update(host: &str, build: bool, step: &mut dyn FnMut(Step)) -> Result<(),
     run(Command::new("scp").args(ssh_opts).arg(&deb).arg(format!("root@{host}:/var/tmp/item.deb")), "copying the package")?;
     // A changed conffile (the composer drop-in) takes the package's version:
     // there is no one to ask.
-    crate::phone::run(host, "apt-get install -y -o Dpkg::Options::=--force-confnew /var/tmp/item.deb >/var/tmp/item-install.log 2>&1; rc=$?; rm -f /var/tmp/item.deb; sync; [ $rc = 0 ] || tail -5 /var/tmp/item-install.log; exit $rc\n")
+    crate::phone::run_checked(host, "apt-get install -y -o Dpkg::Options::=--force-confnew /var/tmp/item.deb >/var/tmp/item-install.log 2>&1; rc=$?; rm -f /var/tmp/item.deb; sync; [ $rc = 0 ] || tail -5 /var/tmp/item-install.log; exit $rc\n")
         .map_err(|e| format!("installing the package: {e}"))?;
     crate::phone::reboot(host, &mut |b| step(Step::Boot(b)))
 }

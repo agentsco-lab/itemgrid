@@ -59,6 +59,22 @@ pub fn run(host: &str, script: &str) -> Result<String, String> {
     run_bytes(host, script).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+/// A script run on the phone as root, which must succeed: its output, or
+/// the end of what it said when it fails.
+pub fn run_checked(host: &str, script: &str) -> Result<String, String> {
+    crate::guard::check(script)?;
+    let mut child = ssh(host, 4).args(["sh", "-s"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("ssh: {e}"))?;
+    child.stdin.take().expect("piped").write_all(script.as_bytes()).map_err(|e| format!("ssh: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("ssh: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if !out.status.success() {
+        let said = format!("{}{}", text, String::from_utf8_lossy(&out.stderr));
+        let tail: Vec<&str> = said.lines().rev().take(4).collect();
+        return Err(tail.into_iter().rev().collect::<Vec<_>>().join(" / "));
+    }
+    Ok(text)
+}
+
 /// A script run on the phone as root; its standard output as bytes.
 pub fn run_bytes(host: &str, script: &str) -> Result<Vec<u8>, String> {
     crate::guard::check(script)?;
