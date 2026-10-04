@@ -210,6 +210,9 @@ struct Ui {
     spine: gtk::Picture,
     /// The angle the drawn Duo shows, and the one to go to.
     fold: std::cell::Cell<(f64, f64)>,
+    /// How the phone is tipped from lying flat (pitch about its width, roll
+    /// about its length, degrees, from its gravity): shown, and to go to.
+    tilt: std::cell::Cell<([f64; 2], [f64; 2])>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, cradle_core::posture::Stop)>>,
     /// The simple page and its parts.
@@ -627,6 +630,7 @@ fn build(app: &adw::Application) {
         spine: spine.clone(),
         fold: std::cell::Cell::new((180.0, 180.0)),
         following: RefCell::default(),
+        tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         home,
         status_dot,
         status_title,
@@ -875,13 +879,15 @@ fn build(app: &adw::Application) {
         let ui = Rc::downgrade(&ui);
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
+            let _ = clock;
+            let k = 1.0 - (-1.0f64 / 60.0 / 0.05).exp();
             let (shown, to) = ui.fold.get();
-            if (shown - to).abs() > 0.05 {
-                // A spring-like follow: most of the way in ~0.4 s.
-                let _ = clock;
-                let k = 1.0 - (-1.0f64 / 60.0 / 0.05).exp();
+            let (tilt, tilt_to) = ui.tilt.get();
+            let far = (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05);
+            if far {
                 let now = shown + (to - shown) * k;
                 ui.fold.set((now, to));
+                ui.tilt.set(([0, 1].map(|i| tilt[i] + (tilt_to[i] - tilt[i]) * k), tilt_to));
                 show_fold(&ui, now);
             }
             glib::ControlFlow::Continue
@@ -1336,7 +1342,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
     let Some(host) = want else { return };
     let Ok((mut follow, stop)) = cradle_core::posture::follow(&host) else { return };
     *ui.following.borrow_mut() = Some((host, stop.clone()));
-    let (tx, rx) = async_channel::bounded::<f64>(8);
+    let (tx, rx) = async_channel::bounded::<cradle_core::posture::Reading>(16);
     gio::spawn_blocking(move || {
         while let Some(a) = follow.next() {
             if tx.send_blocking(a).is_err() {
@@ -1346,8 +1352,11 @@ fn follow_hinge(ui: &Rc<Ui>) {
     });
     let ui = ui.clone();
     glib::spawn_future_local(async move {
-        while let Ok(a) = rx.recv().await {
-            fold_to(&ui, a);
+        while let Ok(r) = rx.recv().await {
+            match r {
+                cradle_core::posture::Reading::Angle(a) => fold_to(&ui, a),
+                cradle_core::posture::Reading::Gravity(g) => tilt_to(&ui, g),
+            }
         }
         // It ended (the phone went, or was stopped): started again next second.
         let mine = ui.following.borrow().as_ref().is_some_and(|(_, s)| s.same(&stop));
@@ -1355,6 +1364,16 @@ fn follow_hinge(ui: &Rc<Ui>) {
             ui.following.borrow_mut().take();
         }
     });
+}
+
+/// How the phone is tipped, from its gravity (the right half's frame: x
+/// across, y toward its top, z out of its screen): pitch, its top raised;
+/// roll, its outer edge raised; eased there.
+fn tilt_to(ui: &Ui, g: [f64; 2 + 1]) {
+    let pitch = g[1].atan2(g[2]).to_degrees();
+    let roll = (-g[0]).atan2((g[1] * g[1] + g[2] * g[2]).sqrt()).to_degrees();
+    let (shown, _) = ui.tilt.get();
+    ui.tilt.set((shown, [pitch, roll]));
 }
 
 /// The phone's fold, to be shown: eased there (the tick above).
@@ -1406,14 +1425,21 @@ fn show_fold(ui: &Ui, angle: f64) {
     let mid = ui.duo_right.width().max(1) as f32;
     let room = h * DUO_ROOM as f32;
     let centre = ui.duo.width().max(1) as f32 / 2.0;
-    // The table: the whole body tipped back about its middle, low in the room.
+    // The table: the whole body tipped back about its middle, low in the
+    // room; then as the phone is held (its gravity: top raised, edge raised).
+    let [pitch, roll] = ui.tilt.get().0;
     let table = || {
         gsk::Transform::new()
             .translate(&graphene::Point::new(centre, room - h * 0.42))
             .perspective(3.2 * h)
             .rotate_3d(TILT, &graphene::Vec3::x_axis())
+            .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
+            .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
             .translate(&graphene::Point::new(-mid, -h / 2.0))
     };
+    // Lifted off the table, its shadow fades.
+    let lying = (pitch.to_radians().cos() * roll.to_radians().cos()).clamp(0.0, 1.0);
+    ui.floor.set_opacity(lying * lying);
     let flat = table().translate(&graphene::Point::new(mid, 0.0));
     // The left half turned about its right edge, the spine.
     let raised = table().translate(&graphene::Point::new(mid, 0.0)).rotate_3d(lift as f32, &graphene::Vec3::y_axis()).translate(&graphene::Point::new(-mid, 0.0));
