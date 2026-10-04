@@ -1441,7 +1441,11 @@ fn bottom_shown(ui: &Ui) {
 /// there, off otherwise.
 fn live_sync(ui: &Rc<Ui>) {
     let host = ui.state.borrow().host.clone();
-    let wanted = host.is_some() && !ui.state.borrow().busy && ui.window.is_active() && ui.tabs.visible_child_name().as_deref() == Some("general");
+    // The live view only in Developer Mode, and kept while the window is
+    // behind others: on the phone each start and stop of it reads the
+    // screen anew, and item crashed in the GPU driver there (2026-10-05);
+    // the simple window has a picture every few seconds instead.
+    let wanted = developer_mode() && host.is_some() && !ui.state.borrow().busy && ui.tabs.visible_child_name().as_deref() == Some("general");
     if !wanted {
         if let Some(stop) = ui.live.borrow_mut().take() {
             stop.stop();
