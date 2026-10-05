@@ -5,7 +5,7 @@
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
 //!
-//! Then the credit is set in the table's quarter squares under the word,
+//! Then the credit is set in the table's squares under the word,
 //! the eye comes near it and back, and it goes.
 //!
 //! A cube clicked - or any of the table's squares - looks for the phone at
@@ -17,9 +17,8 @@ use std::time::Instant;
 
 pub const WORD: [&str; 5] = ["h", "y", "t", "h", "e"];
 
-/// Under the word, a letter a quarter square (the first line just the
-/// word's width).
-pub const CREDIT: [&str; 2] = ["designed & developed", "by agentsco."];
+/// Under the word, a letter a square.
+pub const CREDIT: [&str; 3] = ["designed &", "developed", "by agentsco"];
 
 /// Seconds from the start: the word coming, the squares growing out, the
 /// eye coming down.

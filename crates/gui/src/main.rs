@@ -1973,7 +1973,7 @@ fn look(ui: &Rc<Ui>) {
         ui.looking.set(false);
         let Ok((place, guest, status)) = found else { return };
         // Looked for from a cube: the wave ends; not found, a note.
-        let note = (place == Place::Gone).then(|| "not found\nplug in its usb cable\nor turn on its wi-fi\noff? hold its power key".to_owned());
+        let note = (place == Place::Gone).then(|| "not found\nplug in usb\nor wi-fi on\noff? hold power".to_owned());
         if let Some(took) = ui.intro.borrow_mut().found(note) {
             trace(format_args!("looked for from a cube: {:.2} s, {}", took, if place == Place::Gone { "not found" } else { "found" }));
         }
@@ -3040,10 +3040,11 @@ fn draw_texts(fv: &FloorView, cr: &gtk::cairo::Context) {
         let total: usize = t.lines.iter().map(|l| l.chars().count()).sum();
         let shown = (t.set * total as f32).ceil() as usize;
         let mut n = 0;
-        let mut font = gtk::pango::FontDescription::from_string("Ubuntu Sans, Ubuntu, sans-serif");
-        font.set_weight(if t.bold { gtk::pango::Weight::Medium } else { gtk::pango::Weight::Normal });
+        // As the word's letters on its cubes.
+        let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
+        font.set_weight(if t.bold { gtk::pango::Weight::Normal } else { gtk::pango::Weight::Light });
         let s = t.cell as f64;
-        font.set_absolute_size(0.85 * s * gtk::pango::SCALE as f64);
+        font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
         for (r, line) in t.lines.iter().enumerate() {
             for (c, ch) in line.chars().enumerate() {
                 n += 1;
@@ -3646,17 +3647,27 @@ fn show_fold(ui: &Ui, angle: f64) {
         let word_on = (want.0 + middle.0, want.1 + middle.1);
         let above = Eye { look: cubes_at, on: word_on, tilt: 0.0, near: 1.0 };
         let cur = square() * k;
-        // Half a square below the word, two quarter-square lines.
-        let credit_mid = (cubes_at.0, cubes_at.1 + 1.25 * cur);
-        // Near it, it comes toward the page's middle.
+        // Words on the table (a letter a square, from the word's left,
+        // a square below it): the eye near enough for them to fill a good
+        // part of the page's width, them toward its middle.
         let page = (ui.floor.width() as f32 * 0.42 - off.0, ui.floor.height() as f32 * 0.42 - off.1);
-        let from = on_page(&matrix(rest), credit_mid);
-        let near_credit = Eye { look: credit_mid, on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), tilt: TILT * 0.8, near: 1.9 };
-        // The note (not found): half a square below the word, its head in
-        // half squares, three lines in quarter ones.
-        let note_mid = (cubes_at.0, cubes_at.1 + 1.75 * cur);
-        let from = on_page(&matrix(rest), note_mid);
-        let near_note = Eye { look: note_mid, on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), tilt: TILT * 0.8, near: 1.9 };
+        let left = cubes_at.0 - 2.5 * cur;
+        let under = cubes_at.1 + 1.5 * cur;
+        let rest_m = matrix(rest);
+        let framing = |cols: usize, rows: usize| {
+            let (w, h) = (cols as f32 * cur, rows as f32 * cur);
+            let mid = (left + w / 2.0, under + h / 2.0);
+            let (a, b) = (on_page(&rest_m, (left, mid.1)), on_page(&rest_m, (left + w, mid.1)));
+            let near = (ui.floor.width() as f32 * 0.5 / (b.0 - a.0).abs().max(1.0)).clamp(0.6, 2.4);
+            let from = on_page(&rest_m, mid);
+            Eye { look: mid, on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), tilt: TILT * 0.8, near }
+        };
+        let block = |lines: &[&str]| (lines.iter().map(|l| l.chars().count()).max().unwrap_or(1), lines.len());
+        let (cc, cr) = block(&intro::CREDIT);
+        let near_credit = framing(cc, cr);
+        let note_lines: Vec<String> = intro.note().map(|(t, _)| t.lines().map(str::to_owned).collect()).unwrap_or_default();
+        let (nc, nr) = block(&note_lines.iter().map(String::as_str).collect::<Vec<_>>());
+        let near_note = framing(nc.max(1), nr.max(1));
         let mut e = mix(mix(mix(above, rest, eye), near_credit, intro.focus()), near_note, intro.near_note());
         // Coming down, the word kept where it is on the page.
         if eye < 1.0 {
@@ -3668,21 +3679,19 @@ fn show_fold(ui: &Ui, angle: f64) {
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
-        // The credit, a letter a quarter square, under the word; the note
-        // there after looking (not found): its head in half squares.
+        // The credit under the word, a letter a square; the note there
+        // after looking (not found), its head darker.
         let mut texts = Vec::new();
-        let left = cubes_at.0 - 2.5 * cur;
-        let under = cubes_at.1 + cur;
         if let Some((set, strength)) = intro.credit() {
-            texts.push(TableText { at: (left, under), cell: cur / 4.0, lines: intro::CREDIT.iter().map(|l| l.to_string()).collect(), grey: 0.38, bold: false, set, strength });
+            texts.push(TableText { at: (left, under), cell: cur, lines: intro::CREDIT.iter().map(|l| l.to_string()).collect(), grey: 0.38, bold: false, set, strength });
         }
         if let Some((text, strength)) = intro.note() {
             let mut lines = text.lines();
             if let Some(head) = lines.next() {
-                texts.push(TableText { at: (left, under), cell: cur / 2.0, lines: vec![head.to_owned()], grey: 0.2, bold: false, set: 1.0, strength });
+                texts.push(TableText { at: (left, under), cell: cur, lines: vec![head.to_owned()], grey: 0.16, bold: false, set: 1.0, strength });
             }
             let rest: Vec<String> = lines.map(str::to_owned).collect();
-            texts.push(TableText { at: (left, under + 0.75 * cur), cell: cur / 4.0, lines: rest, grey: 0.45, bold: false, set: 1.0, strength });
+            texts.push(TableText { at: (left, under + cur), cell: cur, lines: rest, grey: 0.45, bold: false, set: 1.0, strength });
         }
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
