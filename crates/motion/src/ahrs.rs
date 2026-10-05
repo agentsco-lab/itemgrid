@@ -29,7 +29,7 @@ pub struct Ahrs {
     /// The field's size and dip (rad) as learnt while believed.
     field_size: Option<f64>,
     field_dip: Option<f64>,
-    /// Whether the last field was heeded.
+    /// Whether the last field was heeded (it stands until the next).
     pub north_trusted: bool,
 }
 
@@ -131,11 +131,11 @@ impl Ahrs {
                 e[i] += KP_DOWN * trust * ed[i];
             }
         }
-        // North: the field's level part along the world's x.
-        self.north_trusted = false;
+        // North: the field's level part along the world's x (whether it is
+        // believed, from the last field: it comes less often than steps).
         if let Some(m) = m {
-            if self.believe_field(m, a) {
-                self.north_trusted = true;
+            self.north_trusted = self.believe_field(m, a);
+            if self.north_trusted {
                 let mn = norm(m);
                 let (mx, my, mz) = (m[0] / mn, m[1] / mn, m[2] / mn);
                 let hx = 2.0 * (mx * (0.5 - q2 * q2 - q3 * q3) + my * (q1 * q2 - q0 * q3) + mz * (q1 * q3 + q0 * q2));

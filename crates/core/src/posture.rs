@@ -115,7 +115,13 @@ pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
     // end letting go (its link gone in a sleep) let go of the new one's too.
     let name = format!("cradle-follow-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()).unwrap_or(0));
     let script = if awake {
-        format!("echo {name} > /sys/power/wake_lock\n( {} )\necho {name} > /sys/power/wake_unlock\n", crate::phone::as_owner(FOLLOW))
+        // Held 5 s at a time, renewed while this shell lives: killed (the
+        // link cut), it lets go by itself - a lock without a timeout
+        // outlived its following and kept the phone from sleeping.
+        format!(
+            "me=$$\n( while kill -0 $me 2>/dev/null; do echo '{name} 5000000000' > /sys/power/wake_lock; sleep 1; done ) &\nkeep=$!\n( {} )\nkill $keep 2>/dev/null\necho {name} > /sys/power/wake_unlock\n",
+            crate::phone::as_owner(FOLLOW)
+        )
     } else {
         crate::phone::as_owner(FOLLOW)
     };
