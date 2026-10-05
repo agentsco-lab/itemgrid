@@ -289,6 +289,12 @@ struct Ui {
     /// How the phone is tipped from lying flat (pitch about its width, roll
     /// about its length, degrees, from its gravity): shown, and to go to.
     tilt: std::cell::Cell<([f64; 2], [f64; 2])>,
+    /// duo-motion's orientation: shown (eased), to, and whether it came;
+    /// the yaw it started at (taken off: drawn from its usual side); and
+    /// whether the window follows the phone through duo-motion.
+    orient: std::cell::Cell<([f64; 4], [f64; 4], bool)>,
+    yaw0: std::cell::Cell<Option<f64>>,
+    motion_on: std::cell::Cell<bool>,
     /// The posture in words under the Duo; what it is made from: the
     /// hinge's posture by name, the gravities lately (in a hand: they move).
     pose: gtk::Label,
@@ -983,6 +989,9 @@ fn build(app: &adw::Application) {
         gravity_at: std::cell::Cell::new(None),
         last_angle: std::cell::Cell::new(None),
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
+        orient: std::cell::Cell::new(([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], false)),
+        yaw0: std::cell::Cell::new(None),
+        motion_on: std::cell::Cell::new(false),
         pose: pose.clone(),
         pose_name: RefCell::default(),
         gravities: RefCell::default(),
@@ -1420,7 +1429,22 @@ fn build(app: &adw::Application) {
             let (shown, to) = ui.fold.get();
             let (tilt, tilt_to) = ui.tilt.get();
             let (orbit, orbit_to) = ui.orbit.get();
-            let far = (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05 || (orbit[i] - orbit_to[i]).abs() > 0.05);
+            let (oq, oq_to, ohave) = ui.orient.get();
+            let qfar = ohave && (0..4).any(|i| (oq[i] - oq_to[i]).abs() > 1e-4);
+            if qfar {
+                // Toward the phone's quaternion (the short way), quickly:
+                // it comes 50 times a second.
+                let d: f64 = (0..4).map(|i| oq[i] * oq_to[i]).sum();
+                let sign = if d < 0.0 { -1.0 } else { 1.0 };
+                let kq = 1.0 - (-1.0f64 / 60.0 / 0.035).exp();
+                let mut n = [0.0; 4];
+                for i in 0..4 {
+                    n[i] = oq[i] + (sign * oq_to[i] - oq[i]) * kq;
+                }
+                let l = n.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-12);
+                ui.orient.set((n.map(|v| v / l), oq_to, true));
+            }
+            let far = qfar || (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05 || (orbit[i] - orbit_to[i]).abs() > 0.05);
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
                 let now = shown + (to - shown) * k;
@@ -1998,7 +2022,20 @@ fn follow_hinge(ui: &Rc<Ui>) {
     // lid and the hinge come at once.
     let cable = cradle_core::link::Via::of(&host) == cradle_core::link::Via::Cable;
     trace(format_args!("follow: start {host} awake {cable}"));
-    let Ok((mut follow, stop)) = cradle_core::posture::follow(&host, cable) else { return };
+    // duo-motion when it is here (put on the phone as needed), else
+    // sfduo-posture through gdbus.
+    let (follow, motion) = match cradle_core::posture::follow_motion(&host, cable) {
+        Some(Ok(f)) => (Ok(f), true),
+        Some(Err(e)) => {
+            trace(format_args!("follow: duo-motion failed: {e}"));
+            (cradle_core::posture::follow(&host, cable), false)
+        }
+        None => (cradle_core::posture::follow(&host, cable), false),
+    };
+    ui.motion_on.set(motion);
+    ui.yaw0.set(None);
+    trace(format_args!("follow: through {}", if motion { "duo-motion" } else { "sfduo-posture" }));
+    let Ok((mut follow, stop)) = follow else { return };
     *ui.following.borrow_mut() = Some((host, stop.clone()));
     let (tx, rx) = async_channel::bounded::<cradle_core::posture::Reading>(16);
     gio::spawn_blocking(move || {
@@ -2022,11 +2059,42 @@ fn follow_hinge(ui: &Rc<Ui>) {
                 cradle_core::posture::Reading::Angle(a) => {
                     raw = Some(a);
                     ui.last_angle.set(Some(a));
+                    // duo-motion tells the angle only: the posture by it, as
+                    // sfduo-posture's bands have it (the lid's switch rules
+                    // "closed").
+                    if ui.motion_on.get() && ui.lid_shut_at.get().is_none() {
+                        let name = match a {
+                            a if a < 10.0 => "closed",
+                            a if (60.0..=130.0).contains(&a) => "laptop",
+                            a if (150.0..=210.0).contains(&a) => "flat",
+                            a if a >= 340.0 => "folded",
+                            _ => "between",
+                        };
+                        *ui.pose_name.borrow_mut() = name.into();
+                    }
                     fold_to(&ui, shut(&ui, a));
+                }
+                cradle_core::posture::Reading::Quat(q) => {
+                    // The yaw it came with taken off: turned from there on.
+                    let yaw = |q: [f64; 4]| (2.0 * (q[0] * q[3] + q[1] * q[2])).atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
+                    let y0 = *ui.yaw0.get().get_or_insert(yaw(q));
+                    ui.yaw0.set(Some(y0));
+                    let (c, s) = ((-y0 / 2.0).cos(), (-y0 / 2.0).sin());
+                    // (c, 0, 0, s) * q
+                    let q = [c * q[0] - s * q[3], c * q[1] - s * q[2], c * q[2] + s * q[1], c * q[3] + s * q[0]];
+                    let (shown, _, have) = ui.orient.get();
+                    ui.orient.set((if have { shown } else { q }, q, true));
+                    // Which way is down, from it: for lying, held, the shadows.
+                    let [w, x, y, z] = q;
+                    tilt_to(&ui, [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), w * w - x * x - y * y + z * z]);
                 }
                 cradle_core::posture::Reading::Gravity(g) => {
                     ui.gravity_at.set(Some(std::time::Instant::now()));
-                    tilt_to(&ui, g);
+                    // With duo-motion the quaternion tells the tilt (this is
+                    // its accelerometer, the swings in it).
+                    if !ui.motion_on.get() {
+                        tilt_to(&ui, g);
+                    }
                     let mut gs = ui.gravities.borrow_mut();
                     gs.push_back((std::time::Instant::now(), g));
                     while gs.len() > 40 {
@@ -2061,6 +2129,11 @@ fn follow_hinge(ui: &Rc<Ui>) {
             say_pose(&ui);
         }
         trace(format_args!("follow: ended (pose {:?}, last angle {:?}, tilt to {:?})", ui.pose_name.borrow(), ui.last_angle.get(), ui.tilt.get().1));
+        // Its quaternion no longer comes: the tilt (laid down if it was
+        // closed) draws it from here.
+        let (q, qt, _) = ui.orient.get();
+        ui.orient.set((q, qt, false));
+        ui.motion_on.set(false);
         // It ended (the phone went, or was stopped): started again next second.
         // Gone just as it was being closed - it went to sleep: drawn closing
         // the rest of the way and lying down on the table, gently (it froze
@@ -2470,6 +2543,36 @@ fn show_fold(ui: &Ui, angle: f64) {
     // CRADLE_TILT=pitch,roll: held so, whatever the phone says (to picture
     // it).
     let [pitch, roll] = std::env::var("CRADLE_TILT").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some([a.trim().parse().ok()?, b.trim().parse().ok()?]))).unwrap_or([pitch, roll]);
+    // How the phone is turned in the table's frame: by duo-motion's
+    // quaternion when it comes (the whole turn, the yaw on the table too),
+    // else by the gravity's pitch and roll. The quaternion's frame (the
+    // right half's: y up its panel) to the drawing's (y down): S R S, S
+    // flipping y.
+    let orient = ui.orient.get();
+    let turn = move |t: gsk::Transform| -> gsk::Transform {
+        match orient.2.then_some(orient.0) {
+            Some([w, x, y, z]) => {
+                let (w, x, y, z) = (w as f32, x as f32, y as f32, z as f32);
+                let rm = [
+                    [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z), 2.0 * (x * z + w * y)],
+                    [2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x)],
+                    [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)],
+                ];
+                let flip = |i: usize| if i == 1 { -1.0 } else { 1.0 };
+                // graphene's matrices act on rows: its [r][c] the column
+                // matrix's [c][r].
+                let mut f = [0.0f32; 16];
+                for rr in 0..3 {
+                    for cc in 0..3 {
+                        f[rr * 4 + cc] = rm[cc][rr] * flip(rr) * flip(cc);
+                    }
+                }
+                f[15] = 1.0;
+                t.matrix(&graphene::Matrix::from_float(f))
+            }
+            None => t.rotate_3d(-pitch as f32, &graphene::Vec3::x_axis()).rotate_3d(-roll as f32, &graphene::Vec3::y_axis()),
+        }
+    };
     // Held and tipped, the phone is over the table, not into it: raised
     // until its lowest corner is at the table (worked out below, once the
     // fold's pose is known).
@@ -2481,12 +2584,11 @@ fn show_fold(ui: &Ui, angle: f64) {
         let t = gsk::Transform::new().translate(&graphene::Point::new(at.0, at.1));
         let t = if persp { t.perspective(3.2 * h) } else { t };
         let [yaw, more] = ui.orbit.get().0;
-        t.rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
+        let t = t
+            .rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
             .rotate_3d(yaw, &graphene::Vec3::z_axis())
-            .translate_3d(&graphene::Point3D::new(0.0, 0.0, held.get()))
-            .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
-            .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
-            .translate(&graphene::Point::new(-mid, -h / 2.0))
+            .translate_3d(&graphene::Point3D::new(0.0, 0.0, held.get()));
+        turn(t).translate(&graphene::Point::new(-mid, -h / 2.0))
     };
     // Each half's plane: the right flat beside the spine, the left turned
     // about it; its screen at `z` 0, its back at -DUO_THICK; then the
@@ -2537,9 +2639,7 @@ fn show_fold(ui: &Ui, angle: f64) {
     let rock = if local(gsk::Transform::new(), 1, rock_size, 0.0).to_matrix().transform_point3d(&graphene::Point3D::new(mid, 0.0, 0.0)).z() <= 0.0 { rock_size } else { -rock_size };
     let raise = (-DUO_THICK - lowest(rock)).max(0.0);
     {
-        let tipped = gsk::Transform::new()
-            .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
-            .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
+        let tipped = turn(gsk::Transform::new())
             .translate(&graphene::Point::new(-mid, -h / 2.0))
             .translate(&graphene::Point::new(mid, 0.0));
         let mut low = -DUO_THICK;
@@ -2690,10 +2790,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         .perspective(3.2 * h)
         .rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
         .rotate_3d(yaw, &graphene::Vec3::z_axis());
-    let in_table = gsk::Transform::new()
-        .translate_3d(&graphene::Point3D::new(0.0, 0.0, held.get()))
-        .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
-        .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
+    let in_table = turn(gsk::Transform::new().translate_3d(&graphene::Point3D::new(0.0, 0.0, held.get())))
         .translate(&graphene::Point::new(-mid, -h / 2.0));
     let pm = plug_frame(in_table.clone()).to_matrix();
     let table = -DUO_THICK;

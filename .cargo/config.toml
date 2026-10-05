@@ -1,0 +1,4 @@
+# duo-motion runs on the Duo: cargo build --release --target aarch64-unknown-linux-gnu -p duo-motion
+# (std only - the cross toolchain's glibc is older than the phone's).
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"

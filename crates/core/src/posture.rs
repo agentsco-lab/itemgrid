@@ -35,6 +35,42 @@ pub enum Reading {
     Posture(String),
     /// The lid's switch: shut or not.
     Lid(bool),
+    /// The phone's orientation from duo-motion: a quaternion (w, x, y, z),
+    /// the right half's frame to the world's (z up), yaw from its start.
+    Quat([f64; 4]),
+}
+
+/// Where duo-motion is kept on the phone.
+const MOTION_ON_PHONE: &str = "/var/lib/cradle/duo-motion";
+
+/// duo-motion as built for the phone, here: CRADLE_MOTION, else
+/// ~/.local/share/cradle/duo-motion (tools/install-local.sh puts it there).
+fn motion_here() -> Option<std::path::PathBuf> {
+    let p = std::env::var_os("CRADLE_MOTION").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/cradle/duo-motion"));
+    p.exists().then_some(p)
+}
+
+/// Follows the phone through duo-motion (its own sensor sessions, the
+/// orientation fused on the phone, 50 a second; the lid from its switch):
+/// put on the phone first when it is not there or not this one. None when
+/// there is no duo-motion here (the window then follows sfduo-posture).
+pub fn follow_motion(host: &str, awake: bool) -> Option<Result<(Follow, Stop), String>> {
+    use sha2::{Digest, Sha256};
+    let local = motion_here()?;
+    Some((|| {
+        let bytes = std::fs::read(&local).map_err(|e| format!("{}: {e}", local.display()))?;
+        let want = format!("{:x}", Sha256::digest(&bytes));
+        let have = crate::phone::run(host, &format!("sha256sum {MOTION_ON_PHONE} 2>/dev/null | cut -c1-64\n"))?;
+        if have.trim() != want {
+            crate::phone::run_checked(host, "mkdir -p /var/lib/cradle\n")?;
+            crate::phone::put(host, &local, &format!("{MOTION_ON_PHONE}.new"))?;
+            crate::phone::run_checked(host, &format!("chmod 755 {MOTION_ON_PHONE}.new && mv {MOTION_ON_PHONE}.new {MOTION_ON_PHONE}\n"))?;
+        }
+        let script = format!("exec {MOTION_ON_PHONE}{}\n", if awake { " --awake" } else { "" });
+        let mut child = crate::phone::spawn(host, &script, Stdio::piped())?;
+        let out = child.stdout.take().ok_or("no output")?;
+        Ok((Follow { lines: BufReader::new(out), queued: Default::default() }, Stop(Arc::new(Mutex::new(child)))))
+    })())
 }
 
 /// The readings, one after another.
@@ -102,6 +138,22 @@ impl Follow {
 /// <[0.04, -0.01, 1.02]>, 'Posture': <'laptop'>), all it has.
 fn readings(line: &str) -> Vec<Reading> {
     let line = line.trim();
+    // duo-motion's: "q w x y z", "g x y z", "h deg", "l 0|1".
+    let nums = |rest: &str| rest.split_whitespace().filter_map(|x| x.parse::<f64>().ok()).collect::<Vec<f64>>();
+    if let Some(rest) = line.strip_prefix("q ") {
+        let v = nums(rest);
+        return if v.len() == 4 { vec![Reading::Quat([v[0], v[1], v[2], v[3]])] } else { vec![] };
+    }
+    if let Some(rest) = line.strip_prefix("g ") {
+        let v = nums(rest);
+        return if v.len() == 3 { vec![Reading::Gravity([v[0], v[1], v[2]])] } else { vec![] };
+    }
+    if let Some(rest) = line.strip_prefix("h ") {
+        return nums(rest).first().map(|a| Reading::Angle(*a)).into_iter().collect();
+    }
+    if let Some(rest) = line.strip_prefix("l ") {
+        return vec![Reading::Lid(rest.trim() == "1")];
+    }
     if let Some(rest) = line.strip_prefix("d ") {
         return rest.trim().parse().ok().map(Reading::Angle).into_iter().collect();
     }
