@@ -324,6 +324,8 @@ struct Ui {
     gravity_at: std::cell::Cell<Option<std::time::Instant>>,
     /// The phone's USB link up at the last second's check.
     usb_was: std::cell::Cell<bool>,
+    /// A look on its way (the quick ones after the link came wait for it).
+    looking: std::cell::Cell<bool>,
     last_angle: std::cell::Cell<Option<f64>>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, cradle_core::posture::Stop)>>,
@@ -1005,6 +1007,7 @@ fn build(app: &adw::Application) {
         idle: std::cell::Cell::new(false),
         shut_away: std::cell::Cell::new(false),
         usb_was: std::cell::Cell::new(false),
+        looking: std::cell::Cell::new(false),
         lid_shut_at: std::cell::Cell::new(None),
         gravity_at: std::cell::Cell::new(None),
         last_angle: std::cell::Cell::new(None),
@@ -1513,12 +1516,26 @@ fn build(app: &adw::Application) {
                     tilt_to(&ui, [0.0, 0.0, 1.0]);
                 }
             }
-            // Not seen and the phone's USB link just came up (it woke): look
-            // now, not at the next round (up to 5 s).
+            // The phone's USB link came or went: the kept ssh connection
+            // over it is from the link before (dead, it held the next look
+            // ~6 s until ssh gave it up) - closed. Just come (it woke) and
+            // not seen: looked for now and each second for 4 s, not at the
+            // next round (up to 5 s) - the phone's end of the link takes
+            // its address a moment after this one's.
             let usb = cradle_core::link::usb_up();
             let was = ui.usb_was.replace(usb);
+            if usb != was {
+                gio::spawn_blocking(|| cradle_core::phone::close_shared(cradle_core::link::CABLE));
+            }
             if usb && !was && ui.state.borrow().host.is_none() {
-                look(&ui);
+                for s in 0..5u64 {
+                    let ui = ui.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(300 + s * 1000), move || {
+                        if ui.state.borrow().host.is_none() && !ui.looking.get() {
+                            look(&ui);
+                        }
+                    });
+                }
             }
             glib::ControlFlow::Continue
         }
@@ -1680,6 +1697,7 @@ fn shots_dir() -> std::path::PathBuf {
 /// Looks at the phone again, off the main thread, and shows what it found.
 fn look(ui: &Rc<Ui>) {
     let ui = ui.clone();
+    ui.looking.set(true);
     glib::spawn_future_local(async move {
         let found = gio::spawn_blocking(|| {
             let seen = cradle_core::detect();
@@ -1698,6 +1716,7 @@ fn look(ui: &Rc<Ui>) {
             (place, guest, status)
         })
         .await;
+        ui.looking.set(false);
         let Ok((place, guest, status)) = found else { return };
         let (busy, elsewhere) = {
             let st = ui.state.borrow();
