@@ -35,7 +35,8 @@ const DUO_BODY: (f64, f64) = (186.9, 145.2);
 const DUO_PANEL: (f64, f64) = (86.654, 115.539);
 const DUO_SCREEN_X: (f64, f64) = (4.1, 96.146);
 const DUO_SCREEN_TOP: f64 = 14.831;
-const DUO_PX_PER_MM: f64 = 2.35;
+// Small enough for the sections under it (#169; was 2.35).
+const DUO_PX_PER_MM: f64 = 1.45;
 /// Transparent room round each drawn half and its shadow, px: their edges
 /// smoothed as they turn.
 const DUO_PAD: f32 = 3.0;
@@ -53,6 +54,20 @@ const DUO_ROOM_W: f64 = 1.3;
 const PART_COLOURS: [(f64, f64, f64); 4] = [(0.21, 0.52, 0.89), (0.20, 0.82, 0.48), (1.0, 0.47, 0.0), (0.57, 0.25, 0.67)];
 
 const CSS: &str = "
+/* LOOK: minimal - white, small type, light weights; colour only where it
+   says something (the status dot, the accent on the chosen section). */
+window, window.background { background: #ffffff; font-size: 9.5pt; }
+headerbar { background: #ffffff; box-shadow: none; border-bottom: none; }
+.navigation-sidebar { background: transparent; }
+.navigation-sidebar > row { min-height: 30px; padding: 0 10px; border-radius: 8px; }
+.navigation-sidebar > row:selected { background: alpha(black, 0.05); }
+.navigation-sidebar > row:selected label { font-weight: 600; }
+.navigation-sidebar image { opacity: 0.6; }
+.boxed-list { background: #ffffff; box-shadow: none; border: 1px solid alpha(black, 0.08); }
+.navigation-sidebar > row.nav-apart { margin-top: 14px; }
+.boxed-list button.pill { padding: 3px 14px; min-height: 26px; font-weight: 500; }
+.boxed-list button.pill.destructive-action { background: alpha(#e01b24, 0.08); color: #c01c28; }
+.duo-name { font-weight: 600; font-size: 1.25em; }
 .duo-panel {
   background: #0b0b0d;
   border-radius: 16px;
@@ -67,7 +82,7 @@ const CSS: &str = "
   border-radius: 3px;
   background: linear-gradient(to right, #2a2a2e, #4a4a50, #2a2a2e);
 }
-.section-title { font-weight: 700; font-size: 1.15em; }
+.section-title { font-weight: 600; font-size: 0.85em; letter-spacing: 0.04em; opacity: 0.55; }
 .fact-name { opacity: 0.55; }
 .storage-legend-dot { min-width: 10px; min-height: 10px; border-radius: 5px; }
 .dot-free { background: alpha(currentColor, 0.18); }
@@ -94,13 +109,13 @@ const CSS: &str = "
   border: 1px solid alpha(currentColor, 0.10);
 }
 .mode-card.moving image { animation: duo-breathe 1.8s ease-in-out infinite; }
-.mode-title { font-weight: 800; font-size: 1.2em; }
+.mode-title { font-weight: 600; font-size: 1.1em; }
 .status-dot { min-width: 12px; min-height: 12px; border-radius: 6px; }
 .status-dot.fine { background: #33d17a; }
 .status-dot.look { background: #f6d32d; }
 .status-dot.busy { background: #62a0ea; }
 .status-dot.away { background: #77767b; }
-.status-title { font-weight: 800; font-size: 1.9em; }
+.status-title { font-weight: 600; font-size: 1.45em; }
 .repair-row-title { font-weight: 700; }
 .wordmark { font-family: Lato, Ubuntu, sans-serif; font-weight: 300; font-size: 54px; letter-spacing: 0.32em; opacity: 0.88; }
 .free-label { opacity: 0.6; font-size: 0.9em; }
@@ -285,13 +300,36 @@ struct Ui {
 /// A phone not seen for this long is away; before that, restarting.
 const GONE_AFTER_S: u64 = 90;
 
+/// The sections under the Duo (#169): key, title, icon.
+const NAV: &[(&str, &str, &str)] = &[
+    ("overview", "Overview", "phone-symbolic"),
+    ("agent", "Agent", "system-users-symbolic"),
+    ("look", "Wallpapers & Look", "preferences-desktop-wallpaper-symbolic"),
+    ("battery", "Battery", "battery-good-symbolic"),
+    ("storage", "Storage", "drive-harddisk-symbolic"),
+    ("about", "About", "help-about-symbolic"),
+    ("updates", "Updates & Backups", "software-update-available-symbolic"),
+    ("repair", "Repair & Reset", "applications-engineering-symbolic"),
+];
+
+/// The sections not made yet: key, title, what each will hold.
+const COMING: &[(&str, &str, &str)] = &[
+    ("look", "Wallpapers & Look", "Your own photos from this computer as wallpapers, item's accent, the dock and the grid, the clock."),
+    ("battery", "Battery", "The charge and its health as on the phone, with the history of the last days: what drew it down overnight."),
+    ("storage", "Storage", "What takes the phone's space - apps, your files, the system - and what can go."),
+    ("about", "About", "The phone's versions, serial number and club number, as in Settings on the phone."),
+    ("updates", "Updates & Backups", "item's updates and the backups on this computer, in one place."),
+];
+
 fn build(app: &adw::Application) {
+    // Light whatever the desktop's scheme: white, small type (LOOK).
+    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceLight);
     let css = gtk::CssProvider::new();
     css.load_from_string(&format!("{CSS}{}", card::CSS));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
-    let window = adw::ApplicationWindow::builder().application(app).title("Cradle").default_width(980).default_height(720).build();
+    let window = adw::ApplicationWindow::builder().application(app).title("Cradle").default_width(1000).default_height(800).build();
 
     // The tabs, in the header as Finder has them.
     let stack = adw::ViewStack::new();
@@ -302,20 +340,16 @@ fn build(app: &adw::Application) {
     refresh.set_tooltip_text(Some("Look again"));
     header.pack_end(&refresh);
     refresh.set_visible(developer_mode());
-    // The menu: Developer Mode.
-    let menu = gio::Menu::new();
-    menu.append(Some("Settings"), Some("win.settings"));
-    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Menu").build();
-    header.pack_end(&menu_button);
 
-    // General: the Duo on the left, the sections on the right.
+    // General: the Duo on the left and the sections under it (#169), the
+    // section chosen on the right.
     let general = gtk::Box::new(gtk::Orientation::Horizontal, 40);
-    general.set_margin_top(32);
+    general.set_margin_top(16);
     general.set_margin_bottom(24);
     general.set_margin_start(40);
     general.set_margin_end(40);
 
-    let device = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    let device = gtk::Box::new(gtk::Orientation::Vertical, 8);
     device.set_valign(gtk::Align::Start);
     // The Duo as it lies on a table (data/duo-body.py: agentsco.uk's
     // drawing, in mm): each half one picture - its body with its live screen
@@ -406,7 +440,7 @@ fn build(app: &adw::Application) {
     let live_badge = gtk::Label::builder().label("● LIVE").css_classes(["live-badge"]).build();
     live_badge.set_visible(false);
     device.append(&live_badge);
-    let name = gtk::Label::builder().label("Surface Duo").css_classes(["title-1"]).margin_top(10).build();
+    let name = gtk::Label::builder().label("Surface Duo").css_classes(["duo-name"]).margin_top(6).build();
     let join = gtk::Button::builder().label("Join the Club…").css_classes(["pill"]).halign(gtk::Align::Center).build();
     join.set_tooltip_text(Some("A number for this Duo in the owners' club on agentsco.uk (00001...)"));
     join.set_visible(false);
@@ -416,7 +450,24 @@ fn build(app: &adw::Application) {
     device.append(&name_sub);
     device.append(&battery);
     device.append(&join);
-    general.append(&device);
+    // The sections, as item Settings has them on the phone: what the phone
+    // is and what is set from here, Repair & Reset at the bottom, apart.
+    let nav = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).css_classes(["navigation-sidebar"]).margin_top(14).width_request(280).halign(gtk::Align::Center).build();
+    for (key, title, icon) in NAV {
+        let r = gtk::ListBoxRow::builder().name(*key).build();
+        let b = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        b.append(&gtk::Image::from_icon_name(icon));
+        b.append(&gtk::Label::builder().label(*title).xalign(0.0).build());
+        r.set_child(Some(&b));
+        if *key == "repair" {
+            r.add_css_class("nav-apart");
+        }
+        nav.append(&r);
+    }
+    nav.select_row(nav.row_at_index(0).as_ref());
+    device.append(&nav);
+    let device_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&device).propagate_natural_width(true).build();
+    general.append(&device_scroll);
 
     let sections = gtk::Box::new(gtk::Orientation::Vertical, 22);
     sections.set_hexpand(true);
@@ -577,18 +628,17 @@ fn build(app: &adw::Application) {
     // Repair & Reset: what is done once in a while, each asking first, all
     // on the cable.
     let repair = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    let repair_back = gtk::Button::builder().icon_name("go-previous-symbolic").css_classes(["flat", "circular"]).halign(gtk::Align::Start).tooltip_text("Back").build();
-    repair.append(&repair_back);
-    repair.append(&gtk::Label::builder().label("Settings").xalign(0.0).css_classes(["status-title"]).build());
+    repair.append(&gtk::Label::builder().label("Repair & Reset").xalign(0.0).css_classes(["status-title"]).build());
     // Developer Mode: what the simple page leaves out.
     let dev_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     let dev_row = adw::SwitchRow::builder().title("Developer Mode").subtitle("Slots, images from RAM, every kind of backup, item built from your tree, the logs.").active(developer_mode()).build();
     dev_list.append(&dev_row);
-    repair.append(&dev_list);
-    // item: what is set once or needs a keyboard (#166) - the agent first.
-    repair.append(&gtk::Label::builder().label("item").xalign(0.0).css_classes(["section-title"]).margin_top(10).build());
+    // The agent: what is set once and wants a keyboard (#166).
+    let agent = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    agent.append(&gtk::Label::builder().label("Agent").xalign(0.0).css_classes(["status-title"]).build());
+    agent.append(&body("item's agent does its heavy work through OpenRouter, with your own key and within your limit."));
     let agent_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
-    let key_row = adw::ActionRow::builder().title("Agent: OpenRouter key").subtitle("The agent's heavy work goes through OpenRouter with your own key. Kept in the phone's keyring, never on this computer.").subtitle_lines(3).build();
+    let key_row = adw::ActionRow::builder().title("OpenRouter key").subtitle("The agent's heavy work goes through OpenRouter with your own key. Kept in the phone's keyring, never on this computer.").subtitle_lines(3).build();
     let key_set = gtk::Button::builder().label("Set Key…").valign(gtk::Align::Center).css_classes(["pill"]).build();
     let key_forget = gtk::Button::builder().label("Remove").valign(gtk::Align::Center).css_classes(["pill", "flat"]).visible(false).build();
     key_row.add_suffix(&key_forget);
@@ -598,8 +648,7 @@ fn build(app: &adw::Application) {
     agent_list.append(&key_row);
     agent_list.append(&model_row);
     agent_list.append(&limit_row);
-    repair.append(&agent_list);
-    repair.append(&gtk::Label::builder().label("Repair & Reset").xalign(0.0).css_classes(["section-title"]).margin_top(10).build());
+    agent.append(&agent_list);
     repair.append(&body("Things to do once in a while. Each asks before it starts; all but the backup need the USB cable."));
     let repair_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
     let repair_row = |title: &str, text: &str, button: &str, destructive: bool| {
@@ -624,10 +673,25 @@ fn build(app: &adw::Application) {
     repair.append(&repair_list);
     let repair_note = body("On Wi-Fi now: plug in the cable for all but the backup.");
     repair.append(&repair_note);
-    let repair_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&repair).hexpand(true).build();
-    let right = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeftRight).transition_duration(250).hexpand(true).build();
-    right.add_named(&scroll, Some("main"));
-    right.add_named(&repair_scroll, Some("repair"));
+    repair.append(&gtk::Label::builder().label("Developer").xalign(0.0).css_classes(["section-title"]).margin_top(10).build());
+    repair.append(&dev_list);
+    let page = |child: &gtk::Box| gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(child).hexpand(true).build();
+    let right = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(150).hexpand(true).build();
+    right.add_named(&scroll, Some("overview"));
+    right.add_named(&page(&agent), Some("agent"));
+    right.add_named(&page(&repair), Some("repair"));
+    // The sections still to come (#169), each saying what it will hold.
+    for (key, title, what) in COMING {
+        let b = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        b.append(&gtk::Label::builder().label(*title).xalign(0.0).css_classes(["status-title"]).build());
+        b.append(&body(what));
+        b.append(&gtk::Label::builder().label("Coming (tracker #169).").xalign(0.0).css_classes(["dim-label", "caption"]).build());
+        right.add_named(&page(&b), Some(key));
+    }
+    nav.connect_row_activated({
+        let right = right.clone();
+        move |_, r| right.set_visible_child_name(&r.widget_name())
+    });
     general.append(&right);
 
     // The storage along the bottom.
@@ -673,8 +737,9 @@ fn build(app: &adw::Application) {
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
     view.set_content(Some(&toasts));
-    // The storage bar along the window's bottom, on General only.
-    view.add_bottom_bar(&bottom);
+    // The storage bar at the foot of Overview (was along the window's
+    // bottom: the sections under the Duo want the height).
+    sections.append(&bottom);
     bottom.set_visible(false);
     window.set_content(Some(&view));
 
@@ -766,21 +831,39 @@ fn build(app: &adw::Application) {
         }
     });
 
-    // Settings (the menu): Developer Mode, kept between runs, and Repair &
-    // Reset.
-    let settings = gio::SimpleAction::new("settings", None);
-    settings.connect_activate({
-        let right = right.clone();
-        move |_, _| right.set_visible_child_name("repair")
+    // The agent's settings read from the phone each time its page shows.
+    let agent_read = gio::SimpleAction::new("agent-read", None);
+    window.add_action(&agent_read);
+    right.connect_visible_child_name_notify({
+        let agent_read = agent_read.clone();
+        move |r| {
+            if r.visible_child_name().as_deref() == Some("agent") {
+                agent_read.activate(None);
+            }
+        }
     });
-    window.add_action(&settings);
-    // The agent's settings read from the phone each time Settings opens.
-    settings.connect_activate({
+    let agent_again = gio::SimpleAction::new("agent-read-if-shown", None);
+    agent_again.connect_activate({
+        let (right, agent_read) = (right.clone(), agent_read.clone());
+        move |_, _| {
+            if right.visible_child_name().as_deref() == Some("agent") {
+                agent_read.activate(None);
+            }
+        }
+    });
+    window.add_action(&agent_again);
+    agent_read.connect_activate({
         let (ui, key_row, key_forget, model_row, limit_row) = (Rc::downgrade(&ui), key_row.clone(), key_forget.clone(), model_row.clone(), limit_row.clone());
         move |_, _| {
             let Some(ui) = ui.upgrade() else { return };
             let Some(host) = ui.state.borrow().host.clone() else {
                 key_row.set_subtitle("Your Duo is not here: its settings are read when it is.");
+                // Looked for again while the page shows (opened at the start,
+                // before the phone was found).
+                let window = ui.window.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+                    gio::prelude::ActionGroupExt::activate_action(&window, "agent-read-if-shown", None);
+                });
                 return;
             };
             let (key_row, key_forget, model_row, limit_row) = (key_row.clone(), key_forget.clone(), model_row.clone(), limit_row.clone());
@@ -877,10 +960,6 @@ fn build(app: &adw::Application) {
     back_up_now.connect_clicked({
         let ui = ui.clone();
         move |_| run_job(&ui, Job::Backup)
-    });
-    repair_back.connect_clicked({
-        let right = right.clone();
-        move |_| right.set_visible_child_name("main")
     });
     r_reinstall.connect_clicked({
         let ui = ui.clone();
@@ -1112,6 +1191,17 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
+    // CRADLE_SECTION=key: that section shown first (agent, repair...).
+    if let Ok(key) = std::env::var("CRADLE_SECTION") {
+        let mut i = 0;
+        while let Some(r) = nav.row_at_index(i) {
+            if r.widget_name() == key {
+                nav.select_row(Some(&r));
+                right.set_visible_child_name(&key);
+            }
+            i += 1;
+        }
+    }
     // CRADLE_SHOT=file.png: the window drawn into a picture 4 s after the start
     // (to see it without a screen grab).
     if let Some(path) = std::env::var_os("CRADLE_SHOT") {
@@ -1881,20 +1971,30 @@ fn show_fold(ui: &Ui, angle: f64) {
     // The light: the raised half darker the more it turns.
     ui.halves[0].shade.set_opacity(((lift.abs().min(90.0) as f64).to_radians().sin() * 0.35).min(0.35));
     ui.halves[1].shade.set_opacity(0.0);
-    // Nearer over farther: the shadow first, the spine last.
+    // Nearer over farther: the shadows first; the spine among the halves by
+    // its depth - under a half nearer than it (a raised half's back hid it
+    // only so), over the rest.
+    let vm = view(at, false).to_matrix();
+    let spine_depth = vm.transform_point3d(&graphene::Point3D::new(mid, h / 2.0, -DUO_THICK / 2.0)).z();
     let order: [usize; 2] = if depth[0] <= depth[1] { [0, 1] } else { [1, 0] };
     for h in &ui.halves {
         h.floor.insert_before(&ui.duo, ui.duo.first_child().as_ref());
     }
+    let mut spine_placed = false;
     for i in order {
+        if !spine_placed && depth[i] > spine_depth + 1.0 {
+            ui.spine.insert_before(&ui.duo, None::<&gtk::Widget>);
+            spine_placed = true;
+        }
         for w in ui.halves[i].order.borrow().iter() {
             w.insert_before(&ui.duo, None::<&gtk::Widget>);
         }
     }
+    if !spine_placed {
+        ui.spine.insert_before(&ui.duo, None::<&gtk::Widget>);
+    }
     // The hinge, a cylinder along the spine at the halves' middle depth,
     // its strip turned to face the viewer.
-    ui.spine.insert_before(&ui.duo, None::<&gtk::Widget>);
-    let vm = view(at, false).to_matrix();
     let (dx, dz) = (vm.transform_vec3(&graphene::Vec3::x_axis()), vm.transform_vec3(&graphene::Vec3::z_axis()));
     let face = dx.z().atan2(dz.z()).to_degrees();
     let hw = ui.spine.width().max(1) as f32;
