@@ -3818,7 +3818,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             .map(|(i, ch)| {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
-                intro.credit_flip(i, ch, ((grown - d) / (2.0 * cur)).clamp(0.0, 1.0))
+                intro.credit_flip(i, ch, ((grown - d) / (4.0 * cur)).clamp(0.0, 1.0))
             })
             .collect();
         if let Some((text, strength)) = intro.note() {

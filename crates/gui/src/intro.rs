@@ -34,8 +34,8 @@ pub struct Flip {
 /// Seconds from the start: the word coming, the squares growing out, the
 /// eye coming down.
 const WORD_IN: f32 = 0.5;
-const GRID: (f32, f32) = (0.55, 1.7);
-const EYE: (f32, f32) = (1.6, 3.0);
+const GRID: (f32, f32) = (0.55, 2.1);
+const EYE: (f32, f32) = (1.9, 3.6);
 /// The credit set letter by letter; the eye near it and back; it goes.
 const END: f32 = EYE.1;
 /// Seconds for the cubes to sink (or rise), the last starting a little
@@ -140,7 +140,7 @@ impl Intro {
     /// eye comes down - the last of them as it stops.
     pub fn credit_flip(&self, i: usize, ch: char, reached: f32) -> Flip {
         let on = smoother(reached);
-        let off = smoother((self.eye() - 0.45 - i as f32 * 0.025) / 0.3);
+        let off = smoother((self.eye() - 0.25 - i as f32 * 0.02) / 0.5);
         if !self.begun() || self.done() || off >= 1.0 || on <= 0.0 {
             Flip { i, from: ' ', to: ' ', turn: 0.0 }
         } else if off > 0.0 {
