@@ -1362,9 +1362,13 @@ fn build(app: &adw::Application) {
                                 p.close();
                             }
                         } else {
+                            // Without the phone only what needs none: the
+                            // backups here, repair, the developer's.
+                            let phone = ui.state.borrow().host.is_some();
                             let lines = NAV
                                 .iter()
                                 .filter(|(key, ..)| *key != "developer" || developer_mode())
+                                .filter(|(key, ..)| phone || ["updates", "repair", "developer"].contains(key))
                                 .map(|(key, ..)| board::Line { key: key.to_string(), text: key.to_string() })
                                 .collect();
                             *b = Some(board::Board::open(lines));
