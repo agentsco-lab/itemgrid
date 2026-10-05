@@ -216,8 +216,21 @@ pub fn shell(host: &str, owner: bool) -> Result<i32, String> {
 /// A script started on the phone, its output piped back (for what streams);
 /// the child, to be read and stopped.
 pub fn spawn(host: &str, script: &str, out: Stdio) -> Result<std::process::Child, String> {
+    spawn_with(host, script, out, true)
+}
+
+/// The same over its own connection, for what runs as long as the window
+/// lives (following the phone): through the shared one, the window gone
+/// (killed, crashed), the session went on on the phone for ever - and
+/// what it held with it (the phone kept from sleeping). Alone, ssh notices
+/// its output gone at the next line and ends.
+pub fn spawn_own(host: &str, script: &str, out: Stdio) -> Result<std::process::Child, String> {
+    spawn_with(host, script, out, false)
+}
+
+fn spawn_with(host: &str, script: &str, out: Stdio, shared: bool) -> Result<std::process::Child, String> {
     crate::guard::check(script)?;
-    let mut child = ssh(host, 4).args(["sh", "-s"]).stdin(Stdio::piped()).stdout(out).stderr(Stdio::null()).spawn().map_err(|e| format!("ssh: {e}"))?;
+    let mut child = ssh_with(host, 4, shared).args(["sh", "-s"]).stdin(Stdio::piped()).stdout(out).stderr(Stdio::null()).spawn().map_err(|e| format!("ssh: {e}"))?;
     let mut stdin = child.stdin.take().expect("piped");
     stdin.write_all(script.as_bytes()).map_err(|e| format!("ssh: {e}"))?;
     // Closed: the script is read whole, and sh runs it.

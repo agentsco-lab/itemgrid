@@ -51,6 +51,10 @@ pub enum Reading {
 /// Where duo-motion is kept on the phone.
 const MOTION_ON_PHONE: &str = "/var/lib/cradle/duo-motion";
 
+/// The phone kept from sleeping while what follows runs (as root: item's
+/// own asking to sleep is refused).
+const INHIBIT: &str = "systemd-inhibit --what=sleep --who=Cradle --why='Following the phone on the cable' --mode=block";
+
 /// duo-motion as built for the phone, here: CRADLE_MOTION, else
 /// ~/.local/share/cradle/duo-motion (tools/install-local.sh puts it there).
 fn motion_here() -> Option<std::path::PathBuf> {
@@ -74,8 +78,8 @@ pub fn follow_motion(host: &str, awake: bool) -> Option<Result<(Follow, Stop), S
             crate::phone::put(host, &local, &format!("{MOTION_ON_PHONE}.new"))?;
             crate::phone::run_checked(host, &format!("chmod 755 {MOTION_ON_PHONE}.new && mv {MOTION_ON_PHONE}.new {MOTION_ON_PHONE}\n"))?;
         }
-        let script = format!("exec {MOTION_ON_PHONE}{}\n", if awake { " --awake" } else { "" });
-        let mut child = crate::phone::spawn(host, &script, Stdio::piped())?;
+        let script = if awake { format!("exec {INHIBIT} {MOTION_ON_PHONE} --cable\n") } else { format!("exec {MOTION_ON_PHONE}\n") };
+        let mut child = crate::phone::spawn_own(host, &script, Stdio::piped())?;
         let out = child.stdout.take().ok_or("no output")?;
         Ok((Follow { lines: BufReader::new(out), queued: Default::default() }, Stop(Arc::new(Mutex::new(child)))))
     })())
@@ -104,28 +108,23 @@ impl Stop {
 }
 
 /// Starts following the hinge on the phone at `host`; `awake`: the phone
-/// kept from sleeping as long as it is followed (a kernel wakelock, let go
-/// when the following ends - the window closed or the cable out, within the
-/// heartbeat's 10 s): asleep, the lid and the hinge reached the window only
-/// after it woke, the link came back and the window looked again - seconds.
+/// kept from sleeping as long as it is followed (logind's inhibitor, let go
+/// when the following ends - the window closed or the cable out): asleep,
+/// the lid and the hinge reached the window only after it woke, the link
+/// came back and the window looked again - seconds.
 pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
-    // As root for the wakelock; the following itself as the owner (in a
+    // As root for the inhibitor; the following itself as the owner (in a
     // subshell: as_owner ends in exec).
-    // Each following its own lock: with one name, an earlier following's far
-    // end letting go (its link gone in a sleep) let go of the new one's too.
-    let name = format!("cradle-follow-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()).unwrap_or(0));
     let script = if awake {
-        // Held 5 s at a time, renewed while this shell lives: killed (the
-        // link cut), it lets go by itself - a lock without a timeout
-        // outlived its following and kept the phone from sleeping.
-        format!(
-            "me=$$\n( while kill -0 $me 2>/dev/null; do echo '{name} 5000000000' > /sys/power/wake_lock; sleep 1; done ) &\nkeep=$!\n( {} )\nkill $keep 2>/dev/null\necho {name} > /sys/power/wake_unlock\n",
-            crate::phone::as_owner(FOLLOW)
-        )
+        // logind's sleep inhibitor, held while it runs: a kernel wakelock
+        // does not stop systemd-sleep (item asked, the phone went down - the
+        // USB link with it - and woke again, round and round). It goes with
+        // its holder: killed, nothing is left.
+        format!("exec {INHIBIT} sh -s <<'CRADLE_FOLLOW'\n( {} )\nCRADLE_FOLLOW\n", crate::phone::as_owner(FOLLOW))
     } else {
         crate::phone::as_owner(FOLLOW)
     };
-    let mut child = crate::phone::spawn(host, &script, Stdio::piped())?;
+    let mut child = crate::phone::spawn_own(host, &script, Stdio::piped())?;
     let out = child.stdout.take().ok_or("no output")?;
     Ok((Follow { lines: BufReader::new(out), queued: Default::default() }, Stop(Arc::new(Mutex::new(child)))))
 }

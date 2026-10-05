@@ -24,11 +24,12 @@
 //!                (again each 2 s while it lasts)
 //!   .            alive, each second
 //!
-//! --awake: a kernel wakelock held while it runs (on the cable: the phone
-//! does not sleep while Cradle follows it). Held for a few seconds at a
-//! time and renewed each second: killed (the link cut, ssh's hangup), it
-//! lets go by itself - a lock without a timeout outlives its process, and
-//! those left kept the phone from sleeping until its suspend hung.
+//! --cable: ends when the USB cable is out for 3 s (the computer at its
+//! other end gone with it; the link's TCP would take minutes to tell, and
+//! whatever holds the phone awake for it would hold on).
+//!
+//! Kept from sleeping by whoever starts it (Cradle: logind's inhibitor
+//! around it - a kernel wakelock does not stop systemd-sleep).
 
 mod ahrs;
 mod sensorfw;
@@ -64,6 +65,14 @@ fn lid_device() -> Option<std::fs::File> {
     None
 }
 
+/// Whether the USB cable is in, as the gadget's controller says it (none
+/// found: taken as in).
+fn cable_in() -> bool {
+    let Ok(dir) = std::fs::read_dir("/sys/class/udc") else { return true };
+    let states: Vec<String> = dir.flatten().filter_map(|e| std::fs::read_to_string(e.path().join("state")).ok()).collect();
+    states.is_empty() || states.iter().any(|s| s.trim() == "configured")
+}
+
 /// Looked at: still for 0.4 s, its top up 30 to 82 degrees, its screen to
 /// the side (not to the floor), the lid open.
 struct Looking {
@@ -95,7 +104,6 @@ impl Looking {
 }
 
 fn main() {
-    let awake = std::env::args().any(|a| a == "--awake");
     // --raw: the gyroscope and the field as read, too (rg, rm lines).
     let raw_out = std::env::args().any(|a| a == "--raw");
     // --north: the field heeded for the turn about the vertical. Not by
@@ -104,19 +112,14 @@ fn main() {
     // gyroscope's (turned flat on the table, its z swings by 40 uT) - it
     // pulled the turn the wrong way.
     let north = std::env::args().any(|a| a == "--north");
-    let lock = format!("duo-motion-{}", std::process::id());
-    let hold = || {
-        if awake {
-            let _ = std::fs::write("/sys/power/wake_lock", format!("{lock} 5000000000"));
-        }
-    };
-    // Those an earlier one left (killed, before they timed out) let go.
+    let on_cable = std::env::args().any(|a| a == "--cable");
+    let mut cable_out_since: Option<Instant> = None;
+    // Kernel wakelocks earlier ones took (they outlived them) let go.
     if let Ok(held) = std::fs::read_to_string("/sys/power/wake_lock") {
         for old in held.split_whitespace().filter(|l| l.starts_with("duo-motion-")) {
             let _ = std::fs::write("/sys/power/wake_unlock", old);
         }
     }
-    hold();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut say = |line: String| -> bool { out.write_all(line.as_bytes()).and_then(|_| out.write_all(b"\n")).and_then(|_| out.flush()).is_ok() };
@@ -286,13 +289,17 @@ fn main() {
         if now.duration_since(alive_at) >= Duration::from_secs(1) {
             alive &= say(".".into());
             alive_at = now;
-            hold();
+            if on_cable {
+                if cable_in() {
+                    cable_out_since = None;
+                } else if cable_out_since.get_or_insert(now).elapsed() >= Duration::from_secs(3) {
+                    eprintln!("duo-motion: the cable is out");
+                    break;
+                }
+            }
         }
     }
     for s in sensors.iter().flatten() {
         s.close();
-    }
-    if awake {
-        let _ = std::fs::write("/sys/power/wake_unlock", &lock);
     }
 }
