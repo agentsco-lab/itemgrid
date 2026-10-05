@@ -856,7 +856,15 @@ fn build(app: &adw::Application) {
     let floor_view: Rc<RefCell<FloorView>> = Rc::default();
     floor.set_draw_func({
         let fv = floor_view.clone();
-        move |_, cr, w, h| draw_floor(&fv.borrow(), cr, w, h)
+        move |_, cr, w, h| {
+            // HYTHE_FRAMES=1: each drawing's time in the trace.
+            static FRAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let t = std::time::Instant::now();
+            draw_floor(&fv.borrow(), cr, w, h);
+            if *FRAMES.get_or_init(|| std::env::var_os("HYTHE_FRAMES").is_some()) {
+                trace(format_args!("floor drawn in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0));
+            }
+        }
     });
     let home_page = gtk::Overlay::new();
     home_page.set_child(Some(&floor));
@@ -1117,6 +1125,9 @@ fn build(app: &adw::Application) {
         });
         header.pack_start(&replay);
     }
+    // The letters the page sets, made ahead.
+    glyphs_ahead("abcdefghijklmnopqrstuvwxyz?-&.");
+    glyphs_ahead(intro::CREDIT);
     // Looked at from outside (HYTHE_CONTROL=1, control.rs; hythe-mcp).
     {
         let weak = Rc::downgrade(&ui);
@@ -2842,7 +2853,6 @@ struct CubeShape {
     faces: Vec<(Quad, f64)>,
     top: Quad,
     there: f32,
-    size: f32,
 }
 
 /// The start's cubes (intro.rs): five of the table's squares in a row
@@ -2874,14 +2884,14 @@ fn cube_shapes(fv: &FloorView) -> Vec<CubeShape> {
         .map(|i| {
             let (there, h) = fv.cubes[i];
             let (shadow, faces, top) = box_shape(&p3, (left(i), y0), step, z0, h);
-            CubeShape { i, shadow, faces, top, there, size: step }
+            CubeShape { i, shadow, faces, top, there }
         })
         .collect();
     // A square of the table jumping (clicked): no letter (i past the word);
     // drawn before the word's if farther than them, else after.
     if let Some(((tx, ty), h)) = fv.tapped {
         let (shadow, faces, top) = box_shape(&p3, (tx - step / 2.0, ty - step / 2.0), step, z0, h);
-        let jump = CubeShape { i: usize::MAX, shadow, faces, top, there: 1.0, size: step };
+        let jump = CubeShape { i: usize::MAX, shadow, faces, top, there: 1.0 };
         if ty < cy {
             shapes.insert(0, jump);
         } else {
@@ -2978,25 +2988,8 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         let Some(letter) = intro::WORD.get(c.i) else { continue };
         // The letter on the top: the face's own frame (its corners), the
         // letter laid in it.
-        let (a, b, d) = (c.top[0], c.top[1], c.top[3]);
-        let s = c.size as f64;
-        cr.save().ok();
-        cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
-        let layout = pangocairo::functions::create_layout(cr);
-        let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
-        font.set_weight(gtk::pango::Weight::Light);
-        font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
-        layout.set_font_description(Some(&font));
-        layout.set_text(letter);
-        // Across: the letter's ink centred; up and down: the line's, so the
-        // letters keep one baseline.
-        let (ink, logical) = layout.pixel_extents();
-        let x = (s - ink.width() as f64) / 2.0 - ink.x() as f64;
-        let y = (s - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * s;
-        cr.move_to(x, y);
-        cr.set_source_rgba(0.16, 0.16, 0.18, 0.88 * (c.there as f64 / 0.25).min(1.0));
-        pangocairo::functions::show_layout(cr, &layout);
-        cr.restore().ok();
+        let ch = letter.chars().next().unwrap_or(' ');
+        draw_glyph(cr, ch, c.top[0], c.top[1], c.top[3], (0.16, 0.16, 0.18, 0.88 * (c.there as f64 / 0.25).min(1.0)));
     }
     let _ = cr.pop_group_to_source();
     let _ = cr.paint_with_alpha(fv.word as f64);
@@ -3027,25 +3020,8 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     };
     // The letter in a square whose corners (its top left, top right,
     // bottom left) are these on the page.
-    let letter = |a: (f64, f64), b: (f64, f64), d: (f64, f64), ch: char| {
-        if ch == ' ' {
-            return;
-        }
-        let s = side as f64;
-        cr.save().ok();
-        cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
-        let layout = pangocairo::functions::create_layout(cr);
-        let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
-        font.set_weight(gtk::pango::Weight::Light);
-        font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
-        layout.set_font_description(Some(&font));
-        layout.set_text(&ch.to_string());
-        let (ink, logical) = layout.pixel_extents();
-        cr.move_to((s - ink.width() as f64) / 2.0 - ink.x() as f64, (s - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * s);
-        cr.set_source_rgba(0.16, 0.16, 0.18, 0.88);
-        pangocairo::functions::show_layout(cr, &layout);
-        cr.restore().ok();
-    };
+    // A mark, not a word to read first: lighter than the word's.
+    let letter = |a: (f64, f64), b: (f64, f64), d: (f64, f64), ch: char| draw_glyph(cr, ch, a, b, d, (0.5, 0.5, 0.52, 0.8));
     let x_of = |i: usize| fv.credit_at.0 + i as f32 * side;
     let y0 = fv.credit_at.1;
     for f in &fv.flips {
@@ -3129,10 +3105,6 @@ fn draw_texts(fv: &FloorView, cr: &gtk::cairo::Context) {
         let shown = (t.set * total as f32).ceil() as usize;
         let mut n = 0;
         // As the word's letters on its cubes.
-        let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
-        font.set_weight(if t.bold { gtk::pango::Weight::Normal } else { gtk::pango::Weight::Light });
-        let s = t.cell as f64;
-        font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
         for (r, line) in t.lines.iter().enumerate() {
             for (c, ch) in line.chars().enumerate() {
                 n += 1;
@@ -3143,20 +3115,65 @@ fn draw_texts(fv: &FloorView, cr: &gtk::cairo::Context) {
                     continue;
                 }
                 let (x, y) = (t.at.0 + c as f32 * t.cell, t.at.1 + r as f32 * t.cell);
-                let (a, b, d) = (p3(x, y), p3(x + t.cell, y), p3(x, y + t.cell));
-                cr.save().ok();
-                cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
-                let layout = pangocairo::functions::create_layout(cr);
-                layout.set_font_description(Some(&font));
-                layout.set_text(&ch.to_string());
-                let (ink, logical) = layout.pixel_extents();
-                cr.move_to((s - ink.width() as f64) / 2.0 - ink.x() as f64, (s - logical.height() as f64) / 2.0 - logical.y() as f64);
-                cr.set_source_rgba(t.grey, t.grey, t.grey * 1.02, t.strength as f64);
-                pangocairo::functions::show_layout(cr, &layout);
-                cr.restore().ok();
+                draw_glyph(cr, ch, p3(x, y), p3(x + t.cell, y), p3(x, y + t.cell), (t.grey, t.grey, t.grey * 1.02, t.strength as f64));
             }
         }
     }
+}
+
+/// A letter's outline in a square of GLYPH units, as the word's are laid
+/// on its cubes (light; its ink centred across, the line's up and down so
+/// that letters keep one baseline): made once a letter and kept - set with
+/// pango each frame, the letters took most of a frame's time (up to 30 ms,
+/// and 0.2 s the first time a capital came).
+const GLYPH: f64 = 100.0;
+
+thread_local! {
+    static GLYPHS: RefCell<std::collections::HashMap<char, Option<gtk::cairo::Path>>> = RefCell::default();
+}
+
+fn glyph_made(ch: char) -> Option<gtk::cairo::Path> {
+    let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, 1, 1).ok()?;
+    let cr = gtk::cairo::Context::new(&surface).ok()?;
+    let layout = pangocairo::functions::create_layout(&cr);
+    let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
+    font.set_weight(gtk::pango::Weight::Light);
+    font.set_absolute_size(0.7 * GLYPH * gtk::pango::SCALE as f64);
+    layout.set_font_description(Some(&font));
+    layout.set_text(&ch.to_string());
+    let (ink, logical) = layout.pixel_extents();
+    cr.move_to((GLYPH - ink.width() as f64) / 2.0 - ink.x() as f64, (GLYPH - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * GLYPH);
+    pangocairo::functions::layout_path(&cr, &layout);
+    cr.copy_path().ok()
+}
+
+/// The letters of `text` made ahead (at the start, not as they first come).
+fn glyphs_ahead(text: &str) {
+    GLYPHS.with(|g| {
+        let mut g = g.borrow_mut();
+        for ch in text.chars().filter(|c| *c != ' ') {
+            g.entry(ch).or_insert_with(|| glyph_made(ch));
+        }
+    });
+}
+
+/// The letter `ch` laid in the square whose top left, top right and bottom
+/// left corners are `a`, `b`, `d` on the page.
+fn draw_glyph(cr: &gtk::cairo::Context, ch: char, a: (f64, f64), b: (f64, f64), d: (f64, f64), rgba: (f64, f64, f64, f64)) {
+    if ch == ' ' || rgba.3 <= 0.0 {
+        return;
+    }
+    GLYPHS.with(|g| {
+        let mut g = g.borrow_mut();
+        let Some(path) = g.entry(ch).or_insert_with(|| glyph_made(ch)) else { return };
+        cr.save().ok();
+        cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / GLYPH, (b.1 - a.1) / GLYPH, (d.0 - a.0) / GLYPH, (d.1 - a.1) / GLYPH, a.0, a.1));
+        cr.new_path();
+        cr.append_path(path);
+        cr.set_source_rgba(rgba.0, rgba.1, rgba.2, rgba.3);
+        let _ = cr.fill();
+        cr.restore().ok();
+    });
 }
 
 /// One layer of the plug's housing (as the halves' edges are drawn: its
@@ -3760,10 +3777,28 @@ fn show_fold(ui: &Ui, angle: f64) {
             Eye { look: mid, on: to, tilt, near, far }
         };
         let block = |lines: &[&str]| (lines.iter().map(|l| l.chars().count()).max().unwrap_or(1), lines.len());
-        // The credit apart from the word, nearer the viewer: near it, the
-        // word goes off into the distance behind it.
-        let credit_at = (left, cubes_at.1 + 6.0 * cur);
-        let near_credit = framing(credit_at, intro::CREDIT.chars().count(), 1, 0.7, (0.5, 0.64), 58.0, 1.7);
+        // The credit off to the side, in the lower right where the Duo is
+        // seen from (no more than a mark): the row ending in the table's
+        // square shown there.
+        let credit_at = {
+            // Its end there.
+            let want = (ui.floor.width() as f32 * 0.93 - off.0 - middle.0, ui.floor.height() as f32 * 0.86 - off.1 - middle.1);
+            let mut p = want;
+            for _ in 0..20 {
+                let f = shown_at(&down, p);
+                let (fx, fy) = (shown_at(&down, (p.0 + 1.0, p.1)), shown_at(&down, (p.0, p.1 + 1.0)));
+                let j = [[fx.0 - f.0, fy.0 - f.0], [fx.1 - f.1, fy.1 - f.1]];
+                let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+                if det.abs() < 1e-6 {
+                    break;
+                }
+                let e = (f.0 - want.0, f.1 - want.1);
+                p = (p.0 - (j[1][1] * e.0 - j[0][1] * e.1) / det, p.1 - (-j[1][0] * e.0 + j[0][0] * e.1) / det);
+            }
+            let (sx, sy) = floor_shift(k);
+            let n = intro::CREDIT.chars().count() as f32;
+            (sx + ((p.0 - sx) / cur).floor() * cur - (n - 1.0) * cur, sy + ((p.1 - sy) / cur).floor() * cur)
+        };
         let note_lines: Vec<String> = intro.note().map(|(t, _)| t.lines().map(str::to_owned).collect()).unwrap_or_default();
         let (nc, nr) = block(&note_lines.iter().map(String::as_str).collect::<Vec<_>>());
         let near_note = {
@@ -3771,7 +3806,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             let from = on_page(&rest_m, e.look);
             Eye { on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), ..e }
         };
-        let mut e = mix(mix(mix(above, rest, eye), near_credit, intro.focus()), near_note, intro.near_note());
+        let mut e = mix(mix(above, rest, eye), near_note, intro.near_note());
         // Coming down, the word kept where it is on the page.
         if eye < 1.0 {
             let shown = on_page(&matrix(e), cubes_at);

@@ -5,11 +5,9 @@
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
 //!
-//! Then the credit turns up in the table's own squares, nearer the
-//! viewer: each square turning over once, in one movement, its letter
-//! underneath - one after the other along the line; the eye comes near it
-//! (the word off in the distance) and back; the squares turn over blank
-//! again.
+//! Then the credit turns up off to the side in the table's own squares:
+//! each turning over once, in one movement, its letter underneath, one
+//! after the other along the line - and a moment later back blank.
 //!
 //! A cube clicked - or any of the table's squares - looks for the phone at
 //! once: the cube pressed in (a square jumps up out of the table and back),
@@ -41,13 +39,11 @@ const EYE: (f32, f32) = (1.6, 3.0);
 /// The credit set letter by letter; the eye near it and back; it goes.
 /// The credit's squares turning over (FLIP_S each, each a little after the
 /// one before), and back blank.
-const CREDIT_UP: f32 = 3.2;
+const CREDIT_UP: f32 = 3.0;
 const FLIP_S: f32 = 0.55;
 const FLIP_EACH: f32 = 0.07;
-const CREDIT_BLANK: f32 = 6.2;
-const FOCUS_IN: (f32, f32) = (3.4, 4.9);
-const FOCUS_OUT: (f32, f32) = (6.0, 7.5);
-const END: f32 = 7.5;
+const CREDIT_BLANK: f32 = 4.9;
+const END: f32 = 6.3;
 /// Seconds for the cubes to sink (or rise), the last starting a little
 /// after the first.
 const SINK_S: f32 = 1.1;
@@ -143,12 +139,6 @@ impl Intro {
     /// The eye near the note (not found): 0 .. 1.
     pub fn near_note(&self) -> f32 {
         smoother(self.near_note)
-    }
-
-    /// The eye near the credit: 0 where the Duo is seen from .. 1 near.
-    pub fn focus(&self) -> f32 {
-        let t = self.t();
-        smoother((t - FOCUS_IN.0) / (FOCUS_IN.1 - FOCUS_IN.0)) * (1.0 - smoother((t - FOCUS_OUT.0) / (FOCUS_OUT.1 - FOCUS_OUT.0)))
     }
 
     /// The credit's cubes now (none before or after).
