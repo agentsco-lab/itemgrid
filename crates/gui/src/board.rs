@@ -45,12 +45,14 @@ pub fn flap(seed: usize, ch: char, p: f32) -> Flap {
 }
 
 /// A square to draw: its far left corner on the table (px), its flap, its
-/// letter's colour.
+/// letter's colour; whether it turns over whole (not a board's flap
+/// falling about its middle, the square seen split in two).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Tile {
     pub at: (f32, f32),
     pub flap: Flap,
     pub rgba: (f64, f64, f64, f64),
+    pub whole: bool,
 }
 
 pub struct Line {
@@ -143,6 +145,7 @@ impl Board {
                     at: (origin.0 + c as f32 * side, origin.1 + r as f32 * side),
                     flap: flap(r * 13 + c, ch, p),
                     rgba: (grey, grey, grey * 1.02, 0.9 * fade as f64),
+                    whole: false,
                 });
             }
         }

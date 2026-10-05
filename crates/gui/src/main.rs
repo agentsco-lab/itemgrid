@@ -3635,6 +3635,28 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         };
         if f.turn <= 0.0 {
             letter(whole.0, whole.1, whole.2, f.from, t.rgba);
+        } else if t.whole {
+            // The whole square turning over (the credit's): its near edge
+            // kept on the table, its far edge up and over toward the eye,
+            // down where the near one was - the old letter on its face, the
+            // new one on its back; no line across it.
+            let a = f.turn * std::f32::consts::PI;
+            let ym = y0 + side / 2.0;
+            let edge = |u: f32, far: bool| {
+                if far {
+                    p3(x0 + u * side, ym - side / 2.0 * a.cos(), z0 + side * a.sin())
+                } else {
+                    p3(x0 + u * side, ym + side / 2.0 * a.cos(), z0)
+                }
+            };
+            let (f0, f1, n0) = (edge(0.0, true), edge(1.0, true), edge(0.0, false));
+            if a < std::f32::consts::FRAC_PI_2 {
+                letter(f0, f1, n0, f.from, t.rgba);
+            } else {
+                // Its back: the letter's top at the edge now farther off.
+                let n1 = edge(1.0, false);
+                letter(n0, n1, f0, f.to, t.rgba);
+            }
         } else {
             // As a departures board's flap: under the falling flap the new
             // letter's top is already there; the old one's bottom stays
@@ -5172,7 +5194,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
                 let f = intro.credit_flip(i, ch, ((grown - d) / (14.0 * cur)).clamp(0.0, 1.0));
-                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64) }
+                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64), whole: true }
             })
             .collect();
         // The open board (the sections' menu) under the word, a row apart
