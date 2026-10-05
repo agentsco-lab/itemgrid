@@ -7,7 +7,15 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 
-const FOLLOW: &str = "busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Gravity 2>/dev/null; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Posture; exec gdbus monitor --session --dest org.sfduo.Posture --object-path /org/sfduo/Posture";
+// The monitor in the background, and a heartbeat line every 10 s: once
+// the window is gone the heartbeat cannot be written, and the monitor is
+// stopped (killing ssh here leaves the far side running: it would only
+// notice at its next write, which the dark never brings).
+const FOLLOW: &str = "busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Gravity 2>/dev/null; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Posture
+gdbus monitor --session --dest org.sfduo.Posture --object-path /org/sfduo/Posture & m=$!
+trap '' PIPE
+while kill -0 $m 2>/dev/null; do sleep 10; echo . || break; done
+kill $m 2>/dev/null";
 
 /// What the phone says of itself as it moves.
 #[derive(Debug, Clone, PartialEq)]
