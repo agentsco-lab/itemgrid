@@ -23,6 +23,7 @@ use gtk::{gdk, gio, glib};
 
 mod card;
 mod journey;
+mod sections;
 
 const APP_ID: &str = "lab.agentsco.Cradle";
 const REFRESH_S: u32 = 5;
@@ -295,6 +296,7 @@ struct Ui {
     live_failed: RefCell<Option<std::time::Instant>>,
     live_badge: gtk::Label,
     state: RefCell<State>,
+    sections: Rc<sections::Pages>,
 }
 
 /// A phone not seen for this long is away; before that, restarting.
@@ -312,20 +314,12 @@ const NAV: &[(&str, &str, &str)] = &[
     ("repair", "Repair & Reset", "applications-engineering-symbolic"),
 ];
 
-/// The sections not made yet: key, title, what each will hold.
-const COMING: &[(&str, &str, &str)] = &[
-    ("look", "Wallpapers & Look", "Your own photos from this computer as wallpapers, item's accent, the dock and the grid, the clock."),
-    ("battery", "Battery", "The charge and its health as on the phone, with the history of the last days: what drew it down overnight."),
-    ("storage", "Storage", "What takes the phone's space - apps, your files, the system - and what can go."),
-    ("about", "About", "The phone's versions, serial number and club number, as in Settings on the phone."),
-    ("updates", "Updates & Backups", "item's updates and the backups on this computer, in one place."),
-];
 
 fn build(app: &adw::Application) {
     // Light whatever the desktop's scheme: white, small type (LOOK).
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceLight);
     let css = gtk::CssProvider::new();
-    css.load_from_string(&format!("{CSS}{}", card::CSS));
+    css.load_from_string(&format!("{CSS}{}{}", card::CSS, sections::CSS));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
@@ -680,13 +674,11 @@ fn build(app: &adw::Application) {
     right.add_named(&scroll, Some("overview"));
     right.add_named(&page(&agent), Some("agent"));
     right.add_named(&page(&repair), Some("repair"));
-    // The sections still to come (#169), each saying what it will hold.
-    for (key, title, what) in COMING {
-        let b = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        b.append(&gtk::Label::builder().label(*title).xalign(0.0).css_classes(["status-title"]).build());
-        b.append(&body(what));
-        b.append(&gtk::Label::builder().label("Coming (tracker #169).").xalign(0.0).css_classes(["dim-label", "caption"]).build());
-        right.add_named(&page(&b), Some(key));
+    // The sections showing the phone itself (sections.rs).
+    let (section_ui, section_pages) = sections::build();
+    let section_ui = Rc::new(section_ui);
+    for (key, b) in &section_pages {
+        right.add_named(&page(b), Some(key));
     }
     nav.connect_row_activated({
         let right = right.clone();
@@ -802,6 +794,7 @@ fn build(app: &adw::Application) {
         live_failed: RefCell::default(),
         live_badge,
         state: RefCell::default(),
+        sections: section_ui.clone(),
     });
     *owner.borrow_mut() = Some(ui.clone());
 
@@ -887,6 +880,44 @@ fn build(app: &adw::Application) {
                 }
             });
         }
+    });
+    // Battery and Look read from the phone each time they show.
+    let toaster = |ui: &Rc<Ui>| -> Rc<dyn Fn(&str)> {
+        let toasts = ui.toasts.clone();
+        Rc::new(move |m: &str| toasts.add_toast(adw::Toast::new(m)))
+    };
+    right.connect_visible_child_name_notify({
+        let ui = Rc::downgrade(&ui);
+        move |r| {
+            let Some(ui) = ui.upgrade() else { return };
+            let Some(host) = ui.state.borrow().host.clone() else {
+                // Opened before the phone was found: again in a moment.
+                let r = r.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || r.notify("visible-child-name"));
+                return;
+            };
+            match r.visible_child_name().as_deref() {
+                Some("battery") => sections::load_battery(&ui.sections, host),
+                Some("look") => sections::load_look(&ui.sections, host, toaster(&ui)),
+                _ => {}
+            }
+        }
+    });
+    section_ui.add_walls.connect_clicked({
+        let ui = Rc::downgrade(&ui);
+        move |_| {
+            let Some(ui) = ui.upgrade() else { return };
+            let Some(host) = ui.state.borrow().host.clone() else { return };
+            sections::add_pictures(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
+        }
+    });
+    section_ui.back_up.connect_clicked({
+        let ui = ui.clone();
+        move |_| run_job(&ui, Job::Backup)
+    });
+    section_ui.update_tree.connect_clicked({
+        let ui = ui.clone();
+        move |_| ask(&ui, "Update item?", "item is built from your tree and installed, and the phone restarts. Enter the PIN when it is back.", "Update", Job::Update)
     });
     key_set.connect_clicked({
         let (ui, key_row, key_forget) = (Rc::downgrade(&ui), key_row.clone(), key_forget.clone());
@@ -2044,6 +2075,7 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
     // background unit - fstrim on the loop rootfs, a suspend the cable kept
     // busy - is for Developer Mode).
     simple_status(ui, s, &s.warnings(), link);
+    sections::fill(&ui.sections, s, cradle_core::club::known(&s.serial).map(|d| d.number), link, developer_mode());
 
     let charge = s.battery.map(|b| format!("{b}%")).unwrap_or_else(|| "?".into());
     let bolt = if s.battery_status == "Charging" { "⚡ " } else { "" };
@@ -2101,6 +2133,7 @@ fn count_storage(ui: &Rc<Ui>) {
         if let Some((_, kib)) = parts.list().into_iter().find(|(n, _)| *n == "Free") {
             ui.free_label.set_label(&format!("{} free", status::size_words(kib)));
         }
+        sections::fill_parts(&ui.sections, &parts, &PART_COLOURS);
         *ui.parts.borrow_mut() = Some(parts);
         ui.storage.queue_draw();
     });
@@ -2116,14 +2149,16 @@ fn show_backups(ui: &Rc<Ui>) {
         Some(p) => format!("Microsoft's Android {} (security patch {}) is on this computer.", p.build, p.security_patch),
         None => "Microsoft's package is not on this computer yet.".to_owned(),
     });
-    while let Some(child) = ui.backups.first_child() {
-        ui.backups.remove(&child);
-    }
     let all = backup::list(None);
-    ui.backups.set_visible(!all.is_empty());
+    // On Repair's Developer page and under Updates & Backups.
+    for list in [&ui.backups, &ui.sections.backups] {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    list.set_visible(!all.is_empty());
     // The device data's one, and the newest few of the rest.
     let device = all.iter().find(|b| b.manifest.kind == Kind::Device).cloned();
-    let rest: Vec<_> = all.into_iter().filter(|b| b.manifest.kind != Kind::Device).take(6).collect();
+    let rest: Vec<_> = all.iter().filter(|b| b.manifest.kind != Kind::Device).take(6).cloned().collect();
     for b in device.into_iter().chain(rest) {
         let when = b.manifest.created.get(..16).unwrap_or(&b.manifest.created).to_owned();
         let row = adw::ActionRow::builder()
@@ -2161,7 +2196,8 @@ fn show_backups(ui: &Rc<Ui>) {
             let _ = gio::AppInfo::launch_default_for_uri(&gio::File::for_path(&dir).uri(), gio::AppLaunchContext::NONE);
         });
         row.add_suffix(&open);
-        ui.backups.append(&row);
+        list.append(&row);
+    }
     }
 }
 

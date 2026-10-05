@@ -110,6 +110,24 @@ pub fn run_bytes(host: &str, script: &str) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
+/// A file from here written on the phone at `remote` (root's), through the
+/// same link as every command - its bytes on ssh's standard input (scp
+/// asked for a new connection, which Wi-Fi's shared one did not give).
+pub fn put(host: &str, local: &std::path::Path, remote: &str) -> Result<(), String> {
+    if !remote.starts_with('/') || remote.contains(['\'', '\n', ' ']) {
+        return Err("not a plain path on the phone".into());
+    }
+    let script = format!("cat > '{remote}'");
+    crate::guard::check(&script)?;
+    let file = std::fs::File::open(local).map_err(|e| format!("{}: {e}", local.display()))?;
+    let out = ssh(host, 4).arg(&script).stdin(file).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(|e| format!("ssh: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("copying to the phone: {}", String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
 /// Where a reboot is, for whoever shows it.
 #[derive(Debug, Clone)]
 pub enum Boot {
