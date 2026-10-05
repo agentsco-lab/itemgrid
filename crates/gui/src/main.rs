@@ -64,6 +64,49 @@ const CABLE_PAD: f64 = 4.0;
 /// The floor's squares (mm), and the depth of the hole the cord goes down.
 const FLOOR_SQUARE: f64 = 20.0;
 
+/// Night: the table dark, its lines light (the day/night square on the
+/// table; kept in ~/.config/hythe/night).
+static NIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn night() -> bool {
+    NIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn night_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("hythe/night")
+}
+
+/// The table's own grey (what is white by day).
+const NIGHT_TABLE: f64 = 0.142;
+
+/// A face's grey: by day `light` itself (1 the table's white); by night
+/// the table's dark, the less lit faces lighter (lit from the viewer).
+fn paper(light: f64) -> f64 {
+    if night() {
+        NIGHT_TABLE + (1.0 - light) * 1.1
+    } else {
+        light
+    }
+}
+
+/// The lines' colour at `alpha`: black by day, white by night.
+fn ink(cr: &gtk::cairo::Context, alpha: f64) {
+    if night() {
+        cr.set_source_rgba(1.0, 1.0, 1.0, alpha * 1.15);
+    } else {
+        cr.set_source_rgba(0.0, 0.0, 0.0, alpha);
+    }
+}
+
+/// A letter's colour: by night the light one for the dark one.
+fn letter_rgba(c: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    if night() {
+        (1.04 - c.0, 1.04 - c.1, 1.04 - c.2, c.3)
+    } else {
+        c
+    }
+}
+
 /// For now, to find the floor's look: its squares' size (mm) set with the
 /// scroll wheel, and where they lie (mm) by dragging the table - kept
 /// while the window runs (f32 bits).
@@ -126,6 +169,8 @@ const CSS: &str = "
 /* LOOK: minimal - white, small type, light weights; colour only where it
    says something (the status dot, the accent on the chosen section). */
 window, window.background { background: #ffffff; font-size: 9.5pt; }
+window.night, window.night.background { background: #242427; color: #e6e6ea; }
+window.night headerbar { background: #242427; color: #e6e6ea; }
 headerbar { background: #ffffff; box-shadow: none; border-bottom: none; }
 .navigation-sidebar { background: transparent; }
 .navigation-sidebar > row { min-height: 30px; padding: 0 10px; border-radius: 8px; }
@@ -338,6 +383,8 @@ struct Ui {
     /// The start, and the cubes with the word standing while there is no
     /// phone (intro.rs).
     intro: RefCell<intro::Intro>,
+    /// The table's buttons under the pointer and pressed.
+    buttons: RefCell<Buttons>,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -457,14 +504,19 @@ const NAV: &[(&str, &str, &str)] = &[
 
 
 fn build(app: &adw::Application) {
-    // Light whatever the desktop's scheme: white, small type (LOOK).
-    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceLight);
+    // Light whatever the desktop's scheme: white, small type (LOOK) - or
+    // dark, if the night was chosen on the table.
+    NIGHT.store(night_file().exists(), std::sync::atomic::Ordering::Relaxed);
+    adw::StyleManager::default().set_color_scheme(if night() { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
     let css = gtk::CssProvider::new();
     css.load_from_string(&format!("{CSS}{}{}", card::CSS, sections::CSS));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
     let window = adw::ApplicationWindow::builder().application(app).title("Hythe").default_width(1000).default_height(800).build();
+    if night() {
+        window.add_css_class("night");
+    }
     // Where it was last (place.rs).
     place::restore(&window);
     place::keep(&window);
@@ -672,9 +724,8 @@ fn build(app: &adw::Application) {
         nav.append(&r);
     }
     nav.select_row(nav.row_at_index(0).as_ref());
-    let nav_pop = gtk::Popover::builder().child(&nav).has_arrow(false).build();
-    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").popover(&nav_pop).tooltip_text("Sections").build();
-    header.pack_end(&menu_button);
+    // Opened from the menu's square on the table (draw_buttons).
+    let nav_pop = gtk::Popover::builder().child(&nav).has_arrow(false).position(gtk::PositionType::Bottom).build();
     // In a section: back to the Duo, and the section's name.
     let back_home = gtk::Button::builder().icon_name("go-previous-symbolic").tooltip_text("Back to your Duo").visible(false).build();
     let section_name = gtk::Label::builder().css_classes(["heading"]).visible(false).build();
@@ -1067,6 +1118,7 @@ fn build(app: &adw::Application) {
         floor: floor.clone(),
         floor_view: floor_view.clone(),
         intro: RefCell::default(),
+        buttons: RefCell::default(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1114,17 +1166,6 @@ fn build(app: &adw::Application) {
         state: RefCell::default(),
         sections: section_ui.clone(),
     });
-    // For now: the start again, to look at it (a button in the header).
-    {
-        let replay = gtk::Button::builder().icon_name("media-playlist-repeat-symbolic").tooltip_text("Play the start again").css_classes(["flat"]).build();
-        let weak = Rc::downgrade(&ui);
-        replay.connect_clicked(move |_| {
-            if let Some(ui) = weak.upgrade() {
-                ui.intro.borrow_mut().replay();
-            }
-        });
-        header.pack_start(&replay);
-    }
     // The letters the page sets, made ahead.
     glyphs_ahead("abcdefghijklmnopqrstuvwxyz?-&.");
     glyphs_ahead(intro::CREDIT);
@@ -1257,11 +1298,55 @@ fn build(app: &adw::Application) {
             say(&ui, format!("Squares moved {:.0}, {:.0} mm", at.0, at.1));
         });
         page.add_controller(drag);
+        // The table's buttons: raised under the pointer, the hand there.
+        nav_pop.set_parent(&page);
+        let motion = gtk::EventControllerMotion::new();
+        let (weak, pg) = (Rc::downgrade(&ui), page.clone());
+        let hover = move |x: f64, y: f64| {
+            let Some(ui) = weak.upgrade() else { return };
+            let on = button_at(&ui.floor_view.borrow(), (x, y));
+            ui.buttons.borrow_mut().hover = on;
+            pg.set_cursor_from_name(on.map(|_| "pointer"));
+        };
+        let h2 = hover.clone();
+        motion.connect_motion(move |_, x, y| hover(x, y));
+        motion.connect_leave(move |_| h2(-1.0, -1.0));
+        page.add_controller(motion);
         // A cube clicked: the phone looked for at once.
         let click = gtk::GestureClick::new();
         let weak = Rc::downgrade(&ui);
+        let (pop, win) = (nav_pop.clone(), ui.window.clone());
         click.connect_released(move |g, n, x, y| {
             let Some(ui) = weak.upgrade() else { return };
+            // A button of the table's.
+            let pressed = button_at(&ui.floor_view.borrow(), (x, y));
+            if let Some(i) = pressed {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                ui.buttons.borrow_mut().pressed = Some((i, std::time::Instant::now()));
+                trace(format_args!("button {:?}", FLOOR_BUTTONS[i]));
+                match FLOOR_BUTTONS[i] {
+                    FloorButton::Menu => {
+                        pop.set_pointing_to(button_bounds(&ui.floor_view.borrow(), i).as_ref());
+                        pop.popup();
+                    }
+                    FloorButton::Night => {
+                        let on = !night();
+                        NIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
+                        if on {
+                            let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
+                            let _ = std::fs::write(night_file(), "");
+                            win.add_css_class("night");
+                        } else {
+                            let _ = std::fs::remove_file(night_file());
+                            win.remove_css_class("night");
+                        }
+                        adw::StyleManager::default().set_color_scheme(if on { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
+                        ui.floor.queue_draw();
+                    }
+                    FloorButton::Replay => ui.intro.borrow_mut().replay(),
+                }
+                return;
+            }
             let standing = ui.intro.borrow().done() && ui.intro.borrow().duo() < 0.5;
             if n != 1 || !standing {
                 return;
@@ -1746,7 +1831,8 @@ fn build(app: &adw::Application) {
                 ui.floor.queue_draw();
                 ui.cable.queue_draw();
             }
-            let far = ui.intro.borrow_mut().step() || resized || far;
+            let pressing = ui.buttons.borrow_mut().step(dt.clamp(0.0, 0.1));
+            let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
                 let now = shown + (to - shown) * k;
@@ -2670,6 +2756,10 @@ struct FloorView {
     /// Across the table, where the eye's line is (boxes drawn farthest
     /// from it first: a box nearer it covers its neighbour's side).
     eye_x: f32,
+    /// The buttons' row (its far left corner), their lifts, their strength.
+    buttons_at: (f32, f32),
+    button_lift: [f32; 3],
+    buttons_strength: f32,
 }
 
 /// Words set on the table, a letter a square of `cell` (px; a square of
@@ -2692,6 +2782,10 @@ struct TableText {
 /// with the distance on the table.
 fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     use gtk::graphene;
+    if night() {
+        cr.set_source_rgb(NIGHT_TABLE, NIGHT_TABLE, NIGHT_TABLE * 1.02);
+        let _ = cr.paint();
+    }
     let Some(m) = fv.matrix else { return };
     let k = fv.k;
     let step = square() * k;
@@ -2750,7 +2844,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
             cr.move_to(p0.0, p0.1);
             cr.line_to(p1.0, p1.1);
         }
-        cr.set_source_rgba(0.0, 0.0, 0.0, TOP * (level as f64 + 0.5) / LEVELS as f64);
+        ink(cr, TOP * (level as f64 + 0.5) / LEVELS as f64);
         let _ = cr.stroke();
     }
     draw_cubes(fv, cr);
@@ -2964,7 +3058,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     };
     let line = |cr: &gtk::cairo::Context| {
         // As the table's lines are drawn near the middle.
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
+        ink(cr, 0.14);
         cr.set_line_width(1.6);
         let _ = cr.stroke();
     };
@@ -2973,16 +3067,18 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     for c in &shapes {
         let h = fv.cubes.get(c.i).map_or(fv.tapped.map_or(0.0, |t| t.1), |c| c.1);
         path(&c.shadow);
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h.min(1.0) * fv.eye) as f64);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h.min(1.0) * fv.eye) as f64 * if night() { 3.0 } else { 1.0 });
         let _ = cr.fill();
         for (q, light) in &c.faces {
             path(q);
-            cr.set_source_rgb(*light, *light, light * 1.005);
+            let l = paper(*light);
+            cr.set_source_rgb(l, l, l * 1.005);
             let _ = cr.fill_preserve();
             line(cr);
         }
         path(&c.top);
-        cr.set_source_rgb(1.0, 1.0, 1.0);
+        let l = paper(1.0);
+        cr.set_source_rgb(l, l, l * 1.01);
         let _ = cr.fill_preserve();
         line(cr);
         let Some(letter) = intro::WORD.get(c.i) else { continue };
@@ -2995,6 +3091,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     let _ = cr.paint_with_alpha(fv.word as f64);
     draw_texts(fv, cr);
     draw_flips(fv, cr);
+    draw_buttons(fv, cr);
 }
 
 /// The credit's squares: each turning over once - its near edge lifting,
@@ -3042,14 +3139,15 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         // Its place on the table blank meanwhile; the square over it.
         let st = f.strength as f64;
         path(&[p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0 + side, y0 + side, z0), p3(x0, y0 + side, z0)]);
-        cr.set_source_rgba(1.0, 1.0, 1.0, st);
+        let l = paper(1.0);
+        cr.set_source_rgba(l, l, l, st);
         let _ = cr.fill();
         path(&q);
         // The side turned toward the eye a little darker as it stands up.
-        let light = 1.0 - 0.06 * a.sin() as f64;
+        let light = paper(1.0 - 0.06 * a.sin() as f64);
         cr.set_source_rgba(light, light, light * 1.005, st);
         let _ = cr.fill_preserve();
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14 * st);
+        ink(cr, 0.14 * st);
         cr.set_line_width(1.6);
         let _ = cr.stroke();
         if f.turn < 0.5 {
@@ -3082,7 +3180,7 @@ fn draw_texts(fv: &FloorView, cr: &gtk::cairo::Context) {
         // The finer lines where the words are (not on the table's own).
         if t.cell < big - 0.5 {
             cr.set_line_width(1.0);
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.07 * t.strength as f64);
+            ink(cr, 0.07 * t.strength as f64);
             let fine = |v: f32, from: f32| ((v - from) / big).fract().abs() > 0.01 && ((v - from) / big).fract().abs() < 0.99;
             for c in 1..cols {
                 let x = t.at.0 + c as f32 * t.cell;
@@ -3171,10 +3269,189 @@ fn draw_glyph(cr: &gtk::cairo::Context, ch: char, a: (f64, f64), b: (f64, f64), 
         cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / GLYPH, (b.1 - a.1) / GLYPH, (d.0 - a.0) / GLYPH, (d.1 - a.1) / GLYPH, a.0, a.1));
         cr.new_path();
         cr.append_path(path);
-        cr.set_source_rgba(rgba.0, rgba.1, rgba.2, rgba.3);
+        let c = letter_rgba(rgba);
+        cr.set_source_rgba(c.0, c.1, c.2, c.3);
         let _ = cr.fill();
         cr.restore().ok();
     });
+}
+
+/// The table's buttons (three squares under the word): the sections'
+/// menu, day or night, the start again.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum FloorButton {
+    Menu,
+    Night,
+    Replay,
+}
+
+const FLOOR_BUTTONS: [FloorButton; 3] = [FloorButton::Menu, FloorButton::Night, FloorButton::Replay];
+
+/// The buttons' hover and press, eased.
+#[derive(Default)]
+struct Buttons {
+    hover: Option<usize>,
+    lift: [f32; 3],
+    pressed: Option<(usize, std::time::Instant)>,
+}
+
+impl Buttons {
+    /// A frame on (`dt` s): each square toward its lift - up a little under
+    /// the pointer, down a moment as pressed. Whether any moved.
+    fn step(&mut self, dt: f32) -> bool {
+        let k = 1.0 - (-dt / 0.06).exp();
+        let mut moved = false;
+        for i in 0..3 {
+            let pressed = self.pressed.is_some_and(|(p, at)| p == i && at.elapsed().as_secs_f32() < 0.12);
+            let to = if pressed { 0.0 } else if self.hover == Some(i) { 0.18 } else { 0.0 };
+            if (to - self.lift[i]).abs() > 0.001 {
+                self.lift[i] += (to - self.lift[i]) * k;
+                moved = true;
+            } else if self.lift[i] != to {
+                self.lift[i] = to;
+                moved = true;
+            }
+        }
+        moved || self.pressed.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 0.2)
+    }
+}
+
+/// The square of button `i` on the table (its far left corner).
+fn button_square(fv: &FloorView, i: usize) -> (f32, f32) {
+    (fv.buttons_at.0 + i as f32 * square() * fv.k, fv.buttons_at.1)
+}
+
+/// The button under a point of the page.
+fn button_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
+    let t = table_under(fv, p)?;
+    let side = square() * fv.k;
+    (0..3).find(|i| {
+        let (x, y) = button_square(fv, *i);
+        t.0 >= x && t.0 < x + side && t.1 >= y && t.1 < y + side
+    })
+}
+
+/// A button's square on the page (its bounds), to point a popover at.
+fn button_bounds(fv: &FloorView, i: usize) -> Option<gdk::Rectangle> {
+    use gtk::graphene;
+    let m = fv.matrix?;
+    let side = square() * fv.k;
+    let (x, y) = button_square(fv, i);
+    let pts: Vec<(f32, f32)> = [(x, y), (x + side, y), (x, y + side), (x + side, y + side)]
+        .iter()
+        .map(|(px, py)| {
+            let v = m.transform_vec4(&graphene::Vec4::new(*px, *py, fv.table, 1.0));
+            (v.x() / v.w() + fv.off.0, v.y() / v.w() + fv.off.1)
+        })
+        .collect();
+    let (x0, x1) = pts.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+    let (y0, y1) = pts.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+    Some(gdk::Rectangle::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
+}
+
+/// The buttons: their squares (raised a little under the pointer, as low
+/// boxes), their signs on them as the letters are.
+fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
+    use gtk::graphene;
+    let Some(m) = fv.matrix else { return };
+    if fv.buttons_strength <= 0.0 {
+        return;
+    }
+    let side = square() * fv.k;
+    let p3 = |x: f32, y: f32, z: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    let path = |q: &[(f64, f64)]| {
+        cr.new_path();
+        cr.move_to(q[0].0, q[0].1);
+        for p in &q[1..] {
+            cr.line_to(p.0, p.1);
+        }
+        cr.close_path();
+    };
+    let _ = cr.push_group();
+    for (i, b) in FLOOR_BUTTONS.iter().enumerate() {
+        let (x0, y0) = button_square(fv, i);
+        let h = fv.button_lift[i];
+        let (_, faces, top) = box_shape(&p3, (x0, y0), side, fv.table, h);
+        if h > 0.001 {
+            for (q, light) in &faces {
+                path(q);
+                let l = paper(*light);
+                cr.set_source_rgb(l, l, l * 1.005);
+                let _ = cr.fill_preserve();
+                ink(cr, 0.14);
+                cr.set_line_width(1.6);
+                let _ = cr.stroke();
+            }
+            path(&top);
+            let l = paper(1.0);
+            cr.set_source_rgb(l, l, l * 1.01);
+            let _ = cr.fill_preserve();
+            ink(cr, 0.14);
+            let _ = cr.stroke();
+        }
+        draw_sign(cr, *b, top[0], top[1], top[3]);
+    }
+    let _ = cr.pop_group_to_source();
+    let _ = cr.paint_with_alpha(fv.buttons_strength as f64);
+}
+
+/// A button's sign in the square whose top left, top right and bottom left
+/// corners are `a`, `b`, `d` on the page (drawn in GLYPH units).
+fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f64, f64), d: (f64, f64)) {
+    let g = GLYPH;
+    cr.save().ok();
+    cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / g, (b.1 - a.1) / g, (d.0 - a.0) / g, (d.1 - a.1) / g, a.0, a.1));
+    let c = letter_rgba((0.16, 0.16, 0.18, 0.88));
+    cr.set_source_rgba(c.0, c.1, c.2, c.3);
+    cr.set_line_width(4.0);
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    match button {
+        FloorButton::Menu => {
+            for y in [36.0, 50.0, 64.0] {
+                cr.move_to(32.0, y);
+                cr.line_to(68.0, y);
+            }
+            let _ = cr.stroke();
+        }
+        FloorButton::Night if night() => {
+            // The sun: back to day.
+            cr.arc(50.0, 50.0, 10.0, 0.0, std::f64::consts::TAU);
+            let _ = cr.stroke();
+            for k in 0..8 {
+                let t = k as f64 * std::f64::consts::TAU / 8.0;
+                cr.move_to(50.0 + 17.0 * t.cos(), 50.0 + 17.0 * t.sin());
+                cr.line_to(50.0 + 23.0 * t.cos(), 50.0 + 23.0 * t.sin());
+            }
+            let _ = cr.stroke();
+        }
+        FloorButton::Night => {
+            // The moon: to night (a circle, one beside it taken out).
+            let _ = cr.push_group();
+            cr.arc(50.0, 50.0, 18.0, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+            cr.set_operator(gtk::cairo::Operator::Clear);
+            cr.arc(61.0, 42.0, 15.0, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+            cr.set_operator(gtk::cairo::Operator::Over);
+            let _ = cr.pop_group_to_source();
+            let _ = cr.paint();
+        }
+        FloorButton::Replay => {
+            // Round and back to where it began.
+            let (r, from, to) = (17.0, -1.2, 4.3);
+            cr.arc(50.0, 50.0, r, from, to);
+            let _ = cr.stroke();
+            let (ex, ey) = (50.0 + r * to.cos(), 50.0 + r * to.sin());
+            cr.move_to(ex + 8.0, ey - 1.0);
+            cr.line_to(ex, ey);
+            cr.line_to(ex - 1.0, ey - 9.0);
+            let _ = cr.stroke();
+        }
+    }
+    cr.restore().ok();
 }
 
 /// One layer of the plug's housing (as the halves' edges are drawn: its
@@ -3809,6 +4086,11 @@ fn show_fold(ui: &Ui, angle: f64) {
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
+        // The buttons three rows under the word, from its left; seen as the
+        // squares grow to them.
+        let buttons_at = (cubes_at.0 - 2.5 * cur, cubes_at.1 + 3.5 * cur);
+        let button_lift = ui.buttons.borrow().lift;
+        let buttons_strength = intro.word() * intro.grid().max(if intro.done() { 1.0 } else { 0.0 });
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
@@ -3844,9 +4126,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.flips != flips || fv.credit_at != credit_at || fv.eye_x != eye_x;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.flips != flips || fv.credit_at != credit_at || fv.eye_x != eye_x || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.buttons_strength != buttons_strength;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, flips, credit_at, eye_x };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, flips, credit_at, eye_x, buttons_at, button_lift, buttons_strength };
         if changed {
             ui.floor.queue_draw();
         }
