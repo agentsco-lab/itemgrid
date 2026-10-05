@@ -1597,11 +1597,7 @@ fn build(app: &adw::Application) {
                 // item/grid's own: its settings (lines to click), about it.
                 let own = match key.as_deref() {
                     Some("settings") => Some(settings_lines(&ui)),
-                    Some("itemgrid") => Some(vec![
-                        board::Line::new("", format!("itemgrid  {}", env!("CARGO_PKG_VERSION"))),
-                        board::Line::new("", "by     AgentsCo"),
-                        board::Line::new("", "site   agentsco.uk"),
-                    ]),
+                    Some("itemgrid") => Some(vec![board::Line::new("", format!("itemgrid  {}", env!("CARGO_PKG_VERSION")))]),
                     _ => None,
                 };
                 if let (Some(lines), Some(key)) = (own, key.clone()) {
