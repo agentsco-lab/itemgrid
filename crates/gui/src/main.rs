@@ -4462,22 +4462,20 @@ fn show_fold(ui: &Ui, angle: f64) {
             let shown = on_page(&matrix(e), cubes_at);
             e.on = (e.on.0 + word_on.0 - shown.0, e.on.1 + word_on.1 - shown.1);
         }
-        // The wheel's lens on top (not the saver's); drawn back, the eye
-        // rises toward straight above (at the furthest, from right above).
+        // The wheel's lens on top (not the saver's). Drawn back, the word
+        // comes to the page's middle, the eye rises to straight above and
+        // the perspective all but goes: the cubes go down into the table,
+        // letters in its squares again (as the start begins).
         let lens = ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
         e.near *= lens;
         let up = ((1.0 - lens) / 0.6).clamp(0.0, 1.0);
-        let rise = up * up * (3.0 - 2.0 * up);
-        e.tilt *= 1.0 - rise;
-        // ... and goes off the word, over the middle and on, until the
-        // cubes are out of sight - the table alone, its middle the page's.
-        if rise > 0.0 {
-            let (dx, dy) = (-cubes_at.0, -cubes_at.1);
-            let len = (dx * dx + dy * dy).sqrt().max(1.0);
-            let away = rise * (ui.floor.width().max(ui.floor.height()) as f32 * 0.6 / e.near.max(0.1));
-            e.look = (e.look.0 + dx / len * away, e.look.1 + dy / len * away);
+        let flat = up * up * (3.0 - 2.0 * up);
+        if flat > 0.0 {
             let mid = (ui.floor.width() as f32 * 0.5 - off.0, ui.floor.height() as f32 * 0.5 - off.1);
-            e.on = (e.on.0 + (mid.0 - e.on.0) * rise, e.on.1 + (mid.1 - e.on.1) * rise);
+            e.look = (e.look.0 + (cubes_at.0 - e.look.0) * flat, e.look.1 + (cubes_at.1 - e.look.1) * flat);
+            e.on = (e.on.0 + (mid.0 - e.on.0) * flat, e.on.1 + (mid.1 - e.on.1) * flat);
+            e.tilt *= 1.0 - flat;
+            e.far += (40.0 - e.far) * flat;
         }
         let at = e.on;
         let eye_x = e.look.0;
@@ -4493,7 +4491,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             let b = ui.buttons.borrow();
             (b.lift, b.hover)
         };
-        let cubes: [(f32, f32); 5] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 + lift[i]).max(0.0)));
+        let cubes: [(f32, f32); 5] = std::array::from_fn(|i| (cubes[i].0, ((cubes[i].1 + lift[i]) * (1.0 - flat)).max(0.0)));
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
