@@ -1,15 +1,15 @@
 [package]
-name = "gridbay-gui"
+name = "itemgrid-gui"
 edition.workspace = true
 version.workspace = true
-description = "Gridbay's window over gridbay-core (GTK4, libadwaita)"
+description = "item/grid's window over itemgrid-core (GTK4, libadwaita)"
 
 [[bin]]
-name = "gridbay-gui"
+name = "itemgrid-gui"
 path = "src/main.rs"
 
 [dependencies]
-gridbay-core = { path = "../core" }
+itemgrid-core = { path = "../core" }
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
 adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
 async-channel = "2"

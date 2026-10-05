@@ -1,0 +1,12 @@
+# item/grid's window: allowed user namespaces, so WebKit's sandbox (bubblewrap)
+# can run for the Microsoft sign-in window (Ubuntu 24.04 restricts them for
+# unconfined programs). Otherwise unconfined, as GNOME Web's profile.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile itemgrid-gui /{usr/bin,home/*/.local/bin}/itemgrid-gui flags=(unconfined) {
+  userns,
+
+  include if exists <local/itemgrid-gui>
+}

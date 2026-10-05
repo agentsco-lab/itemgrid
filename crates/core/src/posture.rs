@@ -49,16 +49,16 @@ pub enum Reading {
 }
 
 /// Where duo-motion is kept on the phone.
-const MOTION_ON_PHONE: &str = "/var/lib/gridbay/duo-motion";
+const MOTION_ON_PHONE: &str = "/var/lib/itemgrid/duo-motion";
 
 /// The phone kept from sleeping while what follows runs (as root: item's
 /// own asking to sleep is refused).
-const INHIBIT: &str = "systemd-inhibit --what=sleep --who=Gridbay --why='Following the phone on the cable' --mode=block";
+const INHIBIT: &str = "systemd-inhibit --what=sleep --who=item/grid --why='Following the phone on the cable' --mode=block";
 
-/// duo-motion as built for the phone, here: GRIDBAY_MOTION, else
-/// ~/.local/share/gridbay/duo-motion (tools/install-local.sh puts it there).
+/// duo-motion as built for the phone, here: ITEMGRID_MOTION, else
+/// ~/.local/share/itemgrid/duo-motion (tools/install-local.sh puts it there).
 fn motion_here() -> Option<std::path::PathBuf> {
-    let p = std::env::var_os("GRIDBAY_MOTION").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/gridbay/duo-motion"));
+    let p = std::env::var_os("ITEMGRID_MOTION").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/itemgrid/duo-motion"));
     p.exists().then_some(p)
 }
 
@@ -74,8 +74,8 @@ pub fn follow_motion(host: &str, awake: bool) -> Option<Result<(Follow, Stop), S
         let want = format!("{:x}", Sha256::digest(&bytes));
         let have = crate::phone::run(host, &format!("sha256sum {MOTION_ON_PHONE} 2>/dev/null | cut -c1-64\n"))?;
         if have.trim() != want {
-            // Where it was kept under the old names (Cradle, Hythe), let go.
-            crate::phone::run_checked(host, "mkdir -p /var/lib/gridbay && rm -rf /var/lib/cradle /var/lib/hythe\n")?;
+            // Where it was kept under the old names (Cradle, Hythe, Gridbay), let go.
+            crate::phone::run_checked(host, "mkdir -p /var/lib/itemgrid && rm -rf /var/lib/cradle /var/lib/hythe /var/lib/gridbay\n")?;
             crate::phone::put(host, &local, &format!("{MOTION_ON_PHONE}.new"))?;
             crate::phone::run_checked(host, &format!("chmod 755 {MOTION_ON_PHONE}.new && mv {MOTION_ON_PHONE}.new {MOTION_ON_PHONE}\n"))?;
         }
@@ -121,7 +121,7 @@ pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
         // does not stop systemd-sleep (item asked, the phone went down - the
         // USB link with it - and woke again, round and round). It goes with
         // its holder: killed, nothing is left.
-        format!("exec {INHIBIT} sh -s <<'GRIDBAY_FOLLOW'\n( {} )\nGRIDBAY_FOLLOW\n", crate::phone::as_owner(FOLLOW))
+        format!("exec {INHIBIT} sh -s <<'ITEMGRID_FOLLOW'\n( {} )\nITEMGRID_FOLLOW\n", crate::phone::as_owner(FOLLOW))
     } else {
         crate::phone::as_owner(FOLLOW)
     };

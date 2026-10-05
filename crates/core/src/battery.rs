@@ -1,4 +1,4 @@
-//! The battery in detail, for Gridbay's Battery section: what the power
+//! The battery in detail, for item/grid's Battery section: what the power
 //! supply says (health, cycles, capacity, voltage, current, temperature) and
 //! the charge over the last days from UPower's history.
 

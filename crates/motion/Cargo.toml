@@ -2,7 +2,7 @@
 name = "duo-motion"
 edition.workspace = true
 version.workspace = true
-description = "On the Duo: its motion for Gridbay - the sensors read straight from sensorfw, fused, streamed"
+description = "On the Duo: its motion for item/grid - the sensors read straight from sensorfw, fused, streamed"
 
 [[bin]]
 name = "duo-motion"

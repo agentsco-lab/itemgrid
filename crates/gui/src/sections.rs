@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gridbay_core::status::{self, Status};
+use itemgrid_core::status::{self, Status};
 use gtk::{gdk, gio, glib};
 
 pub const CSS: &str = "
@@ -240,7 +240,7 @@ pub fn fill(p: &Pages, s: &Status, number: Option<String>, link: &str, developer
 }
 
 /// Storage's parts, counted.
-pub fn fill_parts(p: &Pages, parts: &gridbay_core::storage::Parts, colours: &[(f64, f64, f64)]) {
+pub fn fill_parts(p: &Pages, parts: &itemgrid_core::storage::Parts, colours: &[(f64, f64, f64)]) {
     clear(&p.parts);
     for (i, (name, kib)) in parts.list().into_iter().enumerate() {
         let r = fact(name, &status::size_words(kib));
@@ -261,7 +261,7 @@ pub fn fill_parts(p: &Pages, parts: &gridbay_core::storage::Parts, colours: &[(f
 pub fn load_battery(p: &Rc<Pages>, host: String) {
     let p = p.clone();
     glib::spawn_future_local(async move {
-        let Ok(r) = gio::spawn_blocking(move || gridbay_core::battery::read(&host)).await else { return };
+        let Ok(r) = gio::spawn_blocking(move || itemgrid_core::battery::read(&host)).await else { return };
         clear(&p.battery);
         let b = match r {
             Ok(b) => b,
@@ -408,7 +408,7 @@ pub fn load_look(p: &Rc<Pages>, host: String, toast: Toast) {
     let p = p.clone();
     glib::spawn_future_local(async move {
         let h = host.clone();
-        let Ok(r) = gio::spawn_blocking(move || gridbay_core::look::read(&h)).await else { return };
+        let Ok(r) = gio::spawn_blocking(move || itemgrid_core::look::read(&h)).await else { return };
         let look = match r {
             Ok(l) => l,
             Err(e) => {
@@ -431,7 +431,7 @@ fn show_accents(p: &Rc<Pages>, host: &str, accent: &str, toast: &Toast) {
     }
     p.accents.append(&auto);
     let mut choices: Vec<(gtk::Button, String)> = vec![(auto, "auto".to_owned())];
-    for (name, hex) in gridbay_core::look::PALETTE {
+    for (name, hex) in itemgrid_core::look::PALETTE {
         let b = gtk::Button::builder().css_classes(["swatch"]).tooltip_text(name).valign(gtk::Align::Center).build();
         let css = gtk::CssProvider::new();
         css.load_from_string(&format!("button {{ background: {hex}; }}"));
@@ -449,7 +449,7 @@ fn show_accents(p: &Rc<Pages>, host: &str, accent: &str, toast: &Toast) {
             let (p, host, toast, value) = (p.clone(), host.clone(), toast.clone(), value.clone());
             glib::spawn_future_local(async move {
                 let (h, v) = (host.clone(), value.clone());
-                match gio::spawn_blocking(move || gridbay_core::look::set_accent(&h, &v)).await {
+                match gio::spawn_blocking(move || itemgrid_core::look::set_accent(&h, &v)).await {
                     Ok(Ok(())) => show_accents(&p, &host, &value, &toast),
                     Ok(Err(e)) => toast(&e),
                     Err(_) => {}
@@ -459,7 +459,7 @@ fn show_accents(p: &Rc<Pages>, host: &str, accent: &str, toast: &Toast) {
     }
 }
 
-fn show_walls(p: &Rc<Pages>, host: &str, look: &gridbay_core::look::Look, toast: &Toast) {
+fn show_walls(p: &Rc<Pages>, host: &str, look: &itemgrid_core::look::Look, toast: &Toast) {
     p.walls.remove_all();
     let on = if look.each { String::new() } else { look.both.clone() };
     let mut pictures = Vec::new();
@@ -479,7 +479,7 @@ fn show_walls(p: &Rc<Pages>, host: &str, look: &gridbay_core::look::Look, toast:
                 let (p, host, toast, name) = (p.clone(), host.clone(), toast.clone(), name.clone());
                 glib::spawn_future_local(async move {
                     let h = host.clone();
-                    match gio::spawn_blocking(move || gridbay_core::look::set_wallpaper(&h, &name)).await {
+                    match gio::spawn_blocking(move || itemgrid_core::look::set_wallpaper(&h, &name)).await {
                         Ok(Ok(())) => load_look(&p, host, toast),
                         Ok(Err(e)) => toast(&e),
                         Err(_) => {}
@@ -494,7 +494,7 @@ fn show_walls(p: &Rc<Pages>, host: &str, look: &gridbay_core::look::Look, toast:
                 let (p, host, toast, name) = (p.clone(), host.clone(), toast.clone(), name.clone());
                 glib::spawn_future_local(async move {
                     let h = host.clone();
-                    match gio::spawn_blocking(move || gridbay_core::look::remove_wall(&h, &name)).await {
+                    match gio::spawn_blocking(move || itemgrid_core::look::remove_wall(&h, &name)).await {
                         Ok(Ok(())) => load_look(&p, host, toast),
                         Ok(Err(e)) => toast(&e),
                         Err(_) => {}
@@ -512,7 +512,7 @@ fn show_walls(p: &Rc<Pages>, host: &str, look: &gridbay_core::look::Look, toast:
     let h = host.to_owned();
     gio::spawn_blocking(move || {
         for (i, n) in names.iter().enumerate() {
-            if let Ok(bytes) = gridbay_core::look::thumb(&h, n) {
+            if let Ok(bytes) = itemgrid_core::look::thumb(&h, n) {
                 if tx.send_blocking((i, bytes)).is_err() {
                     break;
                 }
@@ -548,7 +548,7 @@ pub fn add_pictures(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: To
                 toast(&format!("{} is not a picture this computer can read", path.display()));
                 continue;
             };
-            let tmp = std::env::temp_dir().join(format!("gridbay-{}-{}.jpg", std::process::id(), made.len()));
+            let tmp = std::env::temp_dir().join(format!("itemgrid-{}-{}.jpg", std::process::id(), made.len()));
             if pixbuf.savev(&tmp, "jpeg", &[("quality", "92")]).is_ok() {
                 made.push((tmp, stem));
             }
@@ -563,7 +563,7 @@ pub fn add_pictures(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: To
             let out = gio::spawn_blocking(move || {
                 let mut errors = Vec::new();
                 for (tmp, stem) in &made {
-                    if let Err(e) = gridbay_core::look::add_wall(&h, tmp, stem, "") {
+                    if let Err(e) = itemgrid_core::look::add_wall(&h, tmp, stem, "") {
                         errors.push(e);
                     }
                     let _ = std::fs::remove_file(tmp);

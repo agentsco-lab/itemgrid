@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Gridbay
+Name=item/grid
 Comment=Look after a connected Surface Duo
-Exec=gridbay-gui
-Icon=lab.agentsco.Gridbay
+Exec=itemgrid-gui
+Icon=lab.agentsco.ItemGrid
 Terminal=false
 Categories=Utility;System;
 Keywords=Surface;Duo;phone;flash;item;

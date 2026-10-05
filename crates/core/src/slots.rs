@@ -2,7 +2,7 @@
 //! their state in the GPT attributes of boot_a and boot_b (priority, active,
 //! retries left, booted successfully, unbootable - as ABL reads them), and
 //! what is in each is told by matching its boot partition against images
-//! this computer knows (Gridbay's backups, the port's out/), or else by the
+//! this computer knows (item/grid's backups, the port's out/), or else by the
 //! kernel's version inside the image.
 
 use std::collections::HashMap;
@@ -89,8 +89,8 @@ pub fn read(host: &str) -> Result<[Slot; 2], String> {
     Ok(slots)
 }
 
-/// Where boot images are known from: Gridbay's backups, and the port's tree
-/// (GRIDBAY_PORT, ~/.config/gridbay/port, or ~/Desktop/projects/surfaceduo/
+/// Where boot images are known from: item/grid's backups, and the port's tree
+/// (ITEMGRID_PORT, ~/.config/itemgrid/port, or ~/Desktop/projects/surfaceduo/
 /// surfaceduo-droidian) - its out/ and out/backups/.
 fn image_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![crate::backup::root()];
@@ -122,9 +122,9 @@ fn images() -> Vec<PathBuf> {
 }
 
 /// What the partitions' hashes are known to be: worked out once and kept
-/// (~/.cache/gridbay/slots.tsv: partition hash, image).
+/// (~/.cache/itemgrid/slots.tsv: partition hash, image).
 fn cache_path() -> PathBuf {
-    Path::new(&std::env::var("HOME").unwrap_or_default()).join(".cache/gridbay/slots.tsv")
+    Path::new(&std::env::var("HOME").unwrap_or_default()).join(".cache/itemgrid/slots.tsv")
 }
 
 fn known_images() -> HashMap<String, String> {

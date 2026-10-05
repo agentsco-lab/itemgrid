@@ -1,5 +1,5 @@
 //! The window where it was last: its place, size and whether maximized,
-//! kept on closing (~/.config/gridbay/window) and given back on opening - the
+//! kept on closing (~/.config/itemgrid/window) and given back on opening - the
 //! window manager put it wherever (the other monitor, the pointer's).
 //!
 //! GTK 4 has no way to place a window; on X11 the window is moved itself
@@ -56,7 +56,7 @@ fn handle(window: &impl IsA<gtk::Window>) -> Option<(&'static X11, Display, Wind
 }
 
 fn file() -> std::path::PathBuf {
-    gtk::glib::user_config_dir().join("gridbay/window")
+    gtk::glib::user_config_dir().join("itemgrid/window")
 }
 
 /// Kept: x y width height maximized.

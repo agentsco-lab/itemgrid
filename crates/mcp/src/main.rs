@@ -1,12 +1,12 @@
-//! gridbay-mcp: Gridbay's window for Claude Code to look at and try - an MCP
-//! server on stdio (JSON-RPC a line). It starts Gridbay with its control
-//! socket (GRIDBAY_CONTROL=1, crates/gui/src/control.rs) and asks it for a
+//! itemgrid-mcp: item/grid's window for Claude Code to look at and try - an MCP
+//! server on stdio (JSON-RPC a line). It starts item/grid with its control
+//! socket (ITEMGRID_CONTROL=1, crates/gui/src/control.rs) and asks it for a
 //! picture of the window and its state; input is the real thing - the
 //! pointer moved and its buttons and wheel pressed on the screen (xdotool,
 //! X11), so the window's own gestures are what is tried. Coordinates are
 //! the window's, as in its picture.
 //!
-//! `gridbay-mcp call TOOL [JSON]`: a tool from the command line (a picture
+//! `itemgrid-mcp call TOOL [JSON]`: a tool from the command line (a picture
 //! is left at its path).
 
 use std::io::{BufRead, BufReader, Write};
@@ -21,16 +21,16 @@ fn runtime_dir() -> std::path::PathBuf {
 }
 
 fn socket() -> std::path::PathBuf {
-    runtime_dir().join("gridbay-control.sock")
+    runtime_dir().join("itemgrid-control.sock")
 }
 
 fn trace_log() -> std::path::PathBuf {
-    runtime_dir().join("gridbay-trace.log")
+    runtime_dir().join("itemgrid-trace.log")
 }
 
 /// A request to the window, its answer.
 fn ask(cmd: &str) -> Result<Value, String> {
-    let mut s = UnixStream::connect(socket()).map_err(|_| "Gridbay is not running with its control socket: start it (start, restart: true)".to_owned())?;
+    let mut s = UnixStream::connect(socket()).map_err(|_| "item/grid is not running with its control socket: start it (start, restart: true)".to_owned())?;
     s.set_read_timeout(Some(Duration::from_secs(10))).ok();
     writeln!(s, "{}", json!({ "cmd": cmd })).map_err(|e| e.to_string())?;
     let mut line = String::new();
@@ -53,7 +53,7 @@ fn xdotool(args: &[String]) -> Result<(), String> {
 
 /// The window brought to the front, and where its content is.
 fn window_origin() -> Result<(f64, f64), String> {
-    let _ = Command::new("xdotool").args(["search", "--onlyvisible", "--name", "^Gridbay$", "windowactivate", "--sync"]).output();
+    let _ = Command::new("xdotool").args(["search", "--onlyvisible", "--name", "^item/grid$", "windowactivate", "--sync"]).output();
     std::thread::sleep(Duration::from_millis(80));
     let state = ask("state")?;
     let o = &state["window"]["content_on_screen"];
@@ -123,21 +123,21 @@ fn then_picture(args: &Value, done: String) -> Result<Answer, String> {
 }
 
 fn start(args: &Value) -> Result<Answer, String> {
-    let running = Command::new("pgrep").args(["-x", "gridbay-gui"]).output().is_ok_and(|o| o.status.success());
+    let running = Command::new("pgrep").args(["-x", "itemgrid-gui"]).output().is_ok_and(|o| o.status.success());
     if running && ask("state").is_ok() && !args["restart"].as_bool().unwrap_or(false) {
         return Ok(words("already running with its control socket"));
     }
     if running {
-        let _ = Command::new("pkill").args(["-x", "gridbay-gui"]).status();
+        let _ = Command::new("pkill").args(["-x", "itemgrid-gui"]).status();
         std::thread::sleep(Duration::from_millis(700));
     }
-    let gui = std::env::var("GRIDBAY_GUI").unwrap_or_else(|_| format!("{}/.local/bin/gridbay-gui", std::env::var("HOME").unwrap_or_default()));
+    let gui = std::env::var("ITEMGRID_GUI").unwrap_or_else(|_| format!("{}/.local/bin/itemgrid-gui", std::env::var("HOME").unwrap_or_default()));
     let log = std::fs::File::create(trace_log()).map_err(|e| e.to_string())?;
     let mut c = Command::new(&gui);
-    c.env("GRIDBAY_CONTROL", "1").env("GRIDBAY_TRACE", "1").stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
+    c.env("ITEMGRID_CONTROL", "1").env("ITEMGRID_TRACE", "1").stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
     if let Some(intro) = args["intro"].as_bool() {
         if !intro {
-            c.env("GRIDBAY_INTRO", "0");
+            c.env("ITEMGRID_INTRO", "0");
         }
     }
     use std::os::unix::process::CommandExt;
@@ -230,23 +230,23 @@ fn tools() -> Value {
     let shot = json!({ "type": "boolean", "description": "a screenshot after it (settle_ms later, default 300)" });
     let settle = json!({ "type": "integer" });
     json!([
-        { "name": "start", "description": "Start Gridbay (the Surface Duo's desktop app) with its control socket and trace log; restart: true closes a running one first (needed if it was started without the socket); intro: false skips the start animation.",
+        { "name": "start", "description": "Start item/grid (the Surface Duo's desktop app) with its control socket and trace log; restart: true closes a running one first (needed if it was started without the socket); intro: false skips the start animation.",
           "inputSchema": { "type": "object", "properties": { "restart": { "type": "boolean" }, "intro": { "type": "boolean" } } } },
-        { "name": "screenshot", "description": "A picture of Gridbay's window as it is now (its own pixels; input coordinates are these).",
+        { "name": "screenshot", "description": "A picture of item/grid's window as it is now (its own pixels; input coordinates are these).",
           "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "state", "description": "Gridbay's state: the window's place, the start animation, the floor's squares (size, offset), the drawn Duo (fold, turn), the phone (where it is seen).",
+        { "name": "state", "description": "item/grid's state: the window's place, the start animation, the floor's squares (size, offset), the drawn Duo (fold, turn), the phone (where it is seen).",
           "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "replay", "description": "Play Gridbay's start animation again.",
+        { "name": "replay", "description": "Play item/grid's start animation again.",
           "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "click", "description": "Move the real pointer to (x, y) in Gridbay's window and click (button 1 left, 2 middle, 3 right; double).",
+        { "name": "click", "description": "Move the real pointer to (x, y) in item/grid's window and click (button 1 left, 2 middle, 3 right; double).",
           "inputSchema": { "type": "object", "properties": { "x": xy, "y": xy, "button": { "type": "integer" }, "double": { "type": "boolean" }, "screenshot": shot, "settle_ms": settle }, "required": ["x", "y"] } },
-        { "name": "scroll", "description": "Turn the real mouse wheel over (x, y) in Gridbay's window: clicks notches, positive down, negative up.",
+        { "name": "scroll", "description": "Turn the real mouse wheel over (x, y) in item/grid's window: clicks notches, positive down, negative up.",
           "inputSchema": { "type": "object", "properties": { "x": xy, "y": xy, "clicks": { "type": "integer" }, "delay_ms": { "type": "integer" }, "screenshot": shot, "settle_ms": settle }, "required": ["x", "y", "clicks"] } },
-        { "name": "drag", "description": "Press a real mouse button at `from` in Gridbay's window, move to `to` over ms milliseconds, release.",
+        { "name": "drag", "description": "Press a real mouse button at `from` in item/grid's window, move to `to` over ms milliseconds, release.",
           "inputSchema": { "type": "object", "properties": { "from": pair, "to": pair, "ms": { "type": "integer" }, "button": { "type": "integer" }, "screenshot": shot, "settle_ms": settle }, "required": ["from", "to"] } },
         { "name": "wait", "description": "Wait ms milliseconds (at most 30 s), then a screenshot if asked.",
           "inputSchema": { "type": "object", "properties": { "ms": { "type": "integer" }, "screenshot": { "type": "boolean" } } } },
-        { "name": "trace", "description": "The last lines of Gridbay's trace log (what it hears from the phone and does).",
+        { "name": "trace", "description": "The last lines of item/grid's trace log (what it hears from the phone and does).",
           "inputSchema": { "type": "object", "properties": { "lines": { "type": "integer" } } } }
     ])
 }
@@ -280,7 +280,7 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("gridbay-mcp: {e}");
+                eprintln!("itemgrid-mcp: {e}");
                 std::process::exit(1);
             }
         }
@@ -297,8 +297,8 @@ fn main() {
             "initialize" => json!({ "jsonrpc": "2.0", "id": id, "result": {
                 "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "gridbay", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Gridbay's window (the Surface Duo's desktop app): start it, look at it (screenshot, state, trace) and try it with the real pointer (click, scroll, drag) in the window's own pixel coordinates. Input moves the owner's pointer."
+                "serverInfo": { "name": "itemgrid", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": "item/grid's window (the Surface Duo's desktop app): start it, look at it (screenshot, state, trace) and try it with the real pointer (click, scroll, drag) in the window's own pixel coordinates. Input moves the owner's pointer."
             }}),
             "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
             "tools/list" => json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tools() } }),

@@ -1,11 +1,11 @@
 [package]
-name = "gridbay-mcp"
-description = "Gridbay's window for Claude Code to look at and try (MCP, stdio)"
+name = "itemgrid-mcp"
+description = "item/grid's window for Claude Code to look at and try (MCP, stdio)"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "gridbay-mcp"
+name = "itemgrid-mcp"
 path = "src/main.rs"
 
 [dependencies]

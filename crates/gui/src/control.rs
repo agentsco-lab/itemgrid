@@ -1,6 +1,6 @@
-//! For looking at the window from outside (gridbay-mcp, crates/mcp): with
-//! GRIDBAY_CONTROL=1, a socket of the owner's alone
-//! ($XDG_RUNTIME_DIR/gridbay-control.sock) taking a request a line, as JSON,
+//! For looking at the window from outside (itemgrid-mcp, crates/mcp): with
+//! ITEMGRID_CONTROL=1, a socket of the owner's alone
+//! ($XDG_RUNTIME_DIR/itemgrid-control.sock) taking a request a line, as JSON,
 //! and answering a line:
 //!
 //!   {"cmd":"shot"}    the window drawn into a picture
@@ -11,7 +11,7 @@
 //!   {"cmd":"replay"}  the start again
 //!   {"cmd":"renderer"} GTK's renderer for the window
 //!
-//! Input is not made here: gridbay-mcp moves the pointer itself (xdotool),
+//! Input is not made here: itemgrid-mcp moves the pointer itself (xdotool),
 //! so the window's own gestures are what is tried.
 
 use std::io::{BufRead, BufReader, Write};
@@ -22,18 +22,18 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 pub fn socket_path() -> std::path::PathBuf {
-    glib::user_runtime_dir().join("gridbay-control.sock")
+    glib::user_runtime_dir().join("itemgrid-control.sock")
 }
 
-/// Started when GRIDBAY_CONTROL=1; `answer` runs on the main thread.
+/// Started when ITEMGRID_CONTROL=1; `answer` runs on the main thread.
 pub fn start(answer: impl Fn(&serde_json::Value) -> serde_json::Value + 'static) {
-    if std::env::var("GRIDBAY_CONTROL").ok().as_deref() != Some("1") {
+    if std::env::var("ITEMGRID_CONTROL").ok().as_deref() != Some("1") {
         return;
     }
     let path = socket_path();
     let _ = std::fs::remove_file(&path);
     let Ok(listener) = UnixListener::bind(&path) else {
-        eprintln!("gridbay: no control socket at {}", path.display());
+        eprintln!("itemgrid: no control socket at {}", path.display());
         return;
     };
     use std::os::unix::fs::PermissionsExt;
@@ -77,7 +77,7 @@ pub fn shot(window: &impl IsA<gtk::Window>) -> serde_json::Value {
     let (w, h) = (window.width() as f64, window.height() as f64);
     let snap = gtk::Snapshot::new();
     paintable.snapshot(&snap, w, h);
-    let path = glib::user_runtime_dir().join("gridbay-shot.png");
+    let path = glib::user_runtime_dir().join("itemgrid-shot.png");
     let texture: Option<gdk::Texture> = snap.to_node().zip(window.native()).and_then(|(node, native)| native.renderer().map(|r| r.render_texture(&node, None)));
     match texture.map(|t| t.save_to_png(&path)) {
         Some(Ok(())) => serde_json::json!({ "path": path, "width": w, "height": h }),

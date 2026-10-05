@@ -1,13 +1,13 @@
 [package]
-name = "gridbay"
+name = "itemgrid"
 edition.workspace = true
 version.workspace = true
-description = "The command line over gridbay-core"
+description = "The command line over itemgrid-core"
 
 [[bin]]
-name = "gridbay"
+name = "itemgrid"
 path = "src/main.rs"
 
 [dependencies]
 libc = "0.2"
-gridbay-core = { path = "../core" }
+itemgrid-core = { path = "../core" }

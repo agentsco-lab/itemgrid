@@ -3,7 +3,7 @@
 //!
 //! - **Device data** (`device`): what no image can give back - the radio's
 //!   calibration and IMEI (modemst1/2, fsg, fsc), persist, devinfo, secdata.
-//!   Taken once, kept for good, never removed by Gridbay; worth a copy off
+//!   Taken once, kept for good, never removed by item/grid; worth a copy off
 //!   this computer too.
 //! - **Boot chain** (`boot`): boot, dtbo and vbmeta of both slots, and misc.
 //!   The last 10 kept, and always the first.
@@ -13,7 +13,7 @@
 //! Each partition is read over ssh while its sha256 is worked out, then
 //! hashed again on the phone; the backup stands only if the two agree. Old
 //! backups go only after a new one has stood. Everything lives in
-//! ~/gridbay-backups/<serial>/<when>-<kind>/, each with its manifest.json;
+//! ~/itemgrid-backups/<serial>/<when>-<kind>/, each with its manifest.json;
 //! the directories are the owner's only (they hold keys and /etc/shadow).
 
 use std::os::unix::fs::PermissionsExt;
@@ -85,7 +85,7 @@ pub struct Manifest {
     pub port: String,
     pub kernel: String,
     pub items: Vec<Item>,
-    /// Never removed by Gridbay.
+    /// Never removed by item/grid.
     #[serde(default)]
     pub keep: bool,
     /// The owner says a copy is off this computer (device data).
@@ -128,7 +128,7 @@ impl Backup {
 }
 
 pub fn root() -> PathBuf {
-    Path::new(&std::env::var("HOME").unwrap_or_default()).join("gridbay-backups")
+    Path::new(&std::env::var("HOME").unwrap_or_default()).join("itemgrid-backups")
 }
 
 /// The backups on this computer, newest first; of one phone if `serial`.

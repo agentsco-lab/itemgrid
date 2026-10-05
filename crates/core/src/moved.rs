@@ -1,27 +1,34 @@
-//! Gridbay was Hythe, and Cradle before that: what they kept here moved to
-//! Gridbay's places - each thing in them Gridbay has not (installing put
-//! duo-motion in Gridbay's own before it first ran), and theirs left empty
+//! item/grid was Gridbay, Hythe and Cradle before that: what they kept here
+//! moved to item/grid's places - each thing in them it has not (installing
+//! put duo-motion in its own before it first ran), and theirs left empty
 //! taken away.
 
 use std::path::PathBuf;
 
-/// The old names' places and Gridbay's, under the home directory (Hythe's
-/// first: the newer).
+/// The old names' places and item/grid's, under the home directory (the
+/// newest name first).
 const PLACES: &[(&str, &str)] = &[
-    (".config/hythe", ".config/gridbay"),
-    (".local/share/hythe", ".local/share/gridbay"),
-    (".local/state/hythe", ".local/state/gridbay"),
-    (".cache/hythe", ".cache/gridbay"),
-    ("hythe-backups", "gridbay-backups"),
-    ("hythe-shots", "gridbay-shots"),
-    ("hythe-logs", "gridbay-logs"),
-    (".config/cradle", ".config/gridbay"),
-    (".local/share/cradle", ".local/share/gridbay"),
-    (".local/state/cradle", ".local/state/gridbay"),
-    (".cache/cradle", ".cache/gridbay"),
-    ("cradle-backups", "gridbay-backups"),
-    ("cradle-shots", "gridbay-shots"),
-    ("cradle-logs", "gridbay-logs"),
+    (".config/gridbay", ".config/itemgrid"),
+    (".local/share/gridbay", ".local/share/itemgrid"),
+    (".local/state/gridbay", ".local/state/itemgrid"),
+    (".cache/gridbay", ".cache/itemgrid"),
+    ("gridbay-backups", "itemgrid-backups"),
+    ("gridbay-shots", "itemgrid-shots"),
+    ("gridbay-logs", "itemgrid-logs"),
+    (".config/hythe", ".config/itemgrid"),
+    (".local/share/hythe", ".local/share/itemgrid"),
+    (".local/state/hythe", ".local/state/itemgrid"),
+    (".cache/hythe", ".cache/itemgrid"),
+    ("hythe-backups", "itemgrid-backups"),
+    ("hythe-shots", "itemgrid-shots"),
+    ("hythe-logs", "itemgrid-logs"),
+    (".config/cradle", ".config/itemgrid"),
+    (".local/share/cradle", ".local/share/itemgrid"),
+    (".local/state/cradle", ".local/state/itemgrid"),
+    (".cache/cradle", ".cache/itemgrid"),
+    ("cradle-backups", "itemgrid-backups"),
+    ("cradle-shots", "itemgrid-shots"),
+    ("cradle-logs", "itemgrid-logs"),
 ];
 
 /// Moves them (a rename: the stock images and backups are not copied).
@@ -37,7 +44,7 @@ pub fn from_old_names() {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Err(e) = std::fs::rename(&old, &new) {
-                eprintln!("gridbay: {} not moved to {}: {e}", old.display(), new.display());
+                eprintln!("itemgrid: {} not moved to {}: {e}", old.display(), new.display());
             }
             continue;
         }
@@ -45,7 +52,7 @@ pub fn from_old_names() {
             let to = new.join(entry.file_name());
             if !to.exists() {
                 if let Err(e) = std::fs::rename(entry.path(), &to) {
-                    eprintln!("gridbay: {} not moved to {}: {e}", entry.path().display(), to.display());
+                    eprintln!("itemgrid: {} not moved to {}: {e}", entry.path().display(), to.display());
                 }
             }
         }

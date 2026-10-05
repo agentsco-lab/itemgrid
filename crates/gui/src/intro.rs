@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-pub const WORD: [&str; 7] = ["g", "r", "i", "d", "b", "a", "y"];
+pub const WORD: [&str; 9] = ["i", "t", "e", "m", "/", "g", "r", "i", "d"];
 
 /// The credit, a letter a square of the table (none for the space).
 pub const CREDIT: &str = "by AgentsCo";
@@ -74,8 +74,8 @@ const TAP_S: f32 = 0.6;
 
 impl Default for Intro {
     fn default() -> Intro {
-        // GRIDBAY_INTRO=0: started at its end (the cubes up, the eye down).
-        let skip = std::env::var("GRIDBAY_INTRO").is_ok_and(|v| v == "0");
+        // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
+        let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(END));
         Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0 }
     }

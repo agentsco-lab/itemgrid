@@ -1,4 +1,4 @@
-# gridbay
+# itemgrid
 
 Look after a connected Surface Duo from a Linux computer: see what it is doing, update item, read its logs, take screenshots, and later back it up and flash it - safely.
 
@@ -6,8 +6,8 @@ First for the project's own daily work, then for people who run item on their Du
 
 ## How it is built
 
-- **gridbay-core** (`crates/core`): a Rust library. It finds out what the phone is doing, carries out the actions, and holds the safety rules. Every action and every rule lives here, so no interface can go around them.
-- **gridbay** (`crates/cli`): the command line over the core, e.g. `gridbay status`, `gridbay update`, `gridbay logs --boot -1`.
+- **itemgrid-core** (`crates/core`): a Rust library. It finds out what the phone is doing, carries out the actions, and holds the safety rules. Every action and every rule lives here, so no interface can go around them.
+- **itemgrid** (`crates/cli`): the command line over the core, e.g. `itemgrid status`, `itemgrid update`, `itemgrid logs --boot -1`.
 - **The window** (later): GTK4/libadwaita over the same core.
 
 ## What the phone is doing

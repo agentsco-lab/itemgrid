@@ -351,7 +351,7 @@ pub fn leave_fastboot(host: &str, serial: &str, say: Say) -> Result<(), String> 
     }
     say("Linux is back: arming the parking brake".into());
     arm_brake_linux(host)?;
-    crate::flash::log(serial, "left fastboot for Linux, parking brake armed - gridbay")?;
+    crate::flash::log(serial, "left fastboot for Linux, parking brake armed - itemgrid")?;
     Ok(())
 }
 
@@ -382,7 +382,7 @@ pub fn leave_recovery(host: &str, serial: &str, say: Say) -> Result<(), String> 
     }
     say("Linux is back: arming the parking brake".into());
     arm_brake_linux(host)?;
-    crate::flash::log(serial, "left the recovery, parking brake armed from Linux - gridbay")?;
+    crate::flash::log(serial, "left the recovery, parking brake armed from Linux - itemgrid")?;
     say("done: enter the PIN on the phone".into());
     Ok(())
 }
@@ -394,7 +394,7 @@ pub fn preflight(host: &str, image: &Path) -> Result<(Image, String, char), Stri
     let serial = crate::backup::serial(host)?;
     let gate = crate::flash::gate(&serial);
     if !gate.open() {
-        return Err(format!("the RAM boot gate is closed ({} of {} unconfirmed): see gridbay slots", gate.unconfirmed, crate::flash::MAX_UNCONFIRMED));
+        return Err(format!("the RAM boot gate is closed ({} of {} unconfirmed): see itemgrid slots", gate.unconfirmed, crate::flash::MAX_UNCONFIRMED));
     }
     let st = crate::status::read(host)?;
     match st.battery {
@@ -416,7 +416,7 @@ pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<()
 
     say("arming the parking brake".into());
     arm_brake_linux(host)?;
-    crate::flash::log(&serial, "parking brake armed from Linux - gridbay")?;
+    crate::flash::log(&serial, "parking brake armed from Linux - itemgrid")?;
 
     say("into the bootloader".into());
     to_bootloader(host);
@@ -461,18 +461,18 @@ pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img:
     if let Some(base) = &base {
         let problems = worse(&fb, base);
         if !problems.is_empty() {
-            crate::flash::log(&serial, &format!("HEALTH-STOP: {} - gridbay", problems.join("; ")))?;
+            crate::flash::log(&serial, &format!("HEALTH-STOP: {} - itemgrid", problems.join("; ")))?;
             return Err(format!("the phone's health is worse than its baseline: {} - do not boot or flash anything; see docs/SAFETY.md", problems.join("; ")));
         }
     }
 
     say("re-arming the parking brake in fastboot".into());
-    let brake = std::env::temp_dir().join("gridbay-misc-brake.img");
+    let brake = std::env::temp_dir().join("itemgrid-misc-brake.img");
     std::fs::write(&brake, brake_bytes()).map_err(|e| e.to_string())?;
     for args in [vec!["erase", "misc"], vec!["flash", "misc", brake.to_str().unwrap_or_default()]] {
         let out = fastboot(&args, Duration::from_secs(30))?;
         if let Some(sig) = PRE_BRICK.iter().find(|s| out.contains(*s)) {
-            crate::flash::log(&serial, &format!("BRICK-SIGNATURE during: fastboot {} ({sig}) - gridbay", args.join(" ")))?;
+            crate::flash::log(&serial, &format!("BRICK-SIGNATURE during: fastboot {} ({sig}) - itemgrid", args.join(" ")))?;
             return Err(format!("the bootloader answered '{sig}' to fastboot {}: STOP - do not retry; see docs/SAFETY.md", args.join(" ")));
         }
         if !out.contains("OKAY") {
@@ -484,7 +484,7 @@ pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img:
     say(format!("booting the image from RAM (attempt {n} of {})", crate::flash::MAX_UNCONFIRMED));
     let out = fastboot(&["boot", image.to_str().unwrap_or_default()], Duration::from_secs(120))?;
     if let Some(sig) = PRE_BRICK.iter().find(|s| out.contains(*s)) {
-        crate::flash::log(&serial, &format!("BRICK-SIGNATURE during: fastboot boot ({sig}) - gridbay"))?;
+        crate::flash::log(&serial, &format!("BRICK-SIGNATURE during: fastboot boot ({sig}) - itemgrid"))?;
         return Err(format!("the bootloader answered '{sig}': STOP - do not retry this image; see docs/SAFETY.md"));
     }
     if !out.contains("OKAY") {
@@ -512,13 +512,13 @@ pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img:
     match expect {
         Expect::Linux => {
             arm_brake_linux(host)?;
-            crate::flash::log(&serial, "parking brake armed from Linux after the RAM boot - gridbay")?;
+            crate::flash::log(&serial, "parking brake armed from Linux after the RAM boot - itemgrid")?;
             say("done: enter the PIN on the phone".into());
         }
         Expect::Recovery => {
             arm_brake_recovery(&serial)?;
-            crate::flash::log(&serial, "parking brake armed from the recovery after the RAM boot - gridbay")?;
-            say("done: the phone is in the recovery (no touch there); gridbay recovery-exit brings it back".into());
+            crate::flash::log(&serial, "parking brake armed from the recovery after the RAM boot - itemgrid")?;
+            say("done: the phone is in the recovery (no touch there); itemgrid recovery-exit brings it back".into());
         }
         // No root in stock Android: no brake from it. An unattended reset
         // starts the port's kernel, still on the slot, or stops in fastboot.

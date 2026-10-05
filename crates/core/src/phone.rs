@@ -31,7 +31,7 @@ fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
     c.args(host_key_args(host));
     if shared {
         let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-        c.args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={dir}/gridbay-%C"), "-o", "ControlPersist=60", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
+        c.args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={dir}/itemgrid-%C"), "-o", "ControlPersist=60", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
     } else {
         c.args(["-o", "ControlMaster=no", "-o", "ControlPath=none"]);
     }
@@ -45,7 +45,7 @@ pub fn host_key_args(host: &str) -> Vec<String> {
     if host == crate::link::CABLE && crate::link::usb_up() {
         return [o("UserKnownHostsFile=/dev/null".into()), o("StrictHostKeyChecking=no".into())].concat();
     }
-    let alias = crate::link::serial_of(host).map(|s| format!("gridbay-{s}")).unwrap_or_else(|| "gridbay-unknown".into());
+    let alias = crate::link::serial_of(host).map(|s| format!("itemgrid-{s}")).unwrap_or_else(|| "itemgrid-unknown".into());
     [o(format!("UserKnownHostsFile={}", crate::link::known_hosts_path().display())), o("StrictHostKeyChecking=yes".into()), o(format!("HostKeyAlias={alias}")), o("GlobalKnownHostsFile=/dev/null".into())].concat()
 }
 
@@ -162,7 +162,7 @@ pub fn reboot(host: &str, step: &mut dyn FnMut(Boot)) -> Result<(), String> {
     wait(
         || run(host, "systemctl is-active item.service").is_ok_and(|s| s.trim() == "active"),
         Duration::from_secs(120),
-        "item did not start within 2 minutes - `gridbay logs` shows why",
+        "item did not start within 2 minutes - `itemgrid logs` shows why",
     )?;
     step(Boot::ItemRunning);
     Ok(())
@@ -266,7 +266,7 @@ pub fn download(host: &str, script: &str, path: &std::path::Path) -> Result<(u64
     Ok((size, format!("{:x}", hash.finalize())))
 }
 
-/// A vetted script of gridbay-core's own run past the guard - the parking
+/// A vetted script of itemgrid-core's own run past the guard - the parking
 /// brake written into misc, the reboot into the bootloader. Never what is
 /// typed: only the RAM boot's and flashing's own steps call this.
 pub(crate) fn run_vetted(host: &str, script: &str) -> Result<String, String> {
@@ -327,9 +327,9 @@ pub fn pings(host: &str) -> bool {
     std::process::Command::new("ping").args(["-c", "1", "-W", "1", host]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
-/// The phone kept from sleeping while Gridbay works on it (a kernel wakelock,
-/// "gridbay"), or let go. A reboot lets it go by itself.
+/// The phone kept from sleeping while item/grid works on it (a kernel wakelock,
+/// "itemgrid"), or let go. A reboot lets it go by itself.
 pub fn keep_awake(host: &str, on: bool) -> Result<(), String> {
     let file = if on { "wake_lock" } else { "wake_unlock" };
-    run(host, &format!("echo gridbay > /sys/power/{file}\n")).map(|_| ())
+    run(host, &format!("echo itemgrid > /sys/power/{file}\n")).map(|_| ())
 }

@@ -918,54 +918,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gridbay"
-version = "0.1.0"
-dependencies = [
- "gridbay-core",
- "libc",
-]
-
-[[package]]
-name = "gridbay-core"
-version = "0.1.0"
-dependencies = [
- "bzip2",
- "flate2",
- "keyring",
- "lz4_flex",
- "lzma-rs",
- "png",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "ureq",
- "zip",
-]
-
-[[package]]
-name = "gridbay-gui"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "glow",
- "gridbay-core",
- "gtk4",
- "libadwaita",
- "libloading",
- "pangocairo",
- "serde_json",
- "webkit6",
-]
-
-[[package]]
-name = "gridbay-mcp"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
 name = "gsk4"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1228,6 +1180,54 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "block-padding",
  "generic-array",
+]
+
+[[package]]
+name = "itemgrid"
+version = "0.1.0"
+dependencies = [
+ "itemgrid-core",
+ "libc",
+]
+
+[[package]]
+name = "itemgrid-core"
+version = "0.1.0"
+dependencies = [
+ "bzip2",
+ "flate2",
+ "keyring",
+ "lz4_flex",
+ "lzma-rs",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "ureq",
+ "zip",
+]
+
+[[package]]
+name = "itemgrid-gui"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "glow",
+ "gtk4",
+ "itemgrid-core",
+ "libadwaita",
+ "libloading",
+ "pangocairo",
+ "serde_json",
+ "webkit6",
+]
+
+[[package]]
+name = "itemgrid-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

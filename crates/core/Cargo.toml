@@ -1,5 +1,5 @@
 [package]
-name = "gridbay-core"
+name = "itemgrid-core"
 edition.workspace = true
 version.workspace = true
 description = "What a connected Surface Duo is doing, and the safe ways to act on it"

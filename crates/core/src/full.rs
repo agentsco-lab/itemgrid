@@ -16,15 +16,15 @@ use crate::backup::{Backup, Item, Kind, Manifest};
 pub const REST: &str = "userdata-rest.tar.gz";
 pub(crate) const UD: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name/userdata";
 
-/// TWRP's image: GRIDBAY_TWRP, or the port's out/twrp/, or Gridbay's own
-/// ~/.local/share/gridbay/twrp/.
+/// TWRP's image: ITEMGRID_TWRP, or the port's out/twrp/, or item/grid's own
+/// ~/.local/share/itemgrid/twrp/.
 pub fn twrp() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let mut places: Vec<PathBuf> = std::env::var_os("GRIDBAY_TWRP").map(PathBuf::from).into_iter().collect();
+    let mut places: Vec<PathBuf> = std::env::var_os("ITEMGRID_TWRP").map(PathBuf::from).into_iter().collect();
     if let Some(port) = crate::flash::port_tree() {
         places.push(port.join("out/twrp/surfaceduo1-twrp.img"));
     }
-    places.push(home.join(".local/share/gridbay/twrp/surfaceduo1-twrp.img"));
+    places.push(home.join(".local/share/itemgrid/twrp/surfaceduo1-twrp.img"));
     places.into_iter().find(|p| p.exists())
 }
 
@@ -45,7 +45,7 @@ type Streamed = (u64, String, Option<(u64, String)>);
 /// nc (a plain socket through adb forward, rather than adb's terminal).
 /// Measured on the phone, a release build: the image's 16 GB of data at
 /// ~40 MB/s as gzip, its empty rest at ~200 MB/s read; 18 minutes in all,
-/// the phone's own sha256 of the image six of them. (A debug build of Gridbay
+/// the phone's own sha256 of the image six of them. (A debug build of item/grid
 /// was the bottleneck once: its decompressing and hashing ran at ~4 MB/s.)
 pub(crate) fn fast_tools(serial: &str) -> bool {
     adb_shell(serial, "which pigz && which nc").is_ok_and(|o| o.lines().count() >= 2)
@@ -170,7 +170,7 @@ fn stream_into(out: impl Read, path: &Path, gunzip: bool, say: &mut dyn FnMut(St
 pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
     crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
-    let twrp = twrp().ok_or("no TWRP image: put surfaceduo1-twrp.img in ~/.local/share/gridbay/twrp/")?;
+    let twrp = twrp().ok_or("no TWRP image: put surfaceduo1-twrp.img in ~/.local/share/itemgrid/twrp/")?;
     let f = crate::backup::facts(host)?;
     // The fingers known now, to see them back after a way back.
     let fingers = crate::phone::fingers(host);
@@ -265,15 +265,15 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     let mut head = Vec::new();
     data.take(SMALL as u64 + 1).read_to_end(&mut head).map_err(|e| format!("reading: {e}"))?;
     if head.len() <= SMALL {
-        let tmp = std::env::temp_dir().join(format!("gridbay-send-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("itemgrid-send-{}", std::process::id()));
         std::fs::write(&tmp, &head).map_err(|e| e.to_string())?;
-        let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg("/tmp/gridbay-send").stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
+        let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg("/tmp/itemgrid-send").stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
         let _ = std::fs::remove_file(&tmp);
         let out = out?;
         if !out.status.success() {
             return Err(format!("adb push: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
-        adb_shell(serial, &format!("cat /tmp/gridbay-send | {sink}; rc=$?; rm -f /tmp/gridbay-send; exit $rc"))?;
+        adb_shell(serial, &format!("cat /tmp/itemgrid-send | {sink}; rc=$?; rm -f /tmp/itemgrid-send; exit $rc"))?;
         return Ok(head.len() as u64);
     }
     let mut data = std::io::Cursor::new(head).chain(data);
@@ -319,7 +319,7 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
 
 /// Bytes put at `to` in TWRP as a file, by adb push.
 pub(crate) fn push_file(serial: &str, data: &[u8], to: &str) -> Result<(), String> {
-    let tmp = std::env::temp_dir().join(format!("gridbay-push-{}-{}", std::process::id(), data.len()));
+    let tmp = std::env::temp_dir().join(format!("itemgrid-push-{}-{}", std::process::id(), data.len()));
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
     let _ = std::fs::remove_file(&tmp);

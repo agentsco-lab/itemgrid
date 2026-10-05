@@ -1,9 +1,9 @@
 //! Microsoft's own package for the Duo (a full A/B OTA: payload.bin in a
 //! signed zip, from support.microsoft.com/surface-recovery-image): read, and
-//! the partitions Gridbay needs taken out of it - boot, dtbo, vbmeta - each
+//! the partitions item/grid needs taken out of it - boot, dtbo, vbmeta - each
 //! checked against the hash the package gives. The stock kernel then comes
 //! from Microsoft, not from anyone's backup. The package as a whole is
-//! applied only by the stock recovery (sideload), never written by Gridbay.
+//! applied only by the stock recovery (sideload), never written by item/grid.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -12,11 +12,11 @@ use sha2::{Digest, Sha256};
 
 /// Where packages are kept, and what is taken out of them.
 pub fn packages_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/gridbay/stock")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/itemgrid/stock")
 }
 
 pub fn extracted_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/gridbay/stock")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/itemgrid/stock")
 }
 
 /// A package on this computer.
@@ -215,7 +215,7 @@ pub fn extract(path: &Path, name: &str, out: &Path) -> Result<String, String> {
     let bs = payload.block_size;
     let part = payload.partitions.iter().find(|p| p.name == name).ok_or_else(|| format!("the package has no {name}"))?;
     if part.size > 512 << 20 {
-        return Err(format!("{name} is {} MB: Gridbay takes out only the boot chain", part.size >> 20));
+        return Err(format!("{name} is {} MB: item/grid takes out only the boot chain", part.size >> 20));
     }
     let mut image = vec![0u8; part.size as usize];
     for op in &part.ops {
@@ -265,7 +265,7 @@ pub fn extract(path: &Path, name: &str, out: &Path) -> Result<String, String> {
 }
 
 /// The boot chain of a package taken out, once, into
-/// ~/.local/share/gridbay/stock/<build>/ - where the return to Android finds
+/// ~/.local/share/itemgrid/stock/<build>/ - where the return to Android finds
 /// its stock kernel.
 pub fn boot_chain(pkg: &Package, say: crate::ramboot::Say) -> Result<PathBuf, String> {
     let dir = extracted_dir().join(&pkg.build);
