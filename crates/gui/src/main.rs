@@ -270,6 +270,10 @@ struct Ui {
     /// its cord, and its plug in layers (bottom to top).
     cable: gtk::DrawingArea,
     rope: Rc<RefCell<cable::Rope>>,
+    /// The table under the Duo as the page's floor: the view of the phone
+    /// at rest (not turned by the pointer, nor as it is held).
+    floor: gtk::DrawingArea,
+    floor_view: Rc<RefCell<FloorView>>,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -707,7 +711,11 @@ fn build(app: &adw::Application) {
     // Behind it the table, in centimetre squares, across the whole page and
     // still (it does not turn with the Duo).
     let floor = gtk::DrawingArea::builder().hexpand(true).vexpand(true).can_target(false).build();
-    floor.set_draw_func(draw_floor);
+    let floor_view: Rc<RefCell<FloorView>> = Rc::default();
+    floor.set_draw_func({
+        let fv = floor_view.clone();
+        move |_, cr, w, h| draw_floor(&fv.borrow(), cr, w, h)
+    });
     let home_page = gtk::Overlay::new();
     home_page.set_child(Some(&floor));
     home_page.add_overlay(&scroll);
@@ -893,6 +901,8 @@ fn build(app: &adw::Application) {
         spine: spine.clone(),
         cable: cable.clone(),
         rope: rope.clone(),
+        floor: floor.clone(),
+        floor_view: floor_view.clone(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1975,60 +1985,59 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
     }
 }
 
-/// The table under the Duo as a floor in perspective, in squares about a
-/// centimetre where the phone lies (its 2 px a mm): rows toward a horizon
-/// near the top, columns toward the middle; faint, fading into the
-/// distance and toward the sides.
-fn draw_floor(_: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
-    let (w, h) = (w as f64, h as f64);
-    let horizon = h * 0.06;
-    let cx = w / 2.0;
-    // A square's width at depth z is F / z px; the floor's rows at y =
-    // horizon + EYE * F / z. Squares of ~20 px where the phone lies (the
-    // page's middle).
-    let f = 1000.0;
-    let eye = (h * 0.5 - horizon) / 20.0;
-    let y_of = |z: f64| horizon + eye * f / z;
-    let z_near = eye * f / (h - horizon);
-    // Only rows still apart (3 px or more): further they ran together.
-    let z_far = (eye * f / 3.0).sqrt();
-    // Fainter far off - gone by the last rows drawn - and toward the sides.
-    let alpha = |z: f64, x: f64| {
-        let far = ((z_far - z) / (z_far * 0.55)).clamp(0.0, 1.0);
-        let side = (1.0 - ((x - cx).abs() / (w * 0.62)).powi(2)).max(0.0);
-        0.16 * far * far * side
+/// The page's floor, as the phone's table at rest is seen.
+#[derive(Default)]
+struct FloorView {
+    matrix: Option<gtk::graphene::Matrix>,
+    /// The duo's drawing's origin on the page, and the phone's middle in it.
+    off: (f32, f32),
+    at: (f32, f32),
+    k: f32,
+    table: f32,
+}
+
+/// The table under the Duo across the page, in 2 cm squares, in the very
+/// view the phone at rest is drawn in - so it lies on it; faint, fading
+/// with the distance on the table.
+fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
+    use gtk::graphene;
+    let Some(m) = fv.matrix else { return };
+    let k = fv.k;
+    let step = 20.0 * k;
+    let reach = 520.0 * k;
+    let z = fv.table;
+    let project = |x: f32, y: f32| -> Option<(f64, f64)> {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
+        if v.w() <= 0.05 {
+            return None;
+        }
+        Some(((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64))
     };
+    let alpha = |x: f32, y: f32| {
+        let d = (x * x + y * y).sqrt() / reach;
+        0.15 * (1.0 - d).max(0.0).powf(1.3) as f64
+    };
+    let n = (reach / step).ceil() as i32;
+    let pieces = 40;
     cr.set_line_width(1.0);
-    // Rows, one a square deep.
-    let mut z = z_near.ceil();
-    while z < z_far {
-        let y = y_of(z).round() + 0.5;
-        let half = w / 2.0;
-        let pieces = 16;
-        for i in 0..pieces {
-            let (x0, x1) = (cx - half + 2.0 * half * i as f64 / pieces as f64, cx - half + 2.0 * half * (i + 1) as f64 / pieces as f64);
-            cr.set_source_rgba(0.0, 0.0, 0.0, alpha(z, (x0 + x1) / 2.0));
-            cr.move_to(x0, y);
-            cr.line_to(x1, y);
-            let _ = cr.stroke();
+    for i in -n..=n {
+        let t = i as f32 * step;
+        for along_x in [true, false] {
+            for j in 0..pieces {
+                let u0 = -reach + 2.0 * reach * j as f32 / pieces as f32;
+                let u1 = -reach + 2.0 * reach * (j + 1) as f32 / pieces as f32;
+                let ((ax, ay), (bx, by)) = if along_x { ((u0, t), (u1, t)) } else { ((t, u0), (t, u1)) };
+                let a = alpha((ax + bx) / 2.0, (ay + by) / 2.0);
+                if a < 0.004 {
+                    continue;
+                }
+                let (Some(p0), Some(p1)) = (project(ax, ay), project(bx, by)) else { continue };
+                cr.set_source_rgba(0.0, 0.0, 0.0, a);
+                cr.move_to(p0.0, p0.1);
+                cr.line_to(p1.0, p1.1);
+                let _ = cr.stroke();
+            }
         }
-        z += 1.0;
-    }
-    // Columns, toward the middle of the horizon.
-    let reach = (w / 2.0) / (f / z_near) + 2.0;
-    let mut x = -reach.ceil();
-    while x <= reach {
-        let pieces = 12;
-        for i in 0..pieces {
-            let (za, zb) = (z_near * (z_far / z_near).powf(i as f64 / pieces as f64), z_near * (z_far / z_near).powf((i + 1) as f64 / pieces as f64));
-            let (xa, ya) = (cx + x * f / za, y_of(za));
-            let (xb, yb) = (cx + x * f / zb, y_of(zb));
-            cr.set_source_rgba(0.0, 0.0, 0.0, alpha((za + zb) / 2.0, (xa + xb) / 2.0));
-            cr.move_to(xa, ya);
-            cr.line_to(xb, yb);
-            let _ = cr.stroke();
-        }
-        x += 1.0;
     }
 }
 
@@ -2396,6 +2405,22 @@ fn show_fold(ui: &Ui, angle: f64) {
         rope.screen = Some(table_view.to_matrix());
     }
     ui.cable.queue_draw();
+    // The floor: the table as the phone at rest sees it (no turn by the
+    // pointer, no tilt in the hand), where the duo's drawing is on the page.
+    {
+        let rest = gsk::Transform::new()
+            .translate(&graphene::Point::new(at.0, at.1))
+            .perspective(3.2 * h)
+            .rotate_3d(TILT, &graphene::Vec3::x_axis())
+            .to_matrix();
+        let off = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
+        let mut fv = ui.floor_view.borrow_mut();
+        let changed = fv.off != off || fv.at != at || fv.matrix.is_none();
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK };
+        if changed {
+            ui.floor.queue_draw();
+        }
+    }
     // The cord under the halves (past the plug it is outside them), over
     // the shadows; the plug over the right half's layers - its bottom
     // edge's face too: it goes into it - and under a half nearer than it.
