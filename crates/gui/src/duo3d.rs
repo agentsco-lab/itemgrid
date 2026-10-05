@@ -40,21 +40,12 @@ const NOTCH_D: f32 = 8.0;
 const NOTCH_FILLET: f32 = 0.6;
 /// The edges' rounding, all round each half.
 const EDGE: f32 = 0.5;
-/// The hinge's knuckles: from the spine, and along it.
-const KNUCKLE_W: f32 = 5.1;
-const KNUCKLE_TOP: f32 = 1.7;
-const KNUCKLE_H: f32 = 6.3;
-/// The rods along the spine (from it, their radius).
-const ROD_X: f32 = 0.775;
-const ROD_R: f32 = 0.375;
 
 /// Materials, as the fragment shader knows them.
 const GLASS: f32 = 0.0;
 const CHASSIS: f32 = 1.0;
 const BACK: f32 = 2.0;
 const HINGE: f32 = 3.0;
-const ROD: f32 = 4.0;
-const DARK: f32 = 5.0;
 const SCREEN: f32 = 6.0;
 const MIRROR: f32 = 7.0;
 /// The Microsoft logo on the left half's back, mirror-polished: four
@@ -73,6 +64,8 @@ const SCREEN_TOP: f32 = 14.831;
 #[derive(Default)]
 pub struct Scene {
     pub halves: [Option<graphene::Matrix>; 2],
+    /// The hinge's spine: its middle, turned with half the fold.
+    pub spine: Option<graphene::Matrix>,
     /// What each screen shows (the phone's pictures), and a count bumped
     /// each time one changes.
     pub screens: [Option<gtk::gdk::Texture>; 2],
@@ -271,71 +264,8 @@ fn body(mesh: &mut Mesh, outline: &[P2], k: f32) {
     }
 }
 
-/// A knuckle of the hinge: from `x0` (the spine) `KNUCKLE_W` out along
-/// `dir` (+1 or -1), rounded at its spine end, `y0` to `y1` along it.
-fn knuckle(mesh: &mut Mesh, x0: f32, dir: f32, y0: f32, y1: f32, k: f32) {
-    let r = THICK / 2.0;
-    // The profile in (across, z), from the top round to the bottom, then the
-    // outer side and back: points with their normals.
-    let mut prof: Vec<(P2, P2)> = vec![([KNUCKLE_W, 0.0], [0.0, 1.0])];
-    prof.push(([r, 0.0], [0.0, 1.0]));
-    let n = 16;
-    for i in 0..=n {
-        let t = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / n as f32;
-        prof.push(([r + r * t.cos(), -r + r * t.sin()], [t.cos(), t.sin()]));
-    }
-    prof.push(([KNUCKLE_W, -THICK], [0.0, -1.0]));
-    let to3 = |q: P2, y: f32| [(x0 + dir * q[0]) * k, y * k, q[1] * k];
-    let nor = |m: P2| [dir * m[0], 0.0, m[1]];
-    for i in 0..prof.len() - 1 {
-        let ((a, na), (b, nb)) = (prof[i], prof[i + 1]);
-        // A straight run shades flat, the round smooth.
-        let flat = (a[1] - b[1]).abs() < 1e-4 || (a[0] - b[0]).abs() < 1e-4;
-        let (na, nb) = if flat { (na, na) } else { (na, nb) };
-        mesh.quad((to3(a, y0), nor(na)), (to3(b, y0), nor(nb)), (to3(b, y1), nor(nb)), (to3(a, y1), nor(na)), HINGE);
-    }
-    // Its outer side and its ends.
-    mesh.quad(
-        (to3([KNUCKLE_W, -THICK], y0), nor([1.0, 0.0])),
-        (to3([KNUCKLE_W, 0.0], y0), nor([1.0, 0.0])),
-        (to3([KNUCKLE_W, 0.0], y1), nor([1.0, 0.0])),
-        (to3([KNUCKLE_W, -THICK], y1), nor([1.0, 0.0])),
-        HINGE,
-    );
-    let c = [KNUCKLE_W * 0.6, -r];
-    for (y, ny) in [(y0, -1.0), (y1, 1.0)] {
-        for i in 0..prof.len() - 1 {
-            let (a, b) = (prof[i].0, prof[i + 1].0);
-            mesh.tri((to3(c, y), [0.0, ny, 0.0]), (to3(a, y), [0.0, ny, 0.0]), (to3(b, y), [0.0, ny, 0.0]), HINGE);
-        }
-        let (a, b) = (prof[prof.len() - 1].0, prof[0].0);
-        mesh.tri((to3(c, y), [0.0, ny, 0.0]), (to3(a, y), [0.0, ny, 0.0]), (to3(b, y), [0.0, ny, 0.0]), HINGE);
-    }
-}
 
-/// A rod along the spine: at `x` (mm), the middle of the thickness.
-fn rod(mesh: &mut Mesh, x: f32, y0: f32, y1: f32, k: f32) {
-    let n = 12;
-    let z = -THICK / 2.0;
-    for i in 0..n {
-        let (a, b) = (std::f32::consts::TAU * i as f32 / n as f32, std::f32::consts::TAU * (i + 1) as f32 / n as f32);
-        let p = |t: f32, y: f32| ([(x + ROD_R * t.cos()) * k, y * k, (z + ROD_R * t.sin()) * k], [t.cos(), 0.0, t.sin()]);
-        mesh.quad(p(a, y0), p(b, y0), p(b, y1), p(a, y1), ROD);
-    }
-}
 
-/// A box (mm): its six faces.
-fn block(mesh: &mut Mesh, lo: [f32; 3], hi: [f32; 3], m: f32, k: f32) {
-    let c = |x: f32, y: f32, z: f32| [x * k, y * k, z * k];
-    let (x0, y0, z0, x1, y1, z1) = (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
-    let f = |a: [f32; 3], b: [f32; 3], cc: [f32; 3], d: [f32; 3], n: [f32; 3], mesh: &mut Mesh| mesh.quad((a, n), (b, n), (cc, n), (d, n), m);
-    f(c(x0, y0, z1), c(x1, y0, z1), c(x1, y1, z1), c(x0, y1, z1), [0.0, 0.0, 1.0], mesh);
-    f(c(x0, y0, z0), c(x1, y0, z0), c(x1, y1, z0), c(x0, y1, z0), [0.0, 0.0, -1.0], mesh);
-    f(c(x0, y0, z0), c(x1, y0, z0), c(x1, y0, z1), c(x0, y0, z1), [0.0, -1.0, 0.0], mesh);
-    f(c(x0, y1, z0), c(x1, y1, z0), c(x1, y1, z1), c(x0, y1, z1), [0.0, 1.0, 0.0], mesh);
-    f(c(x0, y0, z0), c(x0, y1, z0), c(x0, y1, z1), c(x0, y0, z1), [-1.0, 0.0, 0.0], mesh);
-    f(c(x1, y0, z0), c(x1, y1, z0), c(x1, y1, z1), c(x1, y0, z1), [1.0, 0.0, 0.0], mesh);
-}
 
 /// The logo on the left half's back: four squares, a hair out of the glass.
 fn logo(mesh: &mut Mesh, k: f32) {
@@ -349,6 +279,46 @@ fn logo(mesh: &mut Mesh, k: f32) {
         let c = |x: f32, y: f32| ([x * k, y * k, z], n);
         mesh.quad(c(x0, y0), c(x0 + s, y0), c(x0 + s, y0 + s), c(x0, y0 + s), MIRROR);
     }
+}
+
+/// The hinge's spine, whole: one metal bar the length of the phone that
+/// both halves hang on (the Duo's halves come off a central spine; two
+/// geared hinges and two rods are inside it). Its section a rounded bar
+/// twice the phone's thickness long, about its middle: turned with half the
+/// fold, it lies across the gap open flat (just under the glass, seen
+/// between the screens) and stands as the stack's round spine closed.
+fn spine(k: f32) -> Mesh {
+    let mut m = Mesh::default();
+    let (long, thick) = (2.0 * THICK, THICK - 0.4);
+    let r = thick / 2.0;
+    // The section, round: from the right end's top round to its bottom,
+    // then the left end's.
+    let mut sec: Vec<(P2, P2)> = Vec::new();
+    let n = 14;
+    for (cx, from) in [(long / 2.0 - r, std::f32::consts::FRAC_PI_2), (-long / 2.0 + r, -std::f32::consts::FRAC_PI_2)] {
+        for i in 0..=n {
+            // Clockwise round each end (x right, z up): right end from top
+            // down, left end from bottom up.
+            let t = from - std::f32::consts::PI * i as f32 / n as f32;
+            sec.push(([cx + r * t.cos(), r * t.sin()], [t.cos(), t.sin()]));
+        }
+    }
+    let (y0, y1) = (0.3, BODY_H - 0.3);
+    let p = |q: P2, y: f32| [q[0] * k, y * k, q[1] * k];
+    let nor = |q: P2| [q[0], 0.0, q[1]];
+    for i in 0..sec.len() {
+        let ((a, na), (b, nb)) = (sec[i], sec[(i + 1) % sec.len()]);
+        // The straight runs between the ends shade flat.
+        let (na, nb) = if (a[1] - b[1]).abs() < 1e-3 && (a[0] - b[0]).abs() > 1e-3 { ([0.0, a[1].signum()], [0.0, a[1].signum()]) } else { (na, nb) };
+        m.quad((p(a, y0), nor(na)), (p(b, y0), nor(nb)), (p(b, y1), nor(nb)), (p(a, y1), nor(na)), HINGE);
+    }
+    for (y, ny) in [(y0, -1.0), (y1, 1.0)] {
+        for i in 0..sec.len() {
+            let (a, b) = (sec[i].0, sec[(i + 1) % sec.len()].0);
+            m.tri((p([0.0, 0.0], y), [0.0, ny, 0.0]), (p(a, y), [0.0, ny, 0.0]), (p(b, y), [0.0, ny, 0.0]), HINGE);
+        }
+    }
+    m
 }
 
 /// Half `i`'s screen: its panel on the glass, a hair over it, its picture
@@ -377,14 +347,6 @@ fn half(i: usize, k: f32) -> Mesh {
     if i == 0 {
         logo(&mut m, k);
     }
-    // Its knuckles, its rod and the gap's dark, at the spine.
-    let (spine, dir) = if i == 0 { (MID, -1.0) } else { (0.0, 1.0) };
-    for (y0, y1) in [(KNUCKLE_TOP, KNUCKLE_TOP + KNUCKLE_H), (BODY_H - KNUCKLE_TOP - KNUCKLE_H, BODY_H - KNUCKLE_TOP)] {
-        knuckle(&mut m, spine, dir, y0, y1, k);
-    }
-    rod(&mut m, spine + dir * ROD_X, NOTCH_D, BODY_H - NOTCH_D, k);
-    let (xa, xb) = if i == 0 { (MID - GAP / 2.0, MID - 0.05) } else { (0.05, GAP / 2.0) };
-    block(&mut m, [xa, NOTCH_D, -THICK + 0.8], [xb, BODY_H - NOTCH_D, -0.6], DARK, k);
     m
 }
 
@@ -462,6 +424,7 @@ struct Gpu {
     prog: glow::Program,
     halves: [(glow::VertexArray, glow::Buffer, i32); 2],
     screens: [(glow::VertexArray, glow::Buffer, i32); 2],
+    spine: (glow::VertexArray, glow::Buffer, i32),
     /// The screens' pictures on the GPU, and which change each is.
     textures: [Option<glow::Texture>; 2],
     uploaded: [u64; 2],
@@ -534,7 +497,8 @@ impl Gpu {
             };
             let halves = [upload(&half(0, k))?, upload(&half(1, k))?];
             let screens = [upload(&screen(0, k))?, upload(&screen(1, k))?];
-            Ok(Gpu { gl, prog, halves, screens, textures: [None, None], uploaded: [0, 0], msaa: None })
+            let spine = upload(&spine(k))?;
+            Ok(Gpu { gl, prog, halves, screens, spine, textures: [None, None], uploaded: [0, 0], msaa: None })
         }
     }
 
@@ -582,6 +546,11 @@ impl Gpu {
                 gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
                 gl.bind_vertex_array(Some(*vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, *count);
+            }
+            if let Some(mv) = scene.spine {
+                gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
+                gl.bind_vertex_array(Some(self.spine.0));
+                gl.draw_arrays(glow::TRIANGLES, 0, self.spine.2);
             }
             // The screens, over their glass: their pictures uploaded when
             // they changed (mipmapped: they are drawn far smaller).

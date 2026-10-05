@@ -52,7 +52,7 @@ const DUO_HINGE_W: f64 = 10.2;
 /// bottom edge (from the spine), and the room its picture has.
 const CABLE_PLUG: (f64, f64) = (11.0, 19.0);
 /// The port's middle from the spine (the plug's edge ~1.5 cm from it).
-const CABLE_PORT_X: f64 = 21.0;
+const CABLE_PORT_X: f64 = 27.0;
 /// The plug's thickness (mm) and its layers, drawn as the halves' are.
 const CABLE_PLUG_T: f32 = 5.0;
 const CABLE_PLUG_LAYERS: usize = 7;
@@ -2747,6 +2747,13 @@ fn show_fold(ui: &Ui, angle: f64) {
         for i in 0..2 {
             sc.halves[i] = Some(local(view(at, false).translate(&graphene::Point::new(mid, 0.0)), i, rock, raise).to_matrix());
         }
+        // The spine: between the halves' inner edges, turned half the fold.
+        sc.spine = Some(
+            view(at, false)
+                .translate_3d(&graphene::Point3D::new(mid + spine_c.0, 0.0, spine_c.1))
+                .rotate_3d(rock + lift / 2.0, &graphene::Vec3::y_axis())
+                .to_matrix(),
+        );
     }
     ui.gl3d.queue_render();
     // The pictures of the halves and the hinge give way to it.
