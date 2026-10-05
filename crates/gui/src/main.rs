@@ -3974,15 +3974,14 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
                 cr.set_line_width(1.6);
                 let _ = cr.stroke();
             }
+            path(&top);
+            let l = paper(1.0);
+            cr.set_source_rgb(l, l, l * 1.01);
+            let _ = cr.fill_preserve();
+            ink(cr, 0.14);
+            let _ = cr.stroke();
         }
-        // Its top (or, lying on the table, the square itself).
-        path(&top);
-        let l = paper(1.0);
-        cr.set_source_rgb(l, l, l * 1.01);
-        let _ = cr.fill_preserve();
-        ink(cr, 0.14);
-        cr.set_line_width(1.6);
-        let _ = cr.stroke();
+        // Lying on the table: the sign alone, in its square of the grid.
         let strong = if fv.hover_button == Some(i) { 0.9 } else { 0.5 };
         draw_sign(cr, *b, top[0], top[1], top[3], strong);
         let _ = cr.pop_group_to_source();
