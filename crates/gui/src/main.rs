@@ -2478,7 +2478,7 @@ fn look(ui: &Rc<Ui>) {
         ui.looking.set(false);
         let Ok((place, guest, status)) = found else { return };
         // Looked for from a cube: the wave ends; not found, a note.
-        let note = (place == Place::Gone).then(|| "not found\nplug in usb\nor wi-fi on\noff? hold power".to_owned());
+        let note = (place == Place::Gone).then(|| "plug in usb\nor wi-fi on".to_owned());
         if let Some(took) = ui.intro.borrow_mut().found(note) {
             trace(format_args!("looked for from a cube: {:.2} s, {}", took, if place == Place::Gone { "not found" } else { "found" }));
         }
@@ -5120,7 +5120,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let button_in: [f32; BUTTONS] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
         let button_lift = [0.0f32; BUTTONS];
         // The credit under the word, a letter a square; the note there
-        // after looking (not found), its head darker.
+        // after looking (not found): what to do.
         let mut texts = Vec::new();
         // Turned over as the growing of the squares (draw_floor's) comes
         // across each.
@@ -5149,12 +5149,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             tiles.extend(b.tiles(page_at, cur));
         }
         if let Some((text, strength)) = intro.note() {
-            let mut lines = text.lines();
-            if let Some(head) = lines.next() {
-                texts.push(TableText { at: (left, under), cell: cur, lines: vec![head.to_owned()], grey: 0.16, bold: false, set: 1.0, strength });
-            }
-            let rest: Vec<String> = lines.map(str::to_owned).collect();
-            texts.push(TableText { at: (left, under + cur), cell: cur, lines: rest, grey: 0.45, bold: false, set: 1.0, strength });
+            texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
         }
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
