@@ -3586,10 +3586,10 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     draw_buttons(fv, cr);
 }
 
-/// The credit's squares: each turning over once - its near edge lifting,
-/// over its far one, down on its other side (its axis raised so that it
-/// never goes into the table) - the letter on that side; still, the letter
-/// on the table.
+/// Squares turning over (the credit's, the boards'): each whole - its near
+/// edge kept on the table, its far edge up and over, down where the near
+/// one was - the old letter on its face, the new on its back; still, the
+/// letter on the table.
 fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     use gtk::graphene;
     let Some(m) = fv.matrix else { return };
@@ -3598,14 +3598,6 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     let p3 = |x: f32, y: f32, z: f32| {
         let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
         ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
-    };
-    let path = |q: &[(f64, f64)]| {
-        cr.new_path();
-        cr.move_to(q[0].0, q[0].1);
-        for p in &q[1..] {
-            cr.line_to(p.0, p.1);
-        }
-        cr.close_path();
     };
     // The letter in a square whose corners (its top left, top right,
     // bottom left) are these on the page.
@@ -3617,26 +3609,14 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     for t in &tiles {
         let (x0, y0) = t.at;
         let f = t.flap;
-        let strength = (t.rgba.3 / 0.9).min(1.0) as f32;
-        let st = strength as f64;
         // The square on the table: a point `u` across, `v` along from its
         // far edge (0..1).
         let at = |u: f32, v: f32| p3(x0 + u * side, y0 + v * side, z0);
         let whole = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0));
-        let far = [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 0.5), at(0.0, 0.5)];
-        let near = [at(0.0, 0.5), at(1.0, 0.5), at(1.0, 1.0), at(0.0, 1.0)];
-        // A letter in the square's frame `(a, b, d)`, only within `clip`.
-        let part = |clip: &Quad, (a, b, d): ((f64, f64), (f64, f64), (f64, f64)), ch: char| {
-            cr.save().ok();
-            path(clip);
-            cr.clip();
-            letter(a, b, d, ch, t.rgba);
-            cr.restore().ok();
-        };
         if f.turn <= 0.0 {
             letter(whole.0, whole.1, whole.2, f.from, t.rgba);
-        } else if t.whole {
-            // The whole square turning over (the credit's): its near edge
+        } else {
+            // The whole square turning over: its near edge
             // kept on the table, its far edge up and over toward the eye,
             // down where the near one was - the old letter on its face, the
             // new one on its back; no line across it.
@@ -3656,37 +3636,6 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
                 // Its back: the letter's top at the edge now farther off.
                 let n1 = edge(1.0, false);
                 letter(n0, n1, f0, f.to, t.rgba);
-            }
-        } else {
-            // As a departures board's flap: under the falling flap the new
-            // letter's top is already there; the old one's bottom stays
-            // until the flap lies on it.
-            part(&far, whole, f.to);
-            part(&near, whole, f.from);
-            // The flap: hung on the middle line, its free edge rising from
-            // the far edge, over, down onto the near half.
-            let a = f.turn * std::f32::consts::PI;
-            let ym = y0 + side / 2.0;
-            let free = |u: f32| p3(x0 + u * side, ym - side / 2.0 * a.cos(), z0 + side / 2.0 * a.sin());
-            let (h0, h1) = (at(0.0, 0.5), at(1.0, 0.5));
-            let (f0, f1) = (free(0.0), free(1.0));
-            let flap = [f0, f1, h1, h0];
-            path(&flap);
-            let light = paper(1.0 - 0.08 * a.sin() as f64);
-            cr.set_source_rgba(light, light, light * 1.005, st);
-            let _ = cr.fill_preserve();
-            ink(cr, 0.1 * st);
-            cr.set_line_width(1.2);
-            let _ = cr.stroke();
-            let twice = |h: (f64, f64), f: (f64, f64)| (2.0 * h.0 - f.0, 2.0 * h.1 - f.1);
-            if a < std::f32::consts::FRAC_PI_2 {
-                // Its front: the old letter's top half (its frame's top at
-                // the free edge, its middle at the hinge).
-                part(&flap, (f0, f1, twice(h0, f0)), f.from);
-            } else {
-                // Its back: the new letter's bottom half (its middle at the
-                // hinge, its bottom at the free edge, now near).
-                part(&flap, (twice(h0, f0), twice(h1, f1), f0), f.to);
             }
         }
     }
@@ -5194,7 +5143,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
                 let f = intro.credit_flip(i, ch, ((grown - d) / (14.0 * cur)).clamp(0.0, 1.0));
-                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64), whole: true }
+                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64) }
             })
             .collect();
         // The open board (the sections' menu) under the word, a row apart
