@@ -173,8 +173,11 @@ pub fn stream(host: &str, script: &str) -> Result<i32, String> {
 
 /// A script made to run as the phone's owner (the user logged in), with
 /// their session bus - for gdbus --session, systemctl --user and the like.
+/// The phone's owner found: $U their name, $I their uid.
+pub const OWNER: &str = r#"U=$(loginctl list-users --no-legend 2>/dev/null | awk '$2 != "root" {print $2; exit}'); U=${U:-droidian}; I=$(id -u "$U")"#;
+
 pub fn as_owner(script: &str) -> String {
-    let user = r#"U=$(loginctl list-users --no-legend 2>/dev/null | awk '$2 != "root" {print $2; exit}'); U=${U:-droidian}; I=$(id -u "$U")"#;
+    let user = OWNER;
     format!(
         "{user}\nexec sudo -u \"$U\" env XDG_RUNTIME_DIR=/run/user/$I DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$I/bus sh -c {}\n",
         crate::logs::quote(script)

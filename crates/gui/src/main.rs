@@ -585,6 +585,20 @@ fn build(app: &adw::Application) {
     let dev_row = adw::SwitchRow::builder().title("Developer Mode").subtitle("Slots, images from RAM, every kind of backup, item built from your tree, the logs.").active(developer_mode()).build();
     dev_list.append(&dev_row);
     repair.append(&dev_list);
+    // item: what is set once or needs a keyboard (#166) - the agent first.
+    repair.append(&gtk::Label::builder().label("item").xalign(0.0).css_classes(["section-title"]).margin_top(10).build());
+    let agent_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
+    let key_row = adw::ActionRow::builder().title("Agent: OpenRouter key").subtitle("The agent's heavy work goes through OpenRouter with your own key. Kept in the phone's keyring, never on this computer.").subtitle_lines(3).build();
+    let key_set = gtk::Button::builder().label("Set Key…").valign(gtk::Align::Center).css_classes(["pill"]).build();
+    let key_forget = gtk::Button::builder().label("Remove").valign(gtk::Align::Center).css_classes(["pill", "flat"]).visible(false).build();
+    key_row.add_suffix(&key_forget);
+    key_row.add_suffix(&key_set);
+    let model_row = adw::EntryRow::builder().title("Model (OpenRouter id, empty: item's default)").show_apply_button(true).build();
+    let limit_row = adw::EntryRow::builder().title("Monthly limit, $ (empty: none)").show_apply_button(true).input_purpose(gtk::InputPurpose::Number).build();
+    agent_list.append(&key_row);
+    agent_list.append(&model_row);
+    agent_list.append(&limit_row);
+    repair.append(&agent_list);
     repair.append(&gtk::Label::builder().label("Repair & Reset").xalign(0.0).css_classes(["section-title"]).margin_top(10).build());
     repair.append(&body("Things to do once in a while. Each asks before it starts; all but the backup need the USB cable."));
     let repair_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
@@ -760,6 +774,96 @@ fn build(app: &adw::Application) {
         move |_, _| right.set_visible_child_name("repair")
     });
     window.add_action(&settings);
+    // The agent's settings read from the phone each time Settings opens.
+    settings.connect_activate({
+        let (ui, key_row, key_forget, model_row, limit_row) = (Rc::downgrade(&ui), key_row.clone(), key_forget.clone(), model_row.clone(), limit_row.clone());
+        move |_, _| {
+            let Some(ui) = ui.upgrade() else { return };
+            let Some(host) = ui.state.borrow().host.clone() else {
+                key_row.set_subtitle("Your Duo is not here: its settings are read when it is.");
+                return;
+            };
+            let (key_row, key_forget, model_row, limit_row) = (key_row.clone(), key_forget.clone(), model_row.clone(), limit_row.clone());
+            glib::spawn_future_local(async move {
+                let read = gio::spawn_blocking(move || (cradle_core::agent::stored(&host), cradle_core::agent::choices(&host))).await;
+                let Ok((stored, choices)) = read else { return };
+                match stored {
+                    Ok(Some(last)) => {
+                        key_row.set_subtitle(&format!("Set on the phone: …{last}"));
+                        key_forget.set_visible(true);
+                    }
+                    Ok(None) => {
+                        key_row.set_subtitle("Not set. The agent's heavy work goes through OpenRouter with your own key - kept in the phone's keyring, never on this computer.");
+                        key_forget.set_visible(false);
+                    }
+                    Err(e) => key_row.set_subtitle(&format!("Could not read the phone's keyring: {e}")),
+                }
+                if let Ok(c) = choices {
+                    model_row.set_text(&c.model);
+                    limit_row.set_text(&c.monthly_limit.map(|l| format!("{l:.2}")).unwrap_or_default());
+                }
+            });
+        }
+    });
+    key_set.connect_clicked({
+        let (ui, key_row, key_forget) = (Rc::downgrade(&ui), key_row.clone(), key_forget.clone());
+        move |_| {
+            let Some(ui) = ui.upgrade() else { return };
+            set_agent_key(&ui, &key_row, &key_forget);
+        }
+    });
+    key_forget.connect_clicked({
+        let (ui, key_row, key_forget) = (Rc::downgrade(&ui), key_row.clone(), key_forget.clone());
+        move |b| {
+            let Some(ui) = ui.upgrade() else { return };
+            let Some(host) = ui.state.borrow().host.clone() else { return };
+            let (ui2, key_row, key_forget, b) = (ui.clone(), key_row.clone(), key_forget.clone(), b.clone());
+            b.set_sensitive(false);
+            glib::spawn_future_local(async move {
+                let done = gio::spawn_blocking(move || cradle_core::agent::forget(&host)).await;
+                b.set_sensitive(true);
+                match done {
+                    Ok(Ok(())) => {
+                        key_row.set_subtitle("Removed from the phone. The agent's heavy work is off until a key is set.");
+                        key_forget.set_visible(false);
+                        ui2.toasts.add_toast(adw::Toast::new("Key removed from the phone"));
+                    }
+                    Ok(Err(e)) => ui2.toasts.add_toast(adw::Toast::new(&e)),
+                    Err(_) => {}
+                }
+            });
+        }
+    });
+    for row in [&model_row, &limit_row] {
+        row.connect_apply({
+            let (ui, model_row, limit_row) = (Rc::downgrade(&ui), model_row.clone(), limit_row.clone());
+            move |_| {
+                let Some(ui) = ui.upgrade() else { return };
+                let Some(host) = ui.state.borrow().host.clone() else { return };
+                let limit = limit_row.text().trim().replace(',', ".");
+                let monthly_limit = if limit.is_empty() {
+                    None
+                } else {
+                    match limit.trim_start_matches('$').parse::<f64>() {
+                        Ok(v) if v >= 0.0 => Some(v),
+                        _ => {
+                            ui.toasts.add_toast(adw::Toast::new("The limit is a number of dollars"));
+                            return;
+                        }
+                    }
+                };
+                let c = cradle_core::agent::Choices { model: model_row.text().trim().to_owned(), monthly_limit };
+                let ui = ui.clone();
+                glib::spawn_future_local(async move {
+                    match gio::spawn_blocking(move || cradle_core::agent::set_choices(&host, &c)).await {
+                        Ok(Ok(())) => ui.toasts.add_toast(adw::Toast::new("Saved on the phone")),
+                        Ok(Err(e)) => ui.toasts.add_toast(adw::Toast::new(&e)),
+                        Err(_) => {}
+                    }
+                });
+            }
+        });
+    }
     dev_row.connect_active_notify({
         let ui = Rc::downgrade(&ui);
         move |row| {
@@ -2355,6 +2459,54 @@ fn register_now(ui: &Rc<Ui>) {
 }
 
 /// A stop, said so it cannot be missed.
+/// The OpenRouter key asked for (pasted), checked with OpenRouter from
+/// here, then put into the phone's keyring; nothing of it kept here.
+fn set_agent_key(ui: &Rc<Ui>, key_row: &adw::ActionRow, key_forget: &gtk::Button) {
+    let Some(host) = ui.state.borrow().host.clone() else {
+        stopped(ui, "Your Duo is not here: plug it in or bring it onto the same Wi-Fi to set its key.");
+        return;
+    };
+    let dialog = adw::AlertDialog::new(Some("OpenRouter key"), Some("Paste your key (sk-or-…) from openrouter.ai/keys. Cradle checks it with OpenRouter, then puts it into the phone's keyring; it is not kept on this computer."));
+    let entry = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("sk-or-…").build();
+    dialog.set_extra_child(Some(&entry));
+    dialog.add_responses(&[("cancel", "Cancel"), ("save", "Check and Save")]);
+    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("save"));
+    dialog.set_close_response("cancel");
+    let (ui2, key_row, key_forget) = (ui.clone(), key_row.clone(), key_forget.clone());
+    dialog.connect_response(None, move |_, response| {
+        if response != "save" {
+            return;
+        }
+        let key = entry.text().to_string();
+        entry.set_text("");
+        let (ui, key_row, key_forget, host) = (ui2.clone(), key_row.clone(), key_forget.clone(), host.clone());
+        key_row.set_subtitle("Checking the key with OpenRouter…");
+        glib::spawn_future_local(async move {
+            let done = gio::spawn_blocking(move || {
+                let info = cradle_core::agent::check(&key)?;
+                cradle_core::agent::store(&host, &key)?;
+                let last = cradle_core::agent::stored(&host)?.unwrap_or_default();
+                Ok::<_, String>((info, last))
+            })
+            .await;
+            match done {
+                Ok(Ok((info, last))) => {
+                    key_row.set_subtitle(&format!("Set on the phone: …{last} · {}", info.words()));
+                    key_forget.set_visible(true);
+                    ui.toasts.add_toast(adw::Toast::new("Key checked and saved on the phone"));
+                }
+                Ok(Err(e)) => {
+                    key_row.set_subtitle(&format!("Not saved: {e}"));
+                    stopped(&ui, &format!("The key was not saved: {e}"));
+                }
+                Err(_) => {}
+            }
+        });
+    });
+    dialog.present(Some(&ui.window));
+}
+
 fn stopped(ui: &Ui, why: &str) {
     let dialog = adw::AlertDialog::new(Some("Stopped"), Some(why));
     dialog.add_response("ok", "OK");

@@ -4,6 +4,7 @@
 //! this crate, so neither can be gone around.
 
 pub mod activity;
+pub mod agent;
 pub mod android;
 pub mod backup;
 pub mod club;
