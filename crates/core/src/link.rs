@@ -81,7 +81,17 @@ fn save(all: &[Known]) -> Result<(), String> {
     std::fs::create_dir_all(dir()).map_err(|e| e.to_string())?;
     let text = serde_json::to_string_pretty(all).map_err(|e| e.to_string())?;
     std::fs::write(known_path(), text).map_err(|e| e.to_string())?;
+    write_known_hosts(all)
+}
+
+/// The known_hosts file as the known phones say (written anew if not: one
+/// written under an old name - hythe-SERIAL - matched no alias, and Wi-Fi
+/// found nothing).
+fn write_known_hosts(all: &[Known]) -> Result<(), String> {
     let lines: String = all.iter().map(|k| format!("itemgrid-{} {}\n", k.serial, k.key)).collect();
+    if std::fs::read_to_string(known_hosts_path()).ok().as_deref() == Some(lines.as_str()) {
+        return Ok(());
+    }
     std::fs::write(known_hosts_path(), lines).map_err(|e| e.to_string())
 }
 
@@ -129,6 +139,9 @@ pub fn serial_of(host: &str) -> Option<String> {
 /// address each had, then its name resolved now.
 pub fn wifi_hosts() -> Vec<String> {
     let mut all = known();
+    if let Err(e) = write_known_hosts(&all) {
+        eprintln!("itemgrid: the phones' host keys: {e}");
+    }
     all.sort_by(|a, b| b.seen.cmp(&a.seen));
     let mut out: Vec<String> = Vec::new();
     let mut map = HashMap::new();
