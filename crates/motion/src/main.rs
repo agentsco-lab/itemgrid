@@ -125,13 +125,6 @@ fn main() {
     let mut say = |line: String| -> bool { out.write_all(line.as_bytes()).and_then(|_| out.write_all(b"\n")).and_then(|_| out.flush()).is_ok() };
     let mut alive = say("v 2".into());
 
-    let kinds = [sensorfw::ACCEL, sensorfw::GYRO, sensorfw::MAG, sensorfw::HINGE];
-    let mut sensors: Vec<Option<Sensor>> = kinds.iter().map(|k| Sensor::open(*k)).collect();
-    for (k, s) in kinds.iter().zip(&sensors) {
-        if s.is_none() {
-            eprintln!("duo-motion: no {}", k.name);
-        }
-    }
     let mut lid = lid_device();
     let mut lid_shut = Command::new("busctl")
         .args(["get-property", "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "LidClosed"])
@@ -141,6 +134,19 @@ fn main() {
     if let Some(reply) = sensorfw::gdbus("/SensorManager/hingesensor", "org.freedesktop.DBus.Properties.Get", &["local.HingeSensor", "hinge"]) {
         if let Some(deg) = reply.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).last().and_then(|s| s.parse::<u32>().ok()) {
             alive &= say(format!("h {deg}"));
+        }
+    }
+
+    // The lid and the hinge told first: sensorfw may be slow to answer (or
+    // stuck), and the window shows the phone open or shut by them.
+    let kinds = [sensorfw::ACCEL, sensorfw::GYRO, sensorfw::MAG, sensorfw::HINGE];
+    // The field only when heeded or shown: sensorfw less to carry.
+    let wanted = [true, true, north || raw_out, true];
+    let mut sensors: Vec<Option<Sensor>> = kinds.iter().zip(wanted).map(|(k, w)| if w { Sensor::open(*k) } else { None }).collect();
+    let missing = |sensors: &[Option<Sensor>]| sensors.iter().zip(wanted).any(|(s, w)| w && s.is_none());
+    for ((k, s), w) in kinds.iter().zip(&sensors).zip(wanted) {
+        if w && s.is_none() {
+            eprintln!("duo-motion: no {} (asked again in 3 s)", k.name);
         }
     }
 
@@ -161,7 +167,8 @@ fn main() {
     let mut sent_g_at = Instant::now() - Duration::from_secs(1);
     let mut sent_north: Option<bool> = None;
     let mut alive_at = Instant::now();
-    let mut reopen_at: Option<Instant> = None;
+    // Sensors missing (not opened, or their sessions gone) asked for again.
+    let mut reopen_at: Option<Instant> = missing(&sensors).then(|| Instant::now() + Duration::from_secs(3));
 
     while alive {
         let mut fds: Vec<PollFd> = sensors.iter().flatten().map(|s| PollFd { fd: s.sock.as_raw_fd(), events: POLLIN, revents: 0 }).collect();
@@ -214,7 +221,7 @@ fn main() {
                 if !ahrs.started {
                     // Started once the field is there (north at once), or
                     // without it after a second.
-                    if !north || field.is_some() || sensors[2].is_none() || began.elapsed() >= Duration::from_secs(1) {
+                    if !north || field.is_some() || began.elapsed() >= Duration::from_secs(1) {
                         ahrs.start(raw, field.filter(|_| north));
                     }
                     last_t = Some(t);
@@ -255,10 +262,13 @@ fn main() {
         }
         if reopen_at.is_some_and(|t| Instant::now() >= t) {
             reopen_at = None;
-            for (k, s) in kinds.iter().zip(sensors.iter_mut()) {
-                if s.is_none() {
+            for ((k, s), w) in kinds.iter().zip(sensors.iter_mut()).zip(wanted) {
+                if w && s.is_none() {
                     *s = Sensor::open(*k);
                 }
+            }
+            if missing(&sensors) {
+                reopen_at = Some(Instant::now() + Duration::from_secs(3));
             }
         }
 

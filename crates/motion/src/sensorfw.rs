@@ -10,8 +10,10 @@ use std::time::Duration;
 const SERVICE: &str = "com.nokia.SensorService";
 const SOCKET: &str = "/run/sensord.sock";
 
+/// A call to sensorfw, given up after 3 s (stuck, it answered nothing, and
+/// gdbus waited 25 s a call).
 pub fn gdbus(path: &str, method: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("gdbus").args(["call", "--system", "--dest", SERVICE, "--object-path", path, "--method", method]).args(args).output().ok()?;
+    let out = Command::new("gdbus").args(["call", "--system", "--timeout", "3", "--dest", SERVICE, "--object-path", path, "--method", method]).args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
