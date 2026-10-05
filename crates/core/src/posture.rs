@@ -18,9 +18,10 @@ const FOLLOW: &str = "busctl --user get-property org.sfduo.Posture /org/sfduo/Po
 busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager LidClosed 2>/dev/null
 gdbus monitor --session --dest org.sfduo.Posture --object-path /org/sfduo/Posture & m=$!
 gdbus monitor --system --dest org.freedesktop.login1 --object-path /org/freedesktop/login1 | grep --line-buffered LidClosed & l=$!
+sleep 0.3; s=$(pgrep -P $$ -x gdbus | grep -vx \"$m\")
 trap '' PIPE
 while kill -0 $m 2>/dev/null; do sleep 10; echo . || break; done
-kill $m $l 2>/dev/null";
+kill $m $s $l 2>/dev/null";
 
 /// What the phone says of itself as it moves.
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +114,10 @@ impl Stop {
 /// when the following ends - the window closed or the cable out): asleep,
 /// the lid and the hinge reached the window only after it woke, the link
 /// came back and the window looked again - seconds.
+/// The phone's Wi-Fi power saving off for as long as the script that
+/// starts with this runs (as root).
+const WIFI_AWAKE: &str = "iw dev wlan0 set power_save off 2>/dev/null\ntrap 'iw dev wlan0 set power_save on 2>/dev/null' EXIT\ntrap 'exit 0' HUP INT TERM PIPE\n";
+
 pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
     // As root for the inhibitor; the following itself as the owner (in a
     // subshell: as_owner ends in exec).
@@ -123,7 +128,10 @@ pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
         // its holder: killed, nothing is left.
         format!("exec {INHIBIT} sh -s <<'ITEMGRID_FOLLOW'\n( {} )\nITEMGRID_FOLLOW\n", crate::phone::as_owner(FOLLOW))
     } else {
-        crate::phone::as_owner(FOLLOW)
+        // On Wi-Fi: its power saving off while followed (on, the radio
+        // dozed between packets: 7-186 ms a reading, 4 ms without), on
+        // again however it ends - stopped, the link gone, asleep.
+        format!("{WIFI_AWAKE}( {} )\n", crate::phone::as_owner(FOLLOW))
     };
     let mut child = crate::phone::spawn_own(host, &script, Stdio::piped())?;
     let out = child.stdout.take().ok_or("no output")?;
