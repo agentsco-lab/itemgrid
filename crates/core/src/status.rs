@@ -16,6 +16,8 @@ echo "item_running=$(systemctl is-active item.service 2>/dev/null)"
 echo "port=$(v adaptation-droidian-surfaceduo)"
 echo "sensorfw=$(v sensorfw-qt6)"
 echo "hinge=$(runuser -u droidian -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u droidian)/bus busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle 2>/dev/null | awk '{print $2}')"
+# The owner's session locked or not (item tells logind: LockedHint).
+echo "locked=$(loginctl show-session $(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" {print $1; exit}') -p LockedHint --value 2>/dev/null)"
 echo "fingers=$(busctl --system call org.droidian.fingerprint /org/droidian/fingerprint org.droidian.fingerprint GetAll 2>/dev/null | awk '{print $2}')"
 b=/sys/class/power_supply/battery
 echo "battery=$(cat $b/capacity 2>/dev/null)"
@@ -47,6 +49,8 @@ pub struct Status {
     pub hinge: Option<f64>,
     /// Fingers the reader knows, if its daemon answered.
     pub fingers: Option<u32>,
+    /// The owner's session locked (the lock screen up), if logind knows.
+    pub locked: Option<bool>,
     pub battery: Option<u32>,
     pub battery_status: String,
     /// Degrees Celsius.
@@ -112,6 +116,11 @@ pub fn read(host: &str) -> Result<Status, String> {
     s.port = get("port");
     s.sensorfw = get("sensorfw");
     s.fingers = get("fingers").parse().ok();
+    s.locked = match get("locked").as_str() {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    };
     s.hinge = get("hinge").parse().ok();
     s.battery = get("battery").parse().ok();
     s.battery_status = get("battery_status");

@@ -1935,19 +1935,49 @@ fn show_fold(ui: &Ui, angle: f64) {
     // Each half's plane: the right flat beside the spine, the left turned
     // about it; its screen at `z` 0, its back at -DUO_THICK; then the
     // transparent room round its pictures.
-    let place = |at: (f32, f32), i: usize, z: f32, persp: bool| {
-        let t = view(at, persp).translate(&graphene::Point::new(mid, 0.0));
-        // Folding toward the screens it turns about their plane, back to back
-        // about the backs' (the halves meet face to face, or back to back).
-        let axis = if lift >= 0.0 { 0.0 } else { -DUO_THICK };
-        let t = if i == 0 {
+    // As a phone lies on a table: to 180 the right half flat and the left
+    // raised; folded back, a tent - both halves leaning, the hinge up, the
+    // outer edges on the table - until it tips onto its side (TOPPLE) and
+    // comes to lie back to back. Whatever the fold nothing goes under the
+    // table: the phone raised until its lowest point touches it (the half
+    // folded back went through the table before).
+    const TOPPLE: f32 = 150.0;
+    let back = (-lift).max(0.0);
+    let rock_size = if back <= TOPPLE { back / 2.0 } else { TOPPLE / 2.0 * (178.0 - back).max(0.0) / (178.0 - TOPPLE) };
+    // Folding toward the screens it turns about their plane, back to back
+    // about the backs' (the halves meet face to face, or back to back).
+    let axis = if lift >= 0.0 { 0.0 } else { -DUO_THICK };
+    // A half in the hinge's frame (the hinge at x 0, the half toward +x):
+    // the whole phone rocked about the hinge and raised, the left half
+    // turned by the fold.
+    let local = |t: gsk::Transform, i: usize, rock: f32, raise: f32| {
+        let t = t.translate_3d(&graphene::Point3D::new(0.0, 0.0, raise)).rotate_3d(rock, &graphene::Vec3::y_axis());
+        if i == 0 {
             t.translate_3d(&graphene::Point3D::new(0.0, 0.0, axis))
                 .rotate_3d(lift, &graphene::Vec3::y_axis())
                 .translate_3d(&graphene::Point3D::new(-mid, 0.0, -axis))
         } else {
             t
-        };
-        t.translate_3d(&graphene::Point3D::new(-DUO_PAD, -DUO_PAD, z))
+        }
+    };
+    let lowest = |rock: f32| {
+        let mut z = f32::MAX;
+        for i in 0..2 {
+            let m = local(gsk::Transform::new(), i, rock, 0.0).to_matrix();
+            for x in [0.0, mid] {
+                for zz in [0.0, -DUO_THICK] {
+                    z = z.min(m.transform_point3d(&graphene::Point3D::new(x, 0.0, zz)).z());
+                }
+            }
+        }
+        z
+    };
+    // The way that lowers the right half's outer edge (the tent's way).
+    let rock = if local(gsk::Transform::new(), 1, rock_size, 0.0).to_matrix().transform_point3d(&graphene::Point3D::new(mid, 0.0, 0.0)).z() <= 0.0 { rock_size } else { -rock_size };
+    let raise = (-DUO_THICK - lowest(rock)).max(0.0);
+    let place = |at: (f32, f32), i: usize, z: f32, persp: bool| {
+        let t = view(at, persp).translate(&graphene::Point::new(mid, 0.0));
+        local(t, i, rock, raise).translate_3d(&graphene::Point3D::new(-DUO_PAD, -DUO_PAD, z))
     };
     // In the middle of the room: where the phone is seen now, centred.
     let quad = graphene::Rect::new(0.0, 0.0, mid + 2.0 * DUO_PAD, h + 2.0 * DUO_PAD);
@@ -2030,25 +2060,48 @@ fn show_fold(ui: &Ui, angle: f64) {
     let face = dx.z().atan2(dz.z()).to_degrees();
     let hw = ui.spine.width().max(1) as f32;
     let hinge = view(at, true)
-        .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK / 2.0))
-        .rotate_3d(face, &graphene::Vec3::y_axis())
+        .translate_3d(&graphene::Point3D::new(mid, 0.0, raise))
+        .rotate_3d(rock, &graphene::Vec3::y_axis())
+        .translate_3d(&graphene::Point3D::new(0.0, 0.0, -DUO_THICK / 2.0))
+        .rotate_3d(face - rock, &graphene::Vec3::y_axis())
         .translate(&graphene::Point::new(-hw / 2.0, 0.0));
     ui.duo.set_child_transform(&ui.spine, Some(&hinge));
     // The shadows on the table: the right half's under it; the left's under
     // it while it lies there, narrowing toward the spine as it rises, gone
     // when it folds under.
     let lying = (pitch.to_radians().cos() * roll.to_radians().cos()).clamp(0.0, 1.0);
-    let table = |dx: f32| view(at, true).translate_3d(&graphene::Point3D::new(dx - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0, -DUO_THICK));
-    ui.duo.set_child_transform(&ui.halves[1].floor, Some(&table(mid)));
-    ui.halves[1].floor.set_opacity(0.55 * lying * lying);
+    // Each half's shadow as wide as the half seen from above, from the
+    // spine out (the halves turn about it: in the tent the outer edges come
+    // in toward it).
+    let right_c = rock.to_radians().cos().abs().max(0.08);
+    let right = view(at, true)
+        .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK))
+        .scale(right_c, 1.0)
+        .translate(&graphene::Point::new(-DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0));
+    ui.duo.set_child_transform(&ui.halves[1].floor, Some(&right));
+    ui.halves[1].floor.set_opacity(0.55 * lying * lying * (0.4 + 0.6 * right_c as f64));
     let rise = lift.max(0.0).min(90.0).to_radians();
     let narrow = view(at, true)
         .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK))
         .scale(rise.cos().max(0.08), 1.0)
         .translate(&graphene::Point::new(-mid - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0));
-    ui.duo.set_child_transform(&ui.halves[0].floor, Some(&narrow));
-    ui.halves[0].floor.set_visible(lift > -5.0 && lift < 120.0);
-    ui.halves[0].floor.set_opacity(0.55 * lying * lying * (1.0 - 0.75 * rise.sin() as f64));
+    if back > 0.0 {
+        // Folded back: the left half leaning from its outer edge, till it
+        // goes under the right one.
+        let tilt = (rock + if rock >= 0.0 { lift } else { -lift }).to_radians();
+        let c = tilt.cos();
+        let from_edge = view(at, true)
+            .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK))
+            .scale(c.abs().max(0.08), 1.0)
+            .translate(&graphene::Point::new(-mid - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0));
+        ui.duo.set_child_transform(&ui.halves[0].floor, Some(&from_edge));
+        ui.halves[0].floor.set_visible(c > 0.05);
+        ui.halves[0].floor.set_opacity(0.55 * lying * lying * (0.4 + 0.6 * c.max(0.0) as f64));
+    } else {
+        ui.duo.set_child_transform(&ui.halves[0].floor, Some(&narrow));
+        ui.halves[0].floor.set_visible(lift > -5.0 && lift < 120.0);
+        ui.halves[0].floor.set_opacity(0.55 * lying * lying * (1.0 - 0.75 * rise.sin() as f64));
+    }
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
@@ -2075,6 +2128,17 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
     // background unit - fstrim on the loop rootfs, a suspend the cable kept
     // busy - is for Developer Mode).
     simple_status(ui, s, &s.warnings(), link);
+    // A job that ended well and asked for the PIN: done with once the phone
+    // is unlocked (the card said "enter the PIN" after it was).
+    if s.locked == Some(false) && s.item_running {
+        let mut st = ui.state.borrow_mut();
+        if st.job.as_ref().is_some_and(|j| j.ended == Some(None)) {
+            st.job = None;
+        }
+        if let Some(a) = cradle_core::activity::elsewhere(15 * 60).filter(|a| a.ended_at.is_some() && a.outcome() == Some(None)) {
+            st.dismissed = a.ended_at;
+        }
+    }
     sections::fill(&ui.sections, s, cradle_core::club::known(&s.serial).map(|d| d.number), link, developer_mode());
 
     let charge = s.battery.map(|b| format!("{b}%")).unwrap_or_else(|| "?".into());
