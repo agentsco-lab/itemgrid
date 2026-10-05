@@ -443,12 +443,10 @@ struct Ui {
     /// The window on its way into the wallpaper or back: since when, from
     /// and to (its frame on the screen), into it.
     wall_move: std::cell::Cell<Option<WallMove>>,
-    /// The word's and the buttons' places as drawn: on the way into the
-    /// wallpaper they glide to where they are laid (in whole squares, so a
-    /// square at a time as the card grows: they jumped), and gliding.
-    glide_cubes: std::cell::Cell<Option<(f32, f32)>>,
-    glide_buttons: std::cell::Cell<Option<(f32, f32)>>,
-    gliding: std::cell::Cell<bool>,
+    /// How far the card is on its way (0..1), while it moves: the word and
+    /// the buttons then not kept to whole squares (they jumped a square at
+    /// a time as the card grew), but for its first and last quarter.
+    wall_t: std::cell::Cell<Option<f32>>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
     shown: gtk::Widget,
@@ -1221,9 +1219,7 @@ fn build(app: &adw::Application) {
         saver_pointer: std::cell::Cell::new(None),
         wallpaper: std::cell::Cell::new(None),
         wall_move: std::cell::Cell::new(None),
-        glide_cubes: std::cell::Cell::new(None),
-        glide_buttons: std::cell::Cell::new(None),
-        gliding: std::cell::Cell::new(false),
+        wall_t: std::cell::Cell::new(None),
         shown: view.clone().upcast(),
         stage: stage.clone(),
         wallpaper_mix: std::cell::Cell::new(0.0),
@@ -2223,7 +2219,7 @@ fn build(app: &adw::Application) {
                 step != 0.0
             };
             let walling = wall_step(&ui, now_us) || walling;
-            let pressing = pressing || boarding || paging || saving || zooming || walling || ui.gliding.get();
+            let pressing = pressing || boarding || paging || saving || zooming || walling;
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
@@ -3963,11 +3959,15 @@ fn wall_uncover() {
 fn wall_card(ui: &Ui, w: &WallMove, r: (i32, i32, i32, i32)) {
     ui.stage.set_measure_overlay(&ui.shown, false);
     let (ww, wh) = (ui.window.width(), ui.window.height());
+    let back = WALL_BACK.with(|b| b.get());
     let (cx, cy) = if (ww, wh) == (w.monitor.2, w.monitor.3) {
         (w.monitor.0, w.monitor.1)
+    } else if let Some(b) = back.filter(|b| (ww, wh) == (b.was.2, b.was.3)) {
+        (b.was.0, b.was.1)
     } else {
-        match WALL_BACK.with(|b| b.get()) {
-            Some(b) => (b.was.0, b.was.1),
+        // Neither (no window manager sizing it so): where X has it.
+        match place::content_origin(&ui.window) {
+            Some((x, y)) => (x.round() as i32, y.round() as i32),
             None => return,
         }
     };
@@ -4011,6 +4011,7 @@ fn wall_step(ui: &Ui, frame_us: i64) -> bool {
     // moves, and after it is back).
     if !matches!(w.phase, WallPhase::Move(_)) {
         ui.wallpaper_mix.set(0.0);
+        ui.wall_t.set(None);
     }
     let now = std::time::Instant::now();
     let after = |since: std::time::Instant, ms: u64| now.duration_since(since) >= std::time::Duration::from_millis(ms);
@@ -4109,6 +4110,7 @@ fn wall_step(ui: &Ui, frame_us: i64) -> bool {
             let t = ((frame_us - since) as f32 / 1e6 / WALL_S).clamp(0.0, 1.0);
             // The eye going over by the same clock.
             ui.wallpaper_mix.set(if w.into { t } else { 1.0 - t });
+            ui.wall_t.set((t < 1.0).then_some(t));
             let e = t * t * t * (t * (6.0 * t - 15.0) + 10.0);
             let at = |a: i32, b: i32| (a as f32 + (b - a) as f32 * e).round() as i32;
             w.now = (at(w.from.0, w.to.0), at(w.from.1, w.to.1), at(w.from.2, w.to.2), at(w.from.3, w.to.3));
@@ -4913,29 +4915,26 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let e = (f.0 - want.0, f.1 - want.1);
             p = (p.0 - (j[1][1] * e.0 - j[0][1] * e.1) / det, p.1 - (-j[1][0] * e.0 + j[0][0] * e.1) / det);
         }
-        // In the squares as they first lie (2 cm, a column centred on the
-        // USB port): five across about it, its row; then where the table
-        // was dragged.
-        let step = FLOOR_SQUARE as f32 * k;
-        let sx = ((CABLE_PORT_X as f32 - FLOOR_SQUARE as f32 / 2.0) * k).rem_euclid(step);
-        let first = ((p.0 - sx) / step - WORD_HALF).round();
+        // There on the table, then where the table was dragged - not kept to
+        // whole squares: the squares are laid from the word (floor_shift),
+        // so its letters are in them wherever it is (kept to them it jumped
+        // a square at a time as the page's size changed).
         let moved = grid_at();
-        let cubes_at = (sx + (first + WORD_HALF) * step + moved.0 * k, ((p.1 / step).floor() + 0.5) * step + moved.1 * k);
+        let cubes_at = (p.0 + moved.0 * k, p.1 + moved.1 * k);
+        // On the card's way into the wallpaper the buttons (kept to whole
+        // squares, counted from the page's right) go along smoothly, kept
+        // to them only at its first and last quarter.
+        let kept = ui.wall_t.get().map_or(1.0, |t| {
+            let s = |x: f32| {
+                let x = x.clamp(0.0, 1.0);
+                x * x * (3.0 - 2.0 * x)
+            };
+            if t < 0.5 { 1.0 - s(t / 0.25) } else { s((t - 0.75) / 0.25) }
+        });
+        let squared = |snapped: (f32, f32), free: (f32, f32)| (free.0 + (snapped.0 - free.0) * kept, free.1 + (snapped.1 - free.1) * kept);
         // The saver's page is another size: the word kept where it was on
         // the table (worked out anew it went far off, past the squares).
         let cubes_at = if ui.saver.get().is_some() { ui.cubes_rest.get() } else { ui.cubes_rest.replace(cubes_at); cubes_at };
-        let walling = ui.wall_move.get().is_some();
-        let glide = |cell: &std::cell::Cell<Option<(f32, f32)>>, to: (f32, f32)| {
-            let was = cell.get().unwrap_or(to);
-            let mut p = if walling || ui.gliding.get() { (was.0 + (to.0 - was.0) * 0.12, was.1 + (to.1 - was.1) * 0.12) } else { to };
-            if (p.0 - to.0).abs() < 0.05 && (p.1 - to.1).abs() < 0.05 {
-                p = to;
-            }
-            cell.set(Some(p));
-            p
-        };
-        let cubes_laid = cubes_at;
-        let cubes_at = glide(&ui.glide_cubes, cubes_laid);
         for (i, v) in [cubes_at.0, cubes_at.1].into_iter().enumerate() {
             CUBES_AT[i].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }
@@ -5085,7 +5084,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The buttons in the word's row, at the page's right (as the usual
         // view shows it): the last in the square seen a square or so in
         // from the edge.
-        let buttons_laid = {
+        let buttons_at = {
             let m = rest_m;
             let row = cubes_at.1;
             // As far in from the right as the word is from the left (the
@@ -5107,11 +5106,18 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 }
                 x -= f / d;
             }
-            let end = on_squares(k, (x, cubes_at.1 - 0.5 * cur));
+            let end = squared(on_squares(k, (x, cubes_at.1 - 0.5 * cur)), (x, cubes_at.1 - 0.5 * cur));
             (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
-        let buttons_at = glide(&ui.glide_buttons, buttons_laid);
-        ui.gliding.set(walling || cubes_at != cubes_laid || buttons_at != buttons_laid);
+        if (ui.wall_t.get().is_some() || w_mix > 0.0) && std::env::var_os("ITEMGRID_FRAMES").is_some() {
+            trace(format_args!(
+                "wall laid: t {:?} mix {w_mix:.3} kept {kept:.2} floor {}x{} off {off:?} word {cubes_at:?} buttons {buttons_at:?} on page {:?}",
+                ui.wall_t.get(),
+                ui.floor.width(),
+                ui.floor.height(),
+                (on_page(&rest_m, cubes_at), on_page(&rest_m, buttons_at))
+            ));
+        }
         // The wheel's lens on top (not the saver's). Drawn back, the row of
         // the word and the buttons comes to the page's middle, the eye rises to straight above and
         // the perspective all but goes: the cubes go down into the table,
