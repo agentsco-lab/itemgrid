@@ -270,7 +270,6 @@ struct Ui {
     /// its cord, and its plug in layers (bottom to top).
     cable: gtk::DrawingArea,
     rope: Rc<RefCell<cable::Rope>>,
-    table_grid: gtk::DrawingArea,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -458,17 +457,7 @@ fn build(app: &adw::Application) {
         }
     });
     duo.put(&cable, -past as f64, -past as f64);
-    // The table's surface in centimetre squares, under everything.
-    let table_grid = gtk::DrawingArea::builder()
-        .content_width((bw as f64 * DUO_ROOM_W) as i32 + 2 * past)
-        .content_height(room + 2 * past)
-        .can_target(false)
-        .build();
-    table_grid.set_draw_func({
-        let rope = rope.clone();
-        move |_, cr, _, _| rope.borrow().draw_table(cr)
-    });
-    duo.put(&table_grid, -past as f64, -past as f64);
+
     let cable_plug: Vec<gtk::Picture> = (0..CABLE_PLUG_LAYERS)
         .map(|i| {
             let t = i as f64 / (CABLE_PLUG_LAYERS - 1) as f64;
@@ -715,6 +704,13 @@ fn build(app: &adw::Application) {
     overview.append(&sections);
     overview.append(&device);
     let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&overview).hexpand(true).build();
+    // Behind it the table, in centimetre squares, across the whole page and
+    // still (it does not turn with the Duo).
+    let floor = gtk::DrawingArea::builder().hexpand(true).vexpand(true).can_target(false).build();
+    floor.set_draw_func(draw_floor);
+    let home_page = gtk::Overlay::new();
+    home_page.set_child(Some(&floor));
+    home_page.add_overlay(&scroll);
     // Developer: what Developer Mode shows - software, slots, backups,
     // Android, the screen, the system.
     let developer = gtk::Box::new(gtk::Orientation::Vertical, 16);
@@ -778,7 +774,7 @@ fn build(app: &adw::Application) {
         gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(child).hexpand(true).build()
     };
     let right = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(150).hexpand(true).build();
-    right.add_named(&scroll, Some("overview"));
+    right.add_named(&home_page, Some("overview"));
     right.add_named(&page(&agent), Some("agent"));
     right.add_named(&page(&repair), Some("repair"));
     right.add_named(&page(&developer), Some("developer"));
@@ -897,7 +893,6 @@ fn build(app: &adw::Application) {
         spine: spine.clone(),
         cable: cable.clone(),
         rope: rope.clone(),
-        table_grid: table_grid.clone(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1359,6 +1354,11 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
+    // CRADLE_MENU=1: the sections' menu open at the start (to picture it).
+    if std::env::var_os("CRADLE_MENU").is_some() {
+        let pop = nav_pop.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || pop.popup());
+    }
     // CRADLE_SECTION=key: that section shown first (agent, repair...).
     if let Ok(key) = std::env::var("CRADLE_SECTION") {
         let mut i = 0;
@@ -1975,6 +1975,62 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
     }
 }
 
+/// The table under the Duo as a floor in perspective, in squares about a
+/// centimetre where the phone lies (its 2 px a mm): rows toward a horizon
+/// near the top, columns toward the middle; faint, fading into the
+/// distance and toward the sides.
+fn draw_floor(_: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
+    let (w, h) = (w as f64, h as f64);
+    let horizon = h * 0.06;
+    let cx = w / 2.0;
+    // A square's width at depth z is F / z px; the floor's rows at y =
+    // horizon + EYE * F / z. Squares of ~20 px where the phone lies (the
+    // page's middle).
+    let f = 1000.0;
+    let eye = (h * 0.5 - horizon) / 20.0;
+    let y_of = |z: f64| horizon + eye * f / z;
+    let z_near = eye * f / (h - horizon);
+    // Only rows still apart (3 px or more): further they ran together.
+    let z_far = (eye * f / 3.0).sqrt();
+    let alpha = |y: f64, x: f64| {
+        let depth = ((y - horizon) / (h - horizon)).clamp(0.0, 1.0);
+        let side = (1.0 - ((x - cx).abs() / (w * 0.62)).powi(2)).max(0.0);
+        0.075 * depth.powf(1.4) * side
+    };
+    cr.set_line_width(1.0);
+    // Rows, one a square deep.
+    let mut z = z_near.ceil();
+    while z < z_far {
+        let y = y_of(z).round() + 0.5;
+        let half = w / 2.0;
+        let pieces = 16;
+        for i in 0..pieces {
+            let (x0, x1) = (cx - half + 2.0 * half * i as f64 / pieces as f64, cx - half + 2.0 * half * (i + 1) as f64 / pieces as f64);
+            cr.set_source_rgba(0.0, 0.0, 0.0, alpha(y, (x0 + x1) / 2.0));
+            cr.move_to(x0, y);
+            cr.line_to(x1, y);
+            let _ = cr.stroke();
+        }
+        z += 1.0;
+    }
+    // Columns, toward the middle of the horizon.
+    let reach = (w / 2.0) / (f / z_near) + 2.0;
+    let mut x = -reach.ceil();
+    while x <= reach {
+        let pieces = 12;
+        for i in 0..pieces {
+            let (za, zb) = (z_near * (z_far / z_near).powf(i as f64 / pieces as f64), z_near * (z_far / z_near).powf((i + 1) as f64 / pieces as f64));
+            let (xa, ya) = (cx + x * f / za, y_of(za));
+            let (xb, yb) = (cx + x * f / zb, y_of(zb));
+            cr.set_source_rgba(0.0, 0.0, 0.0, alpha((ya + yb) / 2.0, (xa + xb) / 2.0));
+            cr.move_to(xa, ya);
+            cr.line_to(xb, yb);
+            let _ = cr.stroke();
+        }
+        x += 1.0;
+    }
+}
+
 /// One layer of the plug's housing (as the halves' edges are drawn: its
 /// silhouette layer on layer): `t` 0 the bottom, darker, to 1; the top one
 /// lit - a band of light along it and a bevel round its rim.
@@ -2339,12 +2395,10 @@ fn show_fold(ui: &Ui, angle: f64) {
         rope.screen = Some(table_view.to_matrix());
     }
     ui.cable.queue_draw();
-    ui.table_grid.queue_draw();
     // The cord under the halves (past the plug it is outside them), over
     // the shadows; the plug over the right half's layers - its bottom
     // edge's face too: it goes into it - and under a half nearer than it.
     ui.cable.insert_after(&ui.duo, Some(&ui.halves[0].floor));
-    ui.table_grid.insert_before(&ui.duo, ui.duo.first_child().as_ref());
     let mut after: gtk::Widget = ui.halves[1].order.borrow().last().map(|w| w.clone().upcast()).unwrap_or_else(|| ui.cable.clone().upcast());
     let n = ui.cable_plug.len().max(2) as f32 - 1.0;
     for (i, p) in ui.cable_plug.iter().enumerate() {

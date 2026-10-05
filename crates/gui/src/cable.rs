@@ -101,9 +101,12 @@ impl Rope {
         if self.quiet > 90 {
             return false;
         }
-        // Pulled taut further than it reaches: more of it off the desk.
-        if len(sub(self.end, self.start)) > self.seg * (LINKS - 1) as f32 * 0.92 {
-            self.lay();
+        // Pulled taut further than it reaches: more of it comes off the
+        // desk - longer, as it lies (laid out again, it jumped into the same
+        // shape at each turn of the phone, as if stuck to it).
+        let reach = len(sub(self.end, self.start)) / ((LINKS - 1) as f32 * 0.9);
+        if reach > self.seg {
+            self.seg = reach;
         }
         let r = self.radius();
         let g = 9810.0 * self.k;
@@ -139,15 +142,15 @@ impl Rope {
                     _ => {}
                 }
             }
-            // Stiffness: no sharper bend than a cable takes (a radius of
-            // about 12 mm: links two apart nearly their whole length apart).
-            let turn = self.seg / (12.0 * self.k);
+            // Stiffness: no sharper bend than a USB cable takes (a radius of
+            // about 25 mm: links two apart nearly their whole length apart).
+            let turn = self.seg / (25.0 * self.k);
             let min = 2.0 * self.seg * (turn / 2.0).cos();
             for i in 0..LINKS - 2 {
                 let d = sub(self.pts[i + 2], self.pts[i]);
                 let l = len(d).max(1e-4);
                 if l < min {
-                    let c = mul(d, (min - l) / l * 0.35);
+                    let c = mul(d, (min - l) / l * 0.5);
                     if i >= 2 {
                         self.pts[i] = sub(self.pts[i], c);
                     }
@@ -183,47 +186,6 @@ impl Rope {
         let v = m.transform_vec4(&graphene::Vec4::new(p[0], p[1], p[2], 1.0));
         let w = if v.w().abs() < 1e-6 { 1.0 } else { v.w() };
         ((v.x() / w - self.offset.0) as f64, (v.y() / w - self.offset.1) as f64)
-    }
-
-    /// The table's surface marked in centimetre squares, as a cutting mat:
-    /// thin lines in its plane under the phone, fading out from its middle.
-    pub fn draw_table(&self, cr: &gtk::cairo::Context) {
-        let Some(m) = self.screen else { return };
-        if self.k <= 0.0 {
-            return;
-        }
-        let step = 10.0 * self.k;
-        let reach = 150.0 * self.k;
-        let z = self.table;
-        // Faded by the distance on the table itself (the screen's circle
-        // left hard edges where the perspective shortens it).
-        let alpha = |x: f32, y: f32| {
-            let d = (x * x + y * y).sqrt() / reach;
-            (0.085 * (1.0 - d * d).max(0.0).powf(1.5)) as f64
-        };
-        let n = (reach / step).ceil() as i32;
-        let pieces = 24;
-        cr.set_line_width(1.0);
-        for i in -n..=n {
-            let t = i as f32 * step;
-            for along_x in [true, false] {
-                for j in 0..pieces {
-                    let (u0, u1) = (-reach + 2.0 * reach * j as f32 / pieces as f32, -reach + 2.0 * reach * (j + 1) as f32 / pieces as f32);
-                    let (a, b) = if along_x { ([u0, t, z], [u1, t, z]) } else { ([t, u0, z], [t, u1, z]) };
-                    let mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0);
-                    let al = alpha(mid.0, mid.1);
-                    if al < 0.003 {
-                        continue;
-                    }
-                    let (x0, y0) = self.project(&m, a);
-                    let (x1, y1) = self.project(&m, b);
-                    cr.set_source_rgba(0.0, 0.0, 0.0, al);
-                    cr.move_to(x0, y0);
-                    cr.line_to(x1, y1);
-                    let _ = cr.stroke();
-                }
-            }
-        }
     }
 
     /// A smooth path through projected points (Catmull-Rom as Béziers).
@@ -292,7 +254,7 @@ impl Rope {
         // Only near the table: high above it the plug's shadow is too soft
         // to see.
         let up = self.plug.iter().map(|c| c[2] - self.table).fold(f32::MAX, f32::min).max(0.0);
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.12 * (-(up / (6.0 * self.k))).exp() as f64);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (-(up / (6.0 * self.k))).exp() as f64);
         let _ = cr.fill();
         for (w, a) in [(1.6, 0.4), (1.1, 0.7)] {
             self.path(cr, &m, &shadow, (0.0, 0.0));
