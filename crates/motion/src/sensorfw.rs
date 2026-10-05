@@ -53,6 +53,17 @@ impl Sensor {
         gdbus("/SensorManager", "local.SensorManager.loadPlugin", &[kind.name])?;
         let reply = gdbus("/SensorManager", "local.SensorManager.requestSensor", &[kind.name, "0"])?;
         let id: i32 = reply.split(|c: char| !c.is_ascii_digit() && c != '-').find(|s| !s.is_empty())?.parse().ok()?;
+        let session = Self::connect(kind, id);
+        // A session got and not started let go: left, sensorfw kept writing
+        // to them, and with a session asked for again every few seconds it
+        // stuck (two of its threads blocked writing to its own pipes).
+        if session.is_none() {
+            release(kind, id);
+        }
+        session
+    }
+
+    fn connect(kind: Kind, id: i32) -> Option<Sensor> {
         // The greeting: a byte from sensorfw, the session back.
         let mut sock = UnixStream::connect(SOCKET).ok()?;
         sock.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
@@ -106,10 +117,14 @@ impl Sensor {
     }
 
     pub fn close(&self) {
-        let path = format!("/SensorManager/{}", self.kind.name);
-        let _ = gdbus(&path, &format!("{}.stop", self.kind.iface), &[&self.id.to_string()]);
-        let _ = gdbus("/SensorManager", "local.SensorManager.releaseSensor", &[self.kind.name, &self.id.to_string(), "0"]);
+        release(self.kind, self.id);
     }
+}
+
+fn release(kind: Kind, id: i32) {
+    let path = format!("/SensorManager/{}", kind.name);
+    let _ = gdbus(&path, &format!("{}.stop", kind.iface), &[&id.to_string()]);
+    let _ = gdbus("/SensorManager", "local.SensorManager.releaseSensor", &[kind.name, &id.to_string(), "0"]);
 }
 
 pub fn f32_at(b: &[u8], at: usize) -> f32 {

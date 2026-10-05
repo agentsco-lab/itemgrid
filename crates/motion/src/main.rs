@@ -146,7 +146,7 @@ fn main() {
     let missing = |sensors: &[Option<Sensor>]| sensors.iter().zip(wanted).any(|(s, w)| w && s.is_none());
     for ((k, s), w) in kinds.iter().zip(&sensors).zip(wanted) {
         if w && s.is_none() {
-            eprintln!("duo-motion: no {} (asked again in 3 s)", k.name);
+            eprintln!("duo-motion: no {} (asked again)", k.name);
         }
     }
 
@@ -168,7 +168,9 @@ fn main() {
     let mut sent_north: Option<bool> = None;
     let mut alive_at = Instant::now();
     // Sensors missing (not opened, or their sessions gone) asked for again.
-    let mut reopen_at: Option<Instant> = missing(&sensors).then(|| Instant::now() + Duration::from_secs(3));
+    // Each time longer (3 s, doubled up to 30): sensorfw slow is not pressed.
+    let mut reopen_wait = Duration::from_secs(3);
+    let mut reopen_at: Option<Instant> = missing(&sensors).then(|| Instant::now() + reopen_wait);
 
     while alive {
         let mut fds: Vec<PollFd> = sensors.iter().flatten().map(|s| PollFd { fd: s.sock.as_raw_fd(), events: POLLIN, revents: 0 }).collect();
@@ -268,7 +270,10 @@ fn main() {
                 }
             }
             if missing(&sensors) {
-                reopen_at = Some(Instant::now() + Duration::from_secs(3));
+                reopen_wait = (reopen_wait * 2).min(Duration::from_secs(30));
+                reopen_at = Some(Instant::now() + reopen_wait);
+            } else {
+                reopen_wait = Duration::from_secs(3);
             }
         }
 
