@@ -274,9 +274,10 @@ fn main() -> glib::ExitCode {
         std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
     }
     let app = adw::Application::builder().application_id(APP_ID).build();
-    // A picture taken (ITEMGRID_SHOT) by an instance of its own, beside a
-    // running window.
-    if std::env::var_os("ITEMGRID_SHOT").is_some() {
+    // A picture taken (ITEMGRID_SHOT), or a window tried from outside
+    // (ITEMGRID_CONTROL, itemgrid-mcp): an instance of its own, beside the
+    // owner's running window.
+    if std::env::var_os("ITEMGRID_SHOT").is_some() || std::env::var("ITEMGRID_CONTROL").ok().as_deref() == Some("1") {
         app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
     }
     app.connect_activate(build);

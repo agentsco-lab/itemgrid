@@ -1,10 +1,14 @@
 //! itemgrid-mcp: item/grid's window for Claude Code to look at and try - an MCP
 //! server on stdio (JSON-RPC a line). It starts item/grid with its control
 //! socket (ITEMGRID_CONTROL=1, crates/gui/src/control.rs) and asks it for a
-//! picture of the window and its state; input is the real thing - the
-//! pointer moved and its buttons and wheel pressed on the screen (xdotool,
-//! X11), so the window's own gestures are what is tried. Coordinates are
-//! the window's, as in its picture.
+//! picture of the window and its state; input is the real thing - a
+//! pointer moved and its buttons and wheel pressed (xdotool, X11), so the
+//! window's own gestures are what is tried. Coordinates are the window's,
+//! as in its picture.
+//!
+//! The window is started on a screen of its own (Xvfb, unseen) unless
+//! asked for the desktop: the pointer there is not the owner's, and the
+//! owner's own item/grid window is left alone (an instance of its own).
 //!
 //! `itemgrid-mcp call TOOL [JSON]`: a tool from the command line (a picture
 //! is left at its path).
@@ -42,8 +46,63 @@ fn ask(cmd: &str) -> Result<Value, String> {
     }
 }
 
+/// The screen of its own the window was started on (":N"), and its Xvfb.
+fn own_screen_file() -> std::path::PathBuf {
+    runtime_dir().join("itemgrid-mcp-screen")
+}
+
+/// The window started here (its process).
+fn pid_file() -> std::path::PathBuf {
+    runtime_dir().join("itemgrid-mcp.pid")
+}
+
+fn alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Where the window started here is shown: its own screen's display, or
+/// the desktop's (None).
+fn own_screen() -> Option<(String, u32)> {
+    let text = std::fs::read_to_string(own_screen_file()).ok()?;
+    let mut it = text.split_whitespace();
+    let (display, pid) = (it.next()?.to_owned(), it.next()?.parse().ok()?);
+    alive(pid).then_some((display, pid))
+}
+
+/// A screen of its own: an Xvfb on a display free, big enough for where
+/// the window keeps itself on the desktop's two monitors.
+fn start_own_screen() -> Result<String, String> {
+    if let Some((display, _)) = own_screen() {
+        return Ok(display);
+    }
+    let n = (90..120).find(|n| !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists() && !std::path::Path::new(&format!("/tmp/.X{n}-lock")).exists()).ok_or("no display free for a screen of its own")?;
+    let display = format!(":{n}");
+    use std::os::unix::process::CommandExt;
+    let child = Command::new("Xvfb")
+        .args([display.as_str(), "-screen", "0", "3840x2160x24", "-nolisten", "tcp", "+extension", "GLX"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("Xvfb: {e}"))?;
+    let since = Instant::now();
+    while !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists() {
+        if since.elapsed() > Duration::from_secs(5) {
+            return Err("Xvfb did not come up".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::fs::write(own_screen_file(), format!("{display} {}\n", child.id())).map_err(|e| e.to_string())?;
+    Ok(display)
+}
+
 fn xdotool(args: &[String]) -> Result<(), String> {
-    let out = Command::new("xdotool").args(args).output().map_err(|e| format!("xdotool: {e}"))?;
+    let mut c = Command::new("xdotool");
+    if let Some((display, _)) = own_screen() {
+        c.env("DISPLAY", display);
+    }
+    let out = c.args(args).output().map_err(|e| format!("xdotool: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
@@ -53,7 +112,7 @@ fn xdotool(args: &[String]) -> Result<(), String> {
 
 /// The window brought to the front, and where its content is.
 fn window_origin() -> Result<(f64, f64), String> {
-    let _ = Command::new("xdotool").args(["search", "--onlyvisible", "--name", "^item/grid$", "windowactivate", "--sync"]).output();
+    let _ = xdotool(&["search", "--onlyvisible", "--name", "^item/grid$", "windowactivate", "--sync"].map(String::from));
     std::thread::sleep(Duration::from_millis(80));
     let state = ask("state")?;
     let o = &state["window"]["content_on_screen"];
@@ -123,14 +182,29 @@ fn then_picture(args: &Value, done: String) -> Result<Answer, String> {
 }
 
 fn start(args: &Value) -> Result<Answer, String> {
-    let running = Command::new("pgrep").args(["-x", "itemgrid-gui"]).output().is_ok_and(|o| o.status.success());
-    if running && ask("state").is_ok() && !args["restart"].as_bool().unwrap_or(false) {
+    // Only the window started here is closed: never the owner's own.
+    let ours = std::fs::read_to_string(pid_file()).ok().and_then(|p| p.trim().parse::<u32>().ok()).filter(|&p| alive(p));
+    let desktop = args["screen"].as_str() == Some("desktop");
+    let same_screen = desktop == own_screen().is_none();
+    if ours.is_some() && same_screen && ask("state").is_ok() && !args["restart"].as_bool().unwrap_or(false) {
         return Ok(words("already running with its control socket"));
     }
-    if running {
-        let _ = Command::new("pkill").args(["-x", "itemgrid-gui"]).status();
-        std::thread::sleep(Duration::from_millis(700));
+    if let Some(pid) = ours {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        let since = Instant::now();
+        while alive(pid) && since.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
+    let display = if desktop {
+        if let Some((_, xvfb)) = own_screen() {
+            let _ = Command::new("kill").arg(xvfb.to_string()).status();
+        }
+        let _ = std::fs::remove_file(own_screen_file());
+        None
+    } else {
+        Some(start_own_screen()?)
+    };
     let gui = std::env::var("ITEMGRID_GUI").unwrap_or_else(|_| format!("{}/.local/bin/itemgrid-gui", std::env::var("HOME").unwrap_or_default()));
     let log = std::fs::File::create(trace_log()).map_err(|e| e.to_string())?;
     let mut c = Command::new(&gui);
@@ -141,12 +215,17 @@ fn start(args: &Value) -> Result<Answer, String> {
         }
     }
     use std::os::unix::process::CommandExt;
+    if let Some(display) = &display {
+        c.env("DISPLAY", display).env("GDK_BACKEND", "x11").env_remove("WAYLAND_DISPLAY");
+    }
     c.process_group(0);
-    c.spawn().map_err(|e| format!("{gui}: {e}"))?;
+    let child = c.spawn().map_err(|e| format!("{gui}: {e}"))?;
+    let _ = std::fs::write(pid_file(), child.id().to_string());
+    let on = display.as_deref().map_or("the desktop".to_owned(), |d| format!("a screen of its own ({d}; the owner's pointer untouched)"));
     let since = Instant::now();
     while since.elapsed() < Duration::from_secs(15) {
         if ask("state").is_ok() {
-            return Ok(words(format!("started in {:.1} s (trace: {})", since.elapsed().as_secs_f32(), trace_log().display())));
+            return Ok(words(format!("started on {on} in {:.1} s (trace: {})", since.elapsed().as_secs_f32(), trace_log().display())));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -156,6 +235,18 @@ fn start(args: &Value) -> Result<Answer, String> {
 fn call(name: &str, args: &Value) -> Result<Answer, String> {
     match name {
         "start" => start(args),
+        "stop" => {
+            let ours = std::fs::read_to_string(pid_file()).ok().and_then(|p| p.trim().parse::<u32>().ok()).filter(|&p| alive(p));
+            if let Some(pid) = ours {
+                let _ = Command::new("kill").arg(pid.to_string()).status();
+            }
+            if let Some((_, xvfb)) = own_screen() {
+                let _ = Command::new("kill").arg(xvfb.to_string()).status();
+            }
+            let _ = std::fs::remove_file(own_screen_file());
+            let _ = std::fs::remove_file(pid_file());
+            Ok(words(if ours.is_some() { "closed (and its screen)" } else { "nothing started here was running" }))
+        }
         "screenshot" => picture(),
         "state" => Ok(words(serde_json::to_string_pretty(&ask("state")?).unwrap_or_default())),
         "replay" => {
@@ -230,19 +321,21 @@ fn tools() -> Value {
     let shot = json!({ "type": "boolean", "description": "a screenshot after it (settle_ms later, default 300)" });
     let settle = json!({ "type": "integer" });
     json!([
-        { "name": "start", "description": "Start item/grid (the Surface Duo's desktop app) with its control socket and trace log; restart: true closes a running one first (needed if it was started without the socket); intro: false skips the start animation.",
-          "inputSchema": { "type": "object", "properties": { "restart": { "type": "boolean" }, "intro": { "type": "boolean" } } } },
+        { "name": "start", "description": "Start item/grid (the Surface Duo's desktop app) with its control socket and trace log, an instance of its own (the owner's own window is left alone). By default on a screen of its own (an unseen Xvfb: input there never moves the owner's pointer; GL there is software, so not for timing); screen: \"desktop\" shows it on the owner's desktop (input then moves the owner's real pointer - ask first). restart: true closes the one started here first; intro: false skips the start animation.",
+          "inputSchema": { "type": "object", "properties": { "restart": { "type": "boolean" }, "intro": { "type": "boolean" }, "screen": { "type": "string", "enum": ["own", "desktop"] } } } },
+        { "name": "stop", "description": "Close the item/grid started here (and its own screen).",
+          "inputSchema": { "type": "object", "properties": {} } },
         { "name": "screenshot", "description": "A picture of item/grid's window as it is now (its own pixels; input coordinates are these).",
           "inputSchema": { "type": "object", "properties": {} } },
         { "name": "state", "description": "item/grid's state: the window's place, the start animation, the floor's squares (size, offset), the drawn Duo (fold, turn), the phone (where it is seen).",
           "inputSchema": { "type": "object", "properties": {} } },
         { "name": "replay", "description": "Play item/grid's start animation again.",
           "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "click", "description": "Move the real pointer to (x, y) in item/grid's window and click (button 1 left, 2 middle, 3 right; double).",
+        { "name": "click", "description": "Move the pointer (on its own screen unless started on the desktop) to (x, y) in item/grid's window and click (button 1 left, 2 middle, 3 right; double).",
           "inputSchema": { "type": "object", "properties": { "x": xy, "y": xy, "button": { "type": "integer" }, "double": { "type": "boolean" }, "screenshot": shot, "settle_ms": settle }, "required": ["x", "y"] } },
-        { "name": "scroll", "description": "Turn the real mouse wheel over (x, y) in item/grid's window: clicks notches, positive down, negative up.",
+        { "name": "scroll", "description": "Turn the mouse wheel (on its own screen unless started on the desktop) over (x, y) in item/grid's window: clicks notches, positive down, negative up.",
           "inputSchema": { "type": "object", "properties": { "x": xy, "y": xy, "clicks": { "type": "integer" }, "delay_ms": { "type": "integer" }, "screenshot": shot, "settle_ms": settle }, "required": ["x", "y", "clicks"] } },
-        { "name": "drag", "description": "Press a real mouse button at `from` in item/grid's window, move to `to` over ms milliseconds, release.",
+        { "name": "drag", "description": "Press a mouse button (on its own screen unless started on the desktop) at `from` in item/grid's window, move to `to` over ms milliseconds, release.",
           "inputSchema": { "type": "object", "properties": { "from": pair, "to": pair, "ms": { "type": "integer" }, "button": { "type": "integer" }, "screenshot": shot, "settle_ms": settle }, "required": ["from", "to"] } },
         { "name": "wait", "description": "Wait ms milliseconds (at most 30 s), then a screenshot if asked.",
           "inputSchema": { "type": "object", "properties": { "ms": { "type": "integer" }, "screenshot": { "type": "boolean" } } } },

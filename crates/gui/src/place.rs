@@ -102,6 +102,10 @@ pub fn restore(window: &adw::ApplicationWindow) {
 
 /// Kept as it closes.
 pub fn keep(window: &adw::ApplicationWindow) {
+    // Not a window tried from outside (itemgrid-mcp): the owner's place kept.
+    if std::env::var("ITEMGRID_CONTROL").ok().as_deref() == Some("1") {
+        return;
+    }
     window.connect_close_request(|window| {
         let max = window.is_maximized();
         let (w, h) = window.default_size();
