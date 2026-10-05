@@ -148,22 +148,9 @@ impl Intro {
         if !self.begun() || self.done() || reached <= 0.0 || strength <= 0.0 {
             return blank;
         }
-        // The letters on the way: from blank, a few, its own.
-        let letters = b"abcdefghijklmnopqrstuvwxyz";
-        let n = 4 + (i * 5) % 3;
-        let at = |k: usize| match k {
-            0 => ' ',
-            k if k >= n => ch,
-            k => letters[(i * 31 + k * 17 + 7) % 26] as char,
-        };
-        // Quick at first, slowing to the last (eased out).
-        let p = 1.0 - (1.0 - reached.clamp(0.0, 1.0)).powi(3);
-        let turns = p * n as f32;
-        let k = turns.floor() as usize;
-        if k >= n {
-            return Flip { i, from: ch, to: ch, turn: 0.0, strength };
-        }
-        Flip { i, from: at(k), to: at(k + 1), turn: smoother(turns - k as f32), strength }
+        // As a board's square turns up (board.rs).
+        let f = crate::board::flap(i, ch, reached);
+        Flip { i, from: f.from, to: f.to, turn: f.turn, strength }
     }
 
     /// The eye: 0 straight above .. 1 where the Duo is seen from.

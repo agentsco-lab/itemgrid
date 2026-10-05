@@ -21,6 +21,7 @@ use adw::prelude::*;
 use hythe_core::{screenshot, status, Mode};
 use gtk::{gdk, gio, glib};
 
+mod board;
 mod cable;
 mod duo3d;
 mod intro;
@@ -385,6 +386,8 @@ struct Ui {
     intro: RefCell<intro::Intro>,
     /// The table's buttons under the pointer and pressed.
     buttons: RefCell<Buttons>,
+    /// The board on the table open now (the sections' menu), if any.
+    board: RefCell<Option<board::Board>>,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -1119,6 +1122,7 @@ fn build(app: &adw::Application) {
         floor_view: floor_view.clone(),
         intro: RefCell::default(),
         buttons: RefCell::default(),
+        board: RefCell::default(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1299,14 +1303,21 @@ fn build(app: &adw::Application) {
         });
         page.add_controller(drag);
         // The table's buttons: raised under the pointer, the hand there.
-        nav_pop.set_parent(&page);
         let motion = gtk::EventControllerMotion::new();
         let (weak, pg) = (Rc::downgrade(&ui), page.clone());
         let hover = move |x: f64, y: f64| {
             let Some(ui) = weak.upgrade() else { return };
-            let on = button_at(&ui.floor_view.borrow(), (x, y));
+            let fv = ui.floor_view.borrow();
+            let on = button_at(&fv, (x, y));
             ui.buttons.borrow_mut().hover = on;
-            pg.set_cursor_from_name(on.map(|_| "pointer"));
+            // A line of the open board: darker under the pointer.
+            let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
+            drop(fv);
+            let changed = ui.board.borrow_mut().as_mut().is_some_and(|b| std::mem::replace(&mut b.hover, line) != line);
+            if changed {
+                show_fold(&ui, ui.fold.get().0);
+            }
+            pg.set_cursor_from_name(on.or(line).map(|_| "pointer"));
         };
         let h2 = hover.clone();
         motion.connect_motion(move |_, x, y| hover(x, y));
@@ -1315,7 +1326,8 @@ fn build(app: &adw::Application) {
         // A cube clicked: the phone looked for at once.
         let click = gtk::GestureClick::new();
         let weak = Rc::downgrade(&ui);
-        let (pop, win) = (nav_pop.clone(), ui.window.clone());
+        let pg2 = page.clone();
+        let (win, right, nav) = (ui.window.clone(), right.clone(), nav.clone());
         click.connect_released(move |g, n, x, y| {
             let Some(ui) = weak.upgrade() else { return };
             // A button of the table's.
@@ -1326,8 +1338,19 @@ fn build(app: &adw::Application) {
                 trace(format_args!("button {:?}", FLOOR_BUTTONS[i]));
                 match FLOOR_BUTTONS[i] {
                     FloorButton::Menu => {
-                        pop.set_pointing_to(button_bounds(&ui.floor_view.borrow(), i).as_ref());
-                        pop.popup();
+                        // The sections as a board on the table (open, it
+                        // closes).
+                        let mut b = ui.board.borrow_mut();
+                        if b.as_ref().is_some_and(|b| !b.closing()) {
+                            b.as_mut().unwrap().close();
+                        } else {
+                            let lines = NAV
+                                .iter()
+                                .filter(|(key, ..)| *key != "developer" || developer_mode())
+                                .map(|(key, ..)| board::Line { key: key.to_string(), text: key.to_string() })
+                                .collect();
+                            *b = Some(board::Board::open(lines));
+                        }
                     }
                     FloorButton::Night => {
                         let on = !night();
@@ -1344,6 +1367,32 @@ fn build(app: &adw::Application) {
                         ui.floor.queue_draw();
                     }
                     FloorButton::Replay => ui.intro.borrow_mut().replay(),
+                }
+                return;
+            }
+            // A line of the open board: its section; anywhere else, the
+            // board closed (and nothing else done with the click).
+            let open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
+            if open {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                let fv = ui.floor_view.borrow();
+                let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
+                drop(fv);
+                let key = line.and_then(|l| ui.board.borrow().as_ref().map(|b| b.lines[l].key.clone()));
+                if let Some(b) = ui.board.borrow_mut().as_mut() {
+                    b.close();
+                }
+                pg2.set_cursor_from_name(None);
+                if let Some(key) = key {
+                    trace(format_args!("board: {key}"));
+                    let mut i = 0;
+                    while let Some(r) = nav.row_at_index(i) {
+                        if r.widget_name() == key {
+                            nav.select_row(Some(&r));
+                        }
+                        i += 1;
+                    }
+                    right.set_visible_child_name(&key);
                 }
                 return;
             }
@@ -1832,6 +1881,17 @@ fn build(app: &adw::Application) {
                 ui.cable.queue_draw();
             }
             let pressing = ui.buttons.borrow_mut().step(dt.clamp(0.0, 0.1));
+            // The board turning up or fading; gone, dropped.
+            let boarding = {
+                let mut b = ui.board.borrow_mut();
+                if b.as_ref().is_some_and(|b| b.gone()) {
+                    *b = None;
+                    true
+                } else {
+                    b.as_ref().is_some_and(|b| b.moving())
+                }
+            };
+            let pressing = pressing || boarding;
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
@@ -2750,9 +2810,10 @@ struct FloorView {
     tapped: Option<((f32, f32), f32)>,
     /// Words set in the table's squares.
     texts: Vec<TableText>,
-    /// The credit's cubes (intro.rs) and where their row begins.
-    flips: Vec<intro::Flip>,
-    credit_at: (f32, f32),
+    /// Squares turning up as a board's (board.rs): the credit's, the open
+    /// board's; where that board begins.
+    tiles: Vec<board::Tile>,
+    board_at: (f32, f32),
     /// Across the table, where the eye's line is (boxes drawn farthest
     /// from it first: a box nearer it covers its neighbour's side).
     eye_x: f32,
@@ -3117,14 +3178,17 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     };
     // The letter in a square whose corners (its top left, top right,
     // bottom left) are these on the page.
-    // A mark, not a word to read first: lighter than the word's.
-    let letter = |a: (f64, f64), b: (f64, f64), d: (f64, f64), ch: char, strength: f32| draw_glyph(cr, ch, a, b, d, (0.5, 0.5, 0.52, 0.8 * strength as f64));
-    let x_of = |i: usize| fv.credit_at.0 + i as f32 * side;
-    let y0 = fv.credit_at.1;
-    for f in &fv.flips {
-        let x0 = x_of(f.i);
+    let letter = |a: (f64, f64), b: (f64, f64), d: (f64, f64), ch: char, rgba: (f64, f64, f64, f64)| draw_glyph(cr, ch, a, b, d, rgba);
+    // The far rows first; in a row, farthest from the eye's line first.
+    let mut tiles = fv.tiles.clone();
+    let off_eye = |t: &board::Tile| (t.at.0 + side / 2.0 - fv.eye_x).abs();
+    tiles.sort_by(|a, b| a.at.1.partial_cmp(&b.at.1).unwrap().then(off_eye(b).partial_cmp(&off_eye(a)).unwrap()));
+    for t in &tiles {
+        let (x0, y0) = t.at;
+        let f = t.flap;
+        let strength = (t.rgba.3 / 0.9).min(1.0) as f32;
         if f.turn <= 0.0 {
-            letter(p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0, y0 + side, z0), f.from, f.strength);
+            letter(p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0, y0 + side, z0), f.from, t.rgba);
             continue;
         }
         // A point of the square, `v` along it from its far edge (0..1), as
@@ -3137,7 +3201,7 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         };
         let q = [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)];
         // Its place on the table blank meanwhile; the square over it.
-        let st = f.strength as f64;
+        let st = strength as f64;
         path(&[p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0 + side, y0 + side, z0), p3(x0, y0 + side, z0)]);
         let l = paper(1.0);
         cr.set_source_rgba(l, l, l, st);
@@ -3151,10 +3215,10 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         cr.set_line_width(1.6);
         let _ = cr.stroke();
         if f.turn < 0.5 {
-            letter(at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), f.from, f.strength);
+            letter(at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), f.from, t.rgba);
         } else {
             // The other side: its near edge (v 1) is the far one now.
-            letter(at(0.0, 1.0), at(1.0, 1.0), at(0.0, 0.0), f.to, f.strength);
+            letter(at(0.0, 1.0), at(1.0, 1.0), at(0.0, 0.0), f.to, t.rgba);
         }
     }
 }
@@ -3329,24 +3393,6 @@ fn button_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
         let (x, y) = button_square(fv, *i);
         t.0 >= x && t.0 < x + side && t.1 >= y && t.1 < y + side
     })
-}
-
-/// A button's square on the page (its bounds), to point a popover at.
-fn button_bounds(fv: &FloorView, i: usize) -> Option<gdk::Rectangle> {
-    use gtk::graphene;
-    let m = fv.matrix?;
-    let side = square() * fv.k;
-    let (x, y) = button_square(fv, i);
-    let pts: Vec<(f32, f32)> = [(x, y), (x + side, y), (x, y + side), (x + side, y + side)]
-        .iter()
-        .map(|(px, py)| {
-            let v = m.transform_vec4(&graphene::Vec4::new(*px, *py, fv.table, 1.0));
-            (v.x() / v.w() + fv.off.0, v.y() / v.w() + fv.off.1)
-        })
-        .collect();
-    let (x0, x1) = pts.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
-    let (y0, y1) = pts.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
-    Some(gdk::Rectangle::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
 }
 
 /// The buttons: their squares (raised a little under the pointer, as low
@@ -4097,16 +4143,23 @@ fn show_fold(ui: &Ui, angle: f64) {
         // Turned over as the growing of the squares (draw_floor's) comes
         // across each.
         let grown = grid * (520.0 * k + 3.0 * cur);
-        let flips: Vec<intro::Flip> = intro::CREDIT
+        let mut tiles: Vec<board::Tile> = intro::CREDIT
             .chars()
             .enumerate()
             .filter(|(_, ch)| *ch != ' ')
             .map(|(i, ch)| {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
-                intro.credit_flip(i, ch, ((grown - d) / (8.0 * cur)).clamp(0.0, 1.0))
+                let f = intro.credit_flip(i, ch, ((grown - d) / (8.0 * cur)).clamp(0.0, 1.0));
+                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64) }
             })
             .collect();
+        // The open board (the sections' menu) to the right of the buttons,
+        // a square apart, from their row down.
+        let board_at = (cubes_at.0 + 1.5 * cur, cubes_at.1 + 3.5 * cur);
+        if let Some(b) = ui.board.borrow().as_ref() {
+            tiles.extend(b.tiles(board_at, cur));
+        }
         if let Some((text, strength)) = intro.note() {
             let mut lines = text.lines();
             if let Some(head) = lines.next() {
@@ -4126,9 +4179,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.flips != flips || fv.credit_at != credit_at || fv.eye_x != eye_x || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.buttons_strength != buttons_strength;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.eye_x != eye_x || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.buttons_strength != buttons_strength;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, flips, credit_at, eye_x, buttons_at, button_lift, buttons_strength };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, eye_x, buttons_at, button_lift, buttons_strength };
         if changed {
             ui.floor.queue_draw();
         }
