@@ -4455,8 +4455,12 @@ fn show_fold(ui: &Ui, angle: f64) {
             let shown = on_page(&matrix(e), cubes_at);
             e.on = (e.on.0 + word_on.0 - shown.0, e.on.1 + word_on.1 - shown.1);
         }
-        // The wheel's lens on top (not the saver's).
-        e.near *= ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
+        // The wheel's lens on top (not the saver's); drawn back, the eye
+        // rises toward straight above (at the furthest, from right above).
+        let lens = ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
+        e.near *= lens;
+        let up = ((1.0 - lens) / 0.6).clamp(0.0, 1.0);
+        e.tilt *= 1.0 - up * up * (3.0 - 2.0 * up);
         let at = e.on;
         let eye_x = e.look.0;
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
