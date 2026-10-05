@@ -88,20 +88,92 @@ impl Rope {
         self.quiet = 0;
     }
 
-    /// One step of `dt` seconds; whether anything moved.
+    /// The table, the hole's walls and floor, and its rounded rim: where a
+    /// link may be.
+    fn collide(&mut self, i: usize) {
+        let r = self.radius();
+        let p = self.pts[i];
+        let Some(([x0, y0, x1, y1], depth)) = self.hole else {
+            if p[2] < self.table + r {
+                self.rest_on(i, self.table + r);
+            }
+            return;
+        };
+        let inside = p[0] > x0 && p[0] < x1 && p[1] > y0 && p[1] < y1;
+        if inside {
+            // Down to its floor, and within its walls below the table.
+            if p[2] < self.table - depth + r {
+                self.rest_on(i, self.table - depth + r);
+            }
+            if self.pts[i][2] < self.table {
+                self.pts[i][0] = self.pts[i][0].clamp(x0 + r, x1 - r);
+                self.pts[i][1] = self.pts[i][1].clamp(y0 + r, y1 - r);
+            }
+        } else if p[2] < self.table + r {
+            self.rest_on(i, self.table + r);
+        }
+        // The rim, rounded (as a cylinder along each edge): the cord goes
+        // over it in a curve, not through its corner.
+        let rim = 1.5 * self.k + r;
+        let p = self.pts[i];
+        let edges = [(1, y0, x0, x1), (1, y1, x0, x1), (0, x0, y0, y1), (0, x1, y0, y1)];
+        for (axis, at, lo, hi) in edges {
+            let along = if axis == 1 { p[0] } else { p[1] };
+            if along < lo || along > hi {
+                continue;
+            }
+            let across = p[axis] - at;
+            let up = p[2] - self.table;
+            let d = (across * across + up * up).sqrt();
+            if d < rim && d > 1e-4 {
+                let k = rim / d;
+                self.pts[i][axis] = at + across * k;
+                self.pts[i][2] = self.table + up * k;
+            }
+        }
+    }
+
+    /// Resting on a surface at `z`: there, sliding on it slowed - and held
+    /// still when it hardly slides (without that it crept on for ever).
+    fn rest_on(&mut self, i: usize, z: f32) {
+        self.pts[i][2] = z;
+        let v = [self.pts[i][0] - self.prev[i][0], self.pts[i][1] - self.prev[i][1]];
+        let slow = (v[0] * v[0] + v[1] * v[1]).sqrt() < 0.5;
+        for a in 0..2 {
+            self.prev[i][a] = if slow { self.pts[i][a] } else { self.pts[i][a] - v[a] * 0.8 };
+        }
+        self.prev[i][2] = z;
+    }
+
+    fn pin(&mut self) {
+        self.pts[0] = self.start;
+        self.pts[1] = add(self.start, mul(self.dir, self.seg));
+        self.pts[LINKS - 1] = self.end;
+        // It goes straight down into the hole.
+        self.pts[LINKS - 2] = add(self.end, [0.0, 0.0, self.seg]);
+    }
+
+    fn free(i: usize) -> bool {
+        (2..LINKS - 2).contains(&i)
+    }
+
+    /// One step of `dt` seconds (in fixed steps of 1/120 s); whether
+    /// anything moved.
     pub fn step(&mut self, dt: f32) -> bool {
         if self.k <= 0.0 {
             return false;
         }
         if self.pts.len() != LINKS {
             self.lay();
+            self.last_start = self.start;
         }
-        let moved_start = len(sub(self.start, self.last_start)) > 0.05;
-        self.last_start = self.start;
-        if moved_start {
+        // Woken by a real move of the plug, not the sensors' tremor (a
+        // fraction of a pixel, each time the hinge or the gravity is read).
+        if len(sub(self.start, self.last_start)) > 0.4 {
+            self.last_start = self.start;
             self.quiet = 0;
         }
-        if self.quiet > 90 {
+        if self.quiet > 45 {
             return false;
         }
         // Pulled taut further than it reaches: more of it comes off the
@@ -111,91 +183,83 @@ impl Rope {
         if reach > self.seg {
             self.seg = reach;
         }
-        let r = self.radius();
         let g = 9810.0 * self.k;
-        let dt = dt.clamp(1.0 / 240.0, 1.0 / 30.0);
-        let mut motion = 0.0;
-        for i in 2..LINKS - 2 {
-            let p = self.pts[i];
-            let v = mul(sub(p, self.prev[i]), 0.985);
-            self.prev[i] = p;
-            self.pts[i] = add(add(p, v), [0.0, 0.0, -g * dt * dt]);
-        }
-        let pin = |s: &mut Rope| {
-            s.pts[0] = s.start;
-            s.pts[1] = add(s.start, mul(s.dir, s.seg));
-            s.pts[LINKS - 1] = s.end;
-            // It goes straight down into the hole.
-            s.pts[LINKS - 2] = add(s.end, [0.0, 0.0, s.seg]);
-        };
-        pin(self);
-        for _ in 0..PASSES {
-            for i in 0..LINKS - 1 {
-                let d = sub(self.pts[i + 1], self.pts[i]);
-                let l = len(d).max(1e-4);
-                let c = mul(d, (l - self.seg) / l);
-                let (a, b) = (i >= 2 && i < LINKS - 2, i + 1 >= 2 && i + 1 < LINKS - 2);
-                match (a, b) {
-                    (true, true) => {
-                        self.pts[i] = add(self.pts[i], mul(c, 0.5));
-                        self.pts[i + 1] = sub(self.pts[i + 1], mul(c, 0.5));
-                    }
-                    (true, false) => self.pts[i] = add(self.pts[i], c),
-                    (false, true) => self.pts[i + 1] = sub(self.pts[i + 1], c),
-                    _ => {}
-                }
-            }
-            // Stiffness: no sharper bend than a USB cable takes (a radius of
-            // about 25 mm: links two apart nearly their whole length apart).
-            let turn = self.seg / (25.0 * self.k);
-            let min = 2.0 * self.seg * (turn / 2.0).cos();
-            for i in 0..LINKS - 2 {
-                let d = sub(self.pts[i + 2], self.pts[i]);
-                let l = len(d).max(1e-4);
-                if l < min {
-                    let c = mul(d, (min - l) / l * 0.5);
-                    if i >= 2 {
-                        self.pts[i] = sub(self.pts[i], c);
-                    }
-                    if i + 2 < LINKS - 2 {
-                        self.pts[i + 2] = add(self.pts[i + 2], c);
-                    }
-                }
-            }
-            // The table: on it, not through it, but over the hole; sliding
-            // there slows. In the hole: within its walls.
+        let h = 1.0 / 120.0;
+        // Two steps a frame, always: an even count, so a link that rocks
+        // between two places step by step (where the hole's floor and the
+        // cord's stiffness meet) is drawn in one.
+        let _ = dt;
+        let before = self.pts.clone();
+        for _ in 0..2 {
             for i in 2..LINKS - 2 {
-                if let Some(([x0, y0, x1, y1], depth)) = self.hole {
-                    let p = self.pts[i];
-                    if p[0] > x0 + r && p[0] < x1 - r && p[1] > y0 + r && p[1] < y1 - r {
-                        if p[2] < self.table - depth + r {
-                            self.pts[i][2] = self.table - depth + r;
-                        }
-                        continue;
-                    }
-                    if p[2] < self.table {
-                        // Below the table's level outside the opening: back
-                        // within the walls.
-                        self.pts[i][0] = p[0].clamp(x0 + r, x1 - r);
-                        self.pts[i][1] = p[1].clamp(y0 + r, y1 - r);
-                        continue;
-                    }
-                }
-                if self.pts[i][2] < self.table + r {
-                    self.pts[i][2] = self.table + r;
-                    for a in 0..2 {
-                        self.prev[i][a] = self.pts[i][a] - (self.pts[i][a] - self.prev[i][a]) * 0.93;
-                    }
-                    self.prev[i][2] = self.pts[i][2];
-                }
+                let p = self.pts[i];
+                // A cable's own friction: its swings die down soon.
+                let v = mul(sub(p, self.prev[i]), 0.96);
+                self.prev[i] = p;
+                self.pts[i] = add(add(p, v), [0.0, 0.0, -g * h * h]);
             }
-            pin(self);
+            self.pin();
+            for _ in 0..PASSES {
+                // Its length.
+                for i in 0..LINKS - 1 {
+                    let d = sub(self.pts[i + 1], self.pts[i]);
+                    let l = len(d).max(1e-4);
+                    let c = mul(d, (l - self.seg) / l);
+                    match (Self::free(i), Self::free(i + 1)) {
+                        (true, true) => {
+                            self.pts[i] = add(self.pts[i], mul(c, 0.5));
+                            self.pts[i + 1] = sub(self.pts[i + 1], mul(c, 0.5));
+                        }
+                        (true, false) => self.pts[i] = add(self.pts[i], c),
+                        (false, true) => self.pts[i + 1] = sub(self.pts[i + 1], c),
+                        _ => {}
+                    }
+                }
+                // Its stiffness: each link drawn toward the line between its
+                // neighbours (the bend spread along it, as an elastic rod
+                // bends), and nowhere sharper than a 25 mm radius.
+                let turn = self.seg / (25.0 * self.k);
+                let min = 2.0 * self.seg * (turn / 2.0).cos();
+                for i in 1..LINKS - 1 {
+                    let mid = mul(add(self.pts[i - 1], self.pts[i + 1]), 0.5);
+                    let c = mul(sub(mid, self.pts[i]), 0.06);
+                    if Self::free(i) {
+                        self.pts[i] = add(self.pts[i], c);
+                    }
+                    for j in [i - 1, i + 1] {
+                        if Self::free(j) {
+                            self.pts[j] = sub(self.pts[j], mul(c, 0.5));
+                        }
+                    }
+                    let d = sub(self.pts[i + 1], self.pts[i - 1]);
+                    let l = len(d).max(1e-4);
+                    if l < min {
+                        let c = mul(d, (min - l) / l * 0.5);
+                        if Self::free(i - 1) {
+                            self.pts[i - 1] = sub(self.pts[i - 1], c);
+                        }
+                        if Self::free(i + 1) {
+                            self.pts[i + 1] = add(self.pts[i + 1], c);
+                        }
+                    }
+                }
+                for i in 2..LINKS - 2 {
+                    self.collide(i);
+                }
+                self.pin();
+            }
         }
-        for i in 0..LINKS {
-            motion += len(sub(self.pts[i], self.prev[i]));
+        // How far it moved over the frame (the free links: the pinned ones
+        // follow the plug).
+        let mut motion = 0.0f32;
+        for i in 2..LINKS - 2 {
+            motion = motion.max(len(sub(self.pts[i], before[i])));
         }
-        if motion < 0.02 * LINKS as f32 {
+        if motion < 0.05 {
             self.quiet += 1;
+            if self.quiet == 45 && std::env::var_os("CRADLE_ROPE").is_some() {
+                eprintln!("rope: at rest");
+            }
         } else {
             self.quiet = 0;
         }
@@ -325,7 +389,9 @@ impl Rope {
                 }
                 cr.close_path();
                 cr.clip();
-                tube(cr, &lower, 0.85);
+                // In the dark of the hole: dimmer the deeper (seen as it
+                // goes in, not as it lies at the bottom).
+                tube(cr, &lower, 0.16);
                 cr.restore().ok();
             }
         }

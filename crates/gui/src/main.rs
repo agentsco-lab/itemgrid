@@ -2033,7 +2033,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     let n = (reach / step).ceil() as i32 + 1;
     let shift = floor_shift(k);
     let pieces = 40;
-    cr.set_line_width(1.0);
+    cr.set_line_width(1.6);
     for i in -n..=n {
         for along_x in [true, false] {
             // Rows at the shift in y, columns at the shift in x.
@@ -2076,14 +2076,15 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     quad(cr, top);
     cr.clip();
     quad(cr, bot);
-    cr.set_source_rgb(0.25, 0.25, 0.26);
+    cr.set_source_rgb(0.04, 0.04, 0.045);
     let _ = cr.fill();
     // A wall: white at its top edge, greyer toward the bottom.
     let wall = |cr: &gtk::cairo::Context, a: usize, b: usize, light: f64| {
         quad(cr, [top[a], top[b], bot[b], bot[a]]);
         let g = gtk::cairo::LinearGradient::new(0.0, top[a].1.min(top[b].1), 0.0, bot[a].1.max(bot[b].1));
-        g.add_color_stop_rgb(0.0, light, light, light);
-        g.add_color_stop_rgb(1.0, light * 0.6, light * 0.6, light * 0.61);
+        g.add_color_stop_rgb(0.0, light * 0.55, light * 0.55, light * 0.56);
+        g.add_color_stop_rgb(0.5, 0.08, 0.08, 0.085);
+        g.add_color_stop_rgb(1.0, 0.03, 0.03, 0.035);
         let _ = cr.set_source(&g);
         let _ = cr.fill();
     };
