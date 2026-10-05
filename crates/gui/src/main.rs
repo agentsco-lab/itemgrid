@@ -2014,6 +2014,30 @@ fn build(app: &adw::Application) {
         let ui = ui.clone();
         move || look(&ui)
     });
+    // Not seen (asleep on Wi-Fi, mostly): its ssh at the address it had
+    // tried twice a second, a look at once when it answers - back from sleep
+    // it was found only at the next look, seconds later.
+    glib::timeout_add_local(std::time::Duration::from_millis(500), {
+        let ui = Rc::downgrade(&ui);
+        let trying = Rc::new(std::cell::Cell::new(false));
+        move || {
+            let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
+            let asleep = ui.state.borrow().host.is_none();
+            if asleep && !trying.get() && !ui.looking.get() {
+                trying.set(true);
+                let trying = trying.clone();
+                glib::spawn_future_local(async move {
+                    let back = gio::spawn_blocking(itemgrid_core::link::wifi_answers_quickly).await.unwrap_or(false);
+                    trying.set(false);
+                    if back && !ui.looking.get() {
+                        trace(format_args!("wifi: back from sleep, looking now"));
+                        look(&ui);
+                    }
+                });
+            }
+            glib::ControlFlow::Continue
+        }
+    });
     glib::timeout_add_seconds_local(REFRESH_S, {
         let ui = ui.clone();
         let mut ticks = 0u32;
@@ -2834,6 +2858,10 @@ fn follow_hinge(ui: &Rc<Ui>) {
         let st = ui.state.borrow();
         st.host.clone().filter(|_| !st.busy && !st.elsewhere)
     };
+    // Shut off the cable it goes to sleep: not followed again (started, it
+    // opened the sensors just as the phone went down) until a look sees it
+    // open (fill).
+    let want = want.filter(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable || ui.lid_shut_at.get().is_none());
     if want.is_none() {
         ui.pose_name.borrow_mut().clear();
     }
@@ -2849,12 +2877,11 @@ fn follow_hinge(ui: &Rc<Ui>) {
     // lid and the hinge come at once.
     let cable = itemgrid_core::link::Via::of(&host) == itemgrid_core::link::Via::Cable;
     trace(format_args!("follow: start {host} awake {cable}"));
-    // duo-motion on the cable (put on the phone as needed), else
-    // sfduo-posture through gdbus. Only where the phone is kept from
-    // sleeping: it went to sleep under duo-motion's sensors (Wi-Fi, no
-    // inhibitor) and sensorfw stuck - sfduo-posture lets go of its own with
-    // the screen.
-    let motion_try = if cable { itemgrid_core::posture::follow_motion(&host, cable) } else { None };
+    // duo-motion (put on the phone as needed), else sfduo-posture through
+    // gdbus. On Wi-Fi too: asleep under duo-motion's sensors sensorfw
+    // stuck, so there it is stopped as the phone is about to sleep, its
+    // sessions let go first (posture.rs).
+    let motion_try = itemgrid_core::posture::follow_motion(&host, cable);
     let (follow, motion) = match motion_try {
         Some(Ok(f)) => (Ok(f), true),
         Some(Err(e)) => {
@@ -5237,6 +5264,14 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
     for p in &ui.cable_plug {
         p.set_visible(link == "cable");
     }
+    // Seen open by a look after it was shut (followed again: follow_hinge).
+    if s.hinge.is_some_and(|a| a > 20.0) && ui.lid_shut_at.get().is_some() {
+        ui.lid_shut_at.set(None);
+        ui.shut_away.set(false);
+        if ui.pose_name.borrow().as_str() == "closed" {
+            ui.pose_name.borrow_mut().clear();
+        }
+    }
     if let Some(a) = s.hinge {
         fold_to(ui, if ui.pose_name.borrow().as_str() == "closed" { 0.0 } else { a });
     }
@@ -5534,8 +5569,19 @@ fn live_sync(ui: &Rc<Ui>) {
 fn take_screens(ui: &Rc<Ui>, save: bool) {
     let Some(host) = ui.state.borrow().host.clone() else { return };
     let ui = ui.clone();
+    let began = std::time::Instant::now();
     glib::spawn_future_local(async move {
-        let got = gio::spawn_blocking(move || -> Result<(Vec<u8>, Option<std::path::PathBuf>), String> {
+        let got = gio::spawn_blocking(move || -> Result<([Vec<u8>; 2], (usize, usize), Option<std::path::PathBuf>), String> {
+            // For the drawn Duo a third of each side is plenty (made small on
+            // the phone: over Wi-Fi the whole frame took ~3 s); kept, whole.
+            if !save {
+                let (rgba, w, h) = screenshot::take_small(&host, 3)?;
+                if w == screenshot::SCREEN_W {
+                    return Ok((screenshot::panels(&rgba), screenshot::PANEL_SIZE, None));
+                }
+                let (panels, pw) = screenshot::panels_small(&rgba, w, h);
+                return Ok((panels, (pw, h), None));
+            }
             let rgba = screenshot::take(&host)?;
             let saved = if save {
                 let png = screenshot::png(&rgba, false)?;
@@ -5548,14 +5594,14 @@ fn take_screens(ui: &Rc<Ui>, save: bool) {
             } else {
                 None
             };
-            Ok((rgba, saved))
+            Ok((screenshot::panels(&rgba), screenshot::PANEL_SIZE, saved))
         })
         .await
         .unwrap_or_else(|_| Err("the work stopped".into()));
         match got {
-            Ok((rgba, saved)) => {
-                let (w, h) = screenshot::PANEL_SIZE;
-                for (picture, pixels) in ui.screens.iter().zip(screenshot::panels(&rgba)) {
+            Ok((panels, (w, h), saved)) => {
+                trace(format_args!("screens: {w}x{h} a panel in {:.2} s", began.elapsed().as_secs_f64()));
+                for (picture, pixels) in ui.screens.iter().zip(panels) {
                     let texture = gdk::MemoryTexture::new(w as i32, h as i32, gdk::MemoryFormat::R8g8b8a8, &glib::Bytes::from_owned(pixels), w * 4);
                     picture.set_paintable(Some(&texture));
                 }

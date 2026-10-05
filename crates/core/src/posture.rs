@@ -50,7 +50,7 @@ pub enum Reading {
 }
 
 /// Where duo-motion is kept on the phone.
-const MOTION_ON_PHONE: &str = "/var/lib/itemgrid/duo-motion";
+pub(crate) const MOTION_ON_PHONE: &str = "/var/lib/itemgrid/duo-motion";
 
 /// The phone kept from sleeping while what follows runs (as root: item's
 /// own asking to sleep is refused).
@@ -80,7 +80,15 @@ pub fn follow_motion(host: &str, awake: bool) -> Option<Result<(Follow, Stop), S
             crate::phone::put(host, &local, &format!("{MOTION_ON_PHONE}.new"))?;
             crate::phone::run_checked(host, &format!("chmod 755 {MOTION_ON_PHONE}.new && mv {MOTION_ON_PHONE}.new {MOTION_ON_PHONE}\n"))?;
         }
-        let script = if awake { format!("exec {INHIBIT} {MOTION_ON_PHONE} --cable\n") } else { format!("exec {MOTION_ON_PHONE}\n") };
+        let script = if awake {
+            format!("exec {INHIBIT} {MOTION_ON_PHONE} --cable\n")
+        } else {
+            // On Wi-Fi: its power saving off while followed; the phone let
+            // sleep, but only once duo-motion has let its sensors go (a
+            // delay inhibitor held until then; asleep with them held,
+            // sensorfwd hung).
+            format!("{WIFI_AWAKE}{INHIBIT_DELAY} sh -s <<'ITEMGRID_MOTION'\n{}ITEMGRID_MOTION\n", MOTION_UNTIL_SLEEP.replace("DUO_MOTION", MOTION_ON_PHONE))
+        };
         let mut child = crate::phone::spawn_own(host, &script, Stdio::piped())?;
         let out = child.stdout.take().ok_or("no output")?;
         Ok((Follow { lines: BufReader::new(out), queued: Default::default() }, Stop(Arc::new(Mutex::new(child)))))
@@ -114,9 +122,27 @@ impl Stop {
 /// when the following ends - the window closed or the cable out): asleep,
 /// the lid and the hinge reached the window only after it woke, the link
 /// came back and the window looked again - seconds.
+/// Sleep put off (a few seconds at most, logind's InhibitDelayMaxSec) while
+/// it holds.
+const INHIBIT_DELAY: &str = "systemd-inhibit --what=sleep --who=item/grid --why='Letting the sensors go before sleep' --mode=delay";
+
+/// duo-motion run until the phone is about to sleep (logind's
+/// PrepareForSleep), then asked to stop and waited for; its watcher gone
+/// with it.
+const MOTION_UNTIL_SLEEP: &str = "DUO_MOTION & d=$!
+( gdbus monitor --system --dest org.freedesktop.login1 --object-path /org/freedesktop/login1 | while read -r l; do case \"$l\" in *PrepareForSleep*true*) kill -TERM $d; break;; esac; done ) & w=$!
+wait $d
+pkill -P $w 2>/dev/null; kill $w 2>/dev/null
+";
+
 /// The phone's Wi-Fi power saving off for as long as the script that
-/// starts with this runs (as root).
-const WIFI_AWAKE: &str = "iw dev wlan0 set power_save off 2>/dev/null\ntrap 'iw dev wlan0 set power_save on 2>/dev/null' EXIT\ntrap 'exit 0' HUP INT TERM PIPE\n";
+/// starts with this runs (as root) - on again when the last such ends
+/// (each marked in /run: one ending after the next began turned it on
+/// under it).
+const WIFI_AWAKE: &str = "touch /run/itemgrid-awake.$$; iw dev wlan0 set power_save off 2>/dev/null
+trap 'rm -f /run/itemgrid-awake.$$; for f in /run/itemgrid-awake.*; do [ -e \"$f\" ] || continue; kill -0 \"${f##*.}\" 2>/dev/null && exit 0; rm -f \"$f\"; done; iw dev wlan0 set power_save on 2>/dev/null' EXIT
+trap 'exit 0' HUP INT TERM PIPE
+";
 
 pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
     // As root for the inhibitor; the following itself as the owner (in a

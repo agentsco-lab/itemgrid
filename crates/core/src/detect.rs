@@ -79,8 +79,21 @@ pub fn detect() -> Seen {
     if std::env::var_os("ITEMGRID_NO_WIFI").is_some() {
         return Seen { mode: Mode::Gone, via: String::new() };
     }
-    if let Some(host) = crate::link::wifi_hosts().into_iter().find(|h| crate::phone::answers(h)) {
+    // The addresses it had first, their port tried at once (asleep, ssh
+    // waited 2 s for each and the names 2 s more: a look took 3-4 s, the
+    // phone back from sleep found that much later); the names resolved only
+    // when none answers (its address changed), each 30 s at most.
+    if let Some(host) = crate::link::wifi_addresses().into_iter().find(|h| crate::link::port_open(h) && crate::phone::answers(h)) {
         return Seen { mode: Mode::Linux, via: host };
+    }
+    static RESOLVED: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let due = RESOLVED.lock().unwrap().is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(30));
+    if due {
+        *RESOLVED.lock().unwrap() = Some(std::time::Instant::now());
+        let tried = crate::link::wifi_addresses();
+        if let Some(host) = crate::link::wifi_hosts().into_iter().filter(|h| !tried.contains(h)).find(|h| crate::link::port_open(h) && crate::phone::answers(h)) {
+            return Seen { mode: Mode::Linux, via: host };
+        }
     }
     Seen { mode: Mode::Gone, via: String::new() }
 }

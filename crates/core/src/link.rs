@@ -164,6 +164,36 @@ pub fn wifi_hosts() -> Vec<String> {
     out
 }
 
+/// Whether `host`'s ssh port takes a connection, at once (0.3 s at most).
+pub fn port_open(host: &str) -> bool {
+    format!("{host}:22").parse::<std::net::SocketAddr>().is_ok_and(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(300)).is_ok())
+}
+
+/// The addresses the known phones had (newest first), noted for their
+/// host keys - no names resolved (wifi_hosts: up to 2 s each, the phone
+/// asleep).
+pub fn wifi_addresses() -> Vec<String> {
+    let mut all = known();
+    all.sort_by(|a, b| b.seen.cmp(&a.seen));
+    let mut guard = FOR.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    let mut out = Vec::new();
+    for k in all.iter().filter(|k| !k.address.is_empty()) {
+        if !out.contains(&k.address) {
+            map.insert(k.address.clone(), k.serial.clone());
+            out.push(k.address.clone());
+        }
+    }
+    out
+}
+
+/// Whether a known phone's ssh answers on the network at the address it
+/// had, at once (a connection opened and closed, 0.3 s at most each): to
+/// notice it back from sleep without a whole look.
+pub fn wifi_answers_quickly() -> bool {
+    known().iter().filter(|k| !k.address.is_empty()).any(|k| port_open(&k.address))
+}
+
 /// A .local name to an address (nss-mdns through getent), quickly.
 fn resolve(name: &str) -> Option<String> {
     if name.is_empty() {

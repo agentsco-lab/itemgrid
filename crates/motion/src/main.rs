@@ -29,7 +29,10 @@
 //! whatever holds the phone awake for it would hold on).
 //!
 //! Kept from sleeping by whoever starts it (item/grid: logind's inhibitor
-//! around it - a kernel wakelock does not stop systemd-sleep).
+//! around it - a kernel wakelock does not stop systemd-sleep). On Wi-Fi
+//! nothing keeps the phone awake: asked to stop (SIGTERM, SIGHUP - item/grid
+//! does as the phone is about to sleep) it lets its sensorfw sessions go
+//! first (asleep with them held, sensorfwd hung).
 
 mod ahrs;
 mod sensorfw;
@@ -51,6 +54,17 @@ extern "C" {
     fn poll(fds: *mut PollFd, n: u64, timeout: i32) -> i32;
 }
 const POLLIN: i16 = 1;
+
+/// Asked to stop (a signal): the loop ends, the sessions are let go.
+static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn asked_to_stop(_: i32) {
+    STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+extern "C" {
+    fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+}
 
 /// The lid switch's input device (a switch device with SW_LID).
 fn lid_device() -> Option<std::fs::File> {
@@ -103,7 +117,48 @@ impl Looking {
     }
 }
 
+/// `duo-motion shrink W H N`: an RGBA frame W x H on standard input, each
+/// N x N square of it averaged, out as RGBA (W/N x H/N) - a screenshot made
+/// small on the phone for the window's drawn Duo (over Wi-Fi the whole
+/// frame, 20 MB, took about 3 s).
+fn shrink(w: usize, h: usize, n: usize) {
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    if std::io::stdin().read_to_end(&mut rgba).is_err() || rgba.len() != w * h * 4 || n == 0 {
+        std::process::exit(1);
+    }
+    let (ow, oh) = (w / n, h / n);
+    let mut out = vec![0u8; ow * oh * 4];
+    let mut sum = vec![0u32; ow * 4];
+    for oy in 0..oh {
+        sum.iter_mut().for_each(|v| *v = 0);
+        for y in oy * n..oy * n + n {
+            let row = &rgba[y * w * 4..(y + 1) * w * 4];
+            for ox in 0..ow {
+                for x in ox * n..ox * n + n {
+                    for c in 0..4 {
+                        sum[ox * 4 + c] += row[x * 4 + c] as u32;
+                    }
+                }
+            }
+        }
+        for (o, s) in out[oy * ow * 4..(oy + 1) * ow * 4].iter_mut().zip(&sum) {
+            *o = (s / (n * n) as u32) as u8;
+        }
+    }
+    let _ = std::io::stdout().write_all(&out);
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("shrink") {
+        let num = |i: usize| args.get(i).and_then(|v| v.parse().ok()).unwrap_or(0);
+        return shrink(num(2), num(3), num(4));
+    }
+    // SIGHUP, SIGTERM: stop (poll wakes, the loop sees it).
+    unsafe {
+        signal(1, asked_to_stop);
+        signal(15, asked_to_stop);
+    }
     // --raw: the gyroscope and the field as read, too (rg, rm lines).
     let raw_out = std::env::args().any(|a| a == "--raw");
     // --north: the field heeded for the turn about the vertical. Not by
@@ -166,7 +221,7 @@ fn main() {
     let mut reopen_wait = Duration::from_secs(3);
     let mut reopen_at: Option<Instant> = missing(&sensors).then(|| Instant::now() + reopen_wait);
 
-    while alive {
+    while alive && !STOP.load(std::sync::atomic::Ordering::SeqCst) {
         let mut fds: Vec<PollFd> = sensors.iter().flatten().map(|s| PollFd { fd: s.sock.as_raw_fd(), events: POLLIN, revents: 0 }).collect();
         let lid_at = fds.len();
         if let Some(f) = &lid {
@@ -307,6 +362,9 @@ fn main() {
                 }
             }
         }
+    }
+    if STOP.load(std::sync::atomic::Ordering::SeqCst) {
+        eprintln!("duo-motion: asked to stop: letting the sensors go");
     }
     for s in sensors.iter().flatten() {
         s.close();
