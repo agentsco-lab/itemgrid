@@ -1,8 +1,8 @@
-//! A slot's boot chain (boot, dtbo, vbmeta) put back from a Cradle backup -
+//! A slot's boot chain (boot, dtbo, vbmeta) put back from a Hythe backup -
 //! flashing, so by the port's SAFETY.md:
 //!
 //! - one slot at a time: the other stays as it is, the way out;
-//! - only from Cradle's boot-chain backups, each file checked against its
+//! - only from Hythe's boot-chain backups, each file checked against its
 //!   manifest's sha256;
 //! - a partition that already holds the backup's bytes is not written;
 //! - a boot that differs is first booted from RAM (the RAM boot, with all
@@ -106,11 +106,11 @@ pub fn restore(host: &str, plan: &Plan, say: crate::ramboot::Say) -> Result<(), 
 
     say("backing up the boot chain as it is now".into());
     let before = crate::backup::take(host, Kind::Boot, &mut |l| say(l))?;
-    crate::flash::log(&serial, &format!("restore of slot {} from {}: the chain before backed up in {} - cradle", plan.slot, plan.backup.manifest.created, before.dir.display()))?;
+    crate::flash::log(&serial, &format!("restore of slot {} from {}: the chain before backed up in {} - hythe", plan.slot, plan.backup.manifest.created, before.dir.display()))?;
 
     for p in &writes {
         say(format!("writing {}", p.partition));
-        let remote = format!("/var/tmp/cradle-restore/{}.img", p.partition);
+        let remote = format!("/var/tmp/hythe-restore/{}.img", p.partition);
         crate::phone::upload(host, &p.file, &remote)?;
         let dev = format!("/dev/disk/by-partlabel/{}", p.partition);
         let script = format!(
@@ -118,10 +118,10 @@ pub fn restore(host: &str, plan: &Plan, say: crate::ramboot::Say) -> Result<(), 
         );
         let back = crate::phone::run_vetted(host, &script)?;
         if back.trim() != p.sha256 {
-            crate::flash::log(&serial, &format!("RESTORE-STOP: {} read back differs after writing - cradle", p.partition))?;
+            crate::flash::log(&serial, &format!("RESTORE-STOP: {} read back differs after writing - hythe", p.partition))?;
             return Err(format!("{} read back differs from the backup after writing - STOP: do not reboot; the chain before is in {}", p.partition, before.dir.display()));
         }
-        crate::flash::log(&serial, &format!("restored {} from {} ({}) - cradle", p.partition, plan.backup.manifest.created, &p.sha256[..16]))?;
+        crate::flash::log(&serial, &format!("restored {} from {} ({}) - hythe", p.partition, plan.backup.manifest.created, &p.sha256[..16]))?;
     }
 
     // Booted from the restored slot, it proves itself.

@@ -55,7 +55,7 @@ pub struct Plan {
 }
 
 fn props_script() -> &'static str {
-    r#"for s in a b; do d=/tmp/cradle-super-$s; mkdir -p $d
+    r#"for s in a b; do d=/tmp/hythe-super-$s; mkdir -p $d
   if mount -o ro /dev/mapper/dynpart-vendor_$s $d 2>/dev/null; then
     echo "slot=$s $(grep -h '^ro.vendor.build.date.utc=\|^ro.vendor.build.fingerprint=' $d/build.prop | tr '\n' ' ')"
     umount $d
@@ -132,11 +132,11 @@ pub fn kernel_of(path: &Path) -> Option<Kernel> {
     Some(Kernel { path: path.to_owned(), version: line, built_utc: utc_of(&date)? })
 }
 
-/// Where stock kernels are looked for: Cradle's own stock folder, its
+/// Where stock kernels are looked for: Hythe's own stock folder, its
 /// backups, and the port's out/backups/.
 fn kernel_places() -> Vec<PathBuf> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let mut dirs = vec![home.join(".local/share/cradle/stock"), crate::backup::root()];
+    let mut dirs = vec![home.join(".local/share/hythe/stock"), crate::backup::root()];
     if let Some(port) = crate::flash::port_tree() {
         dirs.push(port.join("out/backups"));
     }
@@ -206,7 +206,7 @@ pub fn plan(host: &str) -> Result<Plan, String> {
         stops.push("no Android build found in super - nothing to return to".into());
     }
     match &kernel {
-        None => stops.push("no stock kernel from the build in super on this computer (~/.local/share/cradle/stock/, or the backup taken before the port went on)".into()),
+        None => stops.push("no stock kernel from the build in super on this computer (~/.local/share/hythe/stock/, or the backup taken before the port went on)".into()),
         Some((k, _)) => {
             if let Err(e) = crate::ramboot::check_image(&k.path) {
                 stops.push(format!("the stock kernel fails the image check: {e}"));
@@ -271,7 +271,7 @@ pub(crate) fn guest_path_of(serial: &str) -> PathBuf {
 }
 
 fn guest_path(serial: &str) -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/cradle/android").join(format!("{serial}.json"))
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/hythe/android").join(format!("{serial}.json"))
 }
 
 fn remember_guest(serial: &str, kernel: &Path, slot: char) -> Result<(), String> {
@@ -281,7 +281,7 @@ fn remember_guest(serial: &str, kernel: &Path, slot: char) -> Result<(), String>
     std::fs::write(&path, body.to_string()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The guest's kernel and slot, if Cradle started Android on this phone.
+/// The guest's kernel and slot, if Hythe started Android on this phone.
 pub fn guest(serial: &str) -> Option<(PathBuf, char)> {
     let d: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(guest_path(serial)).ok()?).ok()?;
     Some((PathBuf::from(d["kernel"].as_str()?), d["slot"].as_str()?.chars().next()?))
@@ -327,14 +327,14 @@ pub fn try_the_way_back(serial: &str) -> Result<(), String> {
     use sha2::{Digest, Sha256};
     // Not zeros - those would prove little: a hash chain, cheap and varied.
     let mut data = Vec::with_capacity(TEST_BYTES as usize);
-    let mut block = Sha256::digest(b"cradle way back").to_vec();
+    let mut block = Sha256::digest(b"hythe way back").to_vec();
     while (data.len() as u64) < TEST_BYTES {
         block = Sha256::digest(&block).to_vec();
         data.extend_from_slice(&block);
     }
     let want = format!("{:x}", Sha256::digest(&data));
-    crate::full::adb_send(serial, "cat > /tmp/cradle-way-back", &mut data.as_slice())?;
-    let there = crate::full::adb_shell(serial, "sha256sum /tmp/cradle-way-back | cut -d' ' -f1; rm -f /tmp/cradle-way-back")?;
+    crate::full::adb_send(serial, "cat > /tmp/hythe-way-back", &mut data.as_slice())?;
+    let there = crate::full::adb_shell(serial, "sha256sum /tmp/hythe-way-back | cut -d' ' -f1; rm -f /tmp/hythe-way-back")?;
     if there.trim() != want {
         return Err("the way back failed its trial (what arrived differs) - nothing is erased".into());
     }
@@ -397,7 +397,7 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
         say("taking the whole system's backup first".into());
         crate::full::take(host, say)?
     };
-    crate::flash::log(&serial, &format!("return to Android begun: the system backed up in {} - cradle", full.dir.display()))?;
+    crate::flash::log(&serial, &format!("return to Android begun: the system backed up in {} - hythe", full.dir.display()))?;
 
     // Into TWRP, where the way back is tried and userdata erased.
     say("into TWRP".into());
@@ -407,17 +407,17 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
         let _ = crate::ramboot::leave_recovery(host, &serial, say);
         return Err(e);
     }
-    crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - cradle", build.fingerprint))?;
+    crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - hythe", build.fingerprint))?;
     erase(&serial, say)?;
-    crate::flash::log(&serial, "metadata and userdata zeroed and read back - cradle")?;
+    crate::flash::log(&serial, "metadata and userdata zeroed and read back - hythe")?;
 
     // The stock kernel from RAM, on its slot.
     say("into the bootloader".into());
     crate::ramboot::adb_to_bootloader(&serial)?;
     remember_guest(&serial, &kernel.path, build.slot)?;
     crate::ramboot::boot_in_fastboot(host, &serial, build.slot, &kernel.path, &stock, crate::ramboot::Expect::Android, say)?;
-    crate::flash::log(&serial, &format!("stock Android started from RAM ({}) - cradle", kernel.path.display()))?;
-    say("Android is setting itself up on the phone. For Cradle later: Settings - About phone - tap Build number seven times - Developer options - USB debugging. Don't restart it plainly: the port's kernel is still on the slot and finds no system. For the bootloader: Volume Down + Power from off (or Cradle, with USB debugging on).".into());
+    crate::flash::log(&serial, &format!("stock Android started from RAM ({}) - hythe", kernel.path.display()))?;
+    say("Android is setting itself up on the phone. For Hythe later: Settings - About phone - tap Build number seven times - Developer options - USB debugging. Don't restart it plainly: the port's kernel is still on the slot and finds no system. For the bootloader: Volume Down + Power from off (or Hythe, with USB debugging on).".into());
     Ok(())
 }
 
@@ -430,14 +430,14 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
 /// and stops in its initramfs (USB 18d1:d001). Volume Down + Power from off
 /// reaches the bootloader; this starts Android from there.
 pub fn start(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
-    let (kernel, slot) = guest(serial).ok_or("Android was never started by Cradle on this phone: return to it first")?;
+    let (kernel, slot) = guest(serial).ok_or("Android was never started by Hythe on this phone: return to it first")?;
     let img = crate::ramboot::check_image(&kernel)?;
     if !crate::ramboot::in_fastboot(serial) {
         say("into the bootloader".into());
         crate::ramboot::adb_to_bootloader(serial)?;
     }
     crate::ramboot::boot_in_fastboot(host, serial, slot, &kernel, &img, crate::ramboot::Expect::Android, say)?;
-    crate::flash::log(serial, &format!("stock Android started from RAM ({}) - cradle", kernel.display()))
+    crate::flash::log(serial, &format!("stock Android started from RAM ({}) - hythe", kernel.display()))
 }
 
 // ---- coming back: from stock Android to Linux ---------------------------------
@@ -478,7 +478,7 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
         crate::full::adb_shell(serial, &format!("mkdir -p /tmp/ud; mountpoint -q /tmp/ud || mount -t ext4 {BLK}/userdata /tmp/ud; test -f /tmp/ud/rootfs.img && echo ok"))?;
     } else {
         say("making userdata ext4 again (Android's data goes)".into());
-        crate::flash::log(serial, "back to Linux: userdata made ext4 again - cradle")?;
+        crate::flash::log(serial, "back to Linux: userdata made ext4 again - hythe")?;
         crate::full::adb_shell(serial, &format!("umount /tmp/ud 2>/dev/null; mke2fs -F -t ext4 -L userdata {BLK}/userdata >/dev/null && mkdir -p /tmp/ud && mount -t ext4 {BLK}/userdata /tmp/ud && echo ok"))?;
 
         // The image in 512 MB parts; empty parts are left as holes.
@@ -511,7 +511,7 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
     // A failed stock boot may have left --prompt_and_wipe_data in misc.
     say("clearing misc".into());
     crate::full::adb_shell(serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync"))?;
-    crate::flash::log(serial, &format!("back to Linux: the system put back from {} - cradle", full.manifest.created))?;
+    crate::flash::log(serial, &format!("back to Linux: the system put back from {} - hythe", full.manifest.created))?;
 
     say("starting the port".into());
     crate::full::adb_shell(serial, "reboot").ok();
@@ -523,7 +523,7 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
     crate::ramboot::arm_brake_linux(host)?;
-    crate::flash::log(serial, "back in Linux, parking brake armed - cradle")?;
+    crate::flash::log(serial, "back in Linux, parking brake armed - hythe")?;
     let _ = std::fs::remove_file(guest_path(serial));
     fingers_back(host, full.manifest.fingers, say);
     say("Linux is back: enter the PIN on the phone".into());
@@ -681,8 +681,8 @@ pub(crate) fn put_archive(serial: &str, archive: &Path, root: &str, say: crate::
     crate::full::adb_shell(serial, &format!("mkdir -p '{root}'"))?;
     // From a file, not a pipe: from a pipe TWRP's tar cut a 1.3 MB file
     // short and stopped there, quietly (2026-10-04).
-    crate::full::push_file(serial, &small, "/tmp/cradle-small.tar")?;
-    crate::full::adb_shell(serial, &format!("tar -C '{root}' -xpf /tmp/cradle-small.tar; rc=$?; rm -f /tmp/cradle-small.tar; exit $rc"))?;
+    crate::full::push_file(serial, &small, "/tmp/hythe-small.tar")?;
+    crate::full::adb_shell(serial, &format!("tar -C '{root}' -xpf /tmp/hythe-small.tar; rc=$?; rm -f /tmp/hythe-small.tar; exit $rc"))?;
     for (path, size, mode, uid, gid) in &big {
         say(format!("putting back {path} ({} MB)", size >> 20));
         let mut a = open()?;
@@ -702,8 +702,8 @@ pub(crate) fn put_archive(serial: &str, archive: &Path, root: &str, say: crate::
             return Err(format!("{path} went missing from the backup"));
         }
     }
-    crate::full::adb_send(serial, "cat > /tmp/cradle-sizes", &mut sizes.as_bytes())?;
-    let bad = crate::full::adb_shell(serial, "n=0; while read s p; do [ \"$(stat -c %s \"$p\" 2>/dev/null)\" = \"$s\" ] || n=$((n+1)); done < /tmp/cradle-sizes; rm -f /tmp/cradle-sizes; echo $n")?;
+    crate::full::adb_send(serial, "cat > /tmp/hythe-sizes", &mut sizes.as_bytes())?;
+    let bad = crate::full::adb_shell(serial, "n=0; while read s p; do [ \"$(stat -c %s \"$p\" 2>/dev/null)\" = \"$s\" ] || n=$((n+1)); done < /tmp/hythe-sizes; rm -f /tmp/hythe-sizes; echo $n")?;
     if bad.trim() != "0" {
         return Err(format!("{} files did not arrive whole - stopping in TWRP; run back again", bad.trim()));
     }

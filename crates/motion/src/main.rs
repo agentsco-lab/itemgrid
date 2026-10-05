@@ -1,6 +1,6 @@
-//! duo-motion: the Duo's motion for Cradle, on the phone.
+//! duo-motion: the Duo's motion for Hythe, on the phone.
 //!
-//! Cradle starts it over ssh (as root) while its window follows the phone,
+//! Hythe starts it over ssh (as root) while its window follows the phone,
 //! and reads its lines; it ends when they can no longer be written (the
 //! window closed, the link gone). Straight from sensorfw's data socket -
 //! its own sessions, so the sensors run whatever the display does (the
@@ -28,7 +28,7 @@
 //! other end gone with it; the link's TCP would take minutes to tell, and
 //! whatever holds the phone awake for it would hold on).
 //!
-//! Kept from sleeping by whoever starts it (Cradle: logind's inhibitor
+//! Kept from sleeping by whoever starts it (Hythe: logind's inhibitor
 //! around it - a kernel wakelock does not stop systemd-sleep).
 
 mod ahrs;
@@ -114,12 +114,6 @@ fn main() {
     let north = std::env::args().any(|a| a == "--north");
     let on_cable = std::env::args().any(|a| a == "--cable");
     let mut cable_out_since: Option<Instant> = None;
-    // Kernel wakelocks earlier ones took (they outlived them) let go.
-    if let Ok(held) = std::fs::read_to_string("/sys/power/wake_lock") {
-        for old in held.split_whitespace().filter(|l| l.starts_with("duo-motion-")) {
-            let _ = std::fs::write("/sys/power/wake_unlock", old);
-        }
-    }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut say = |line: String| -> bool { out.write_all(line.as_bytes()).and_then(|_| out.write_all(b"\n")).and_then(|_| out.flush()).is_ok() };

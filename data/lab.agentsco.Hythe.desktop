@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Cradle
+Name=Hythe
 Comment=Look after a connected Surface Duo
-Exec=cradle-gui
-Icon=lab.agentsco.Cradle
+Exec=hythe-gui
+Icon=lab.agentsco.Hythe
 Terminal=false
 Categories=Utility;System;
 Keywords=Surface;Duo;phone;flash;item;

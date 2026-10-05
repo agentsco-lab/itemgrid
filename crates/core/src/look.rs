@@ -147,7 +147,7 @@ pub fn add_wall(host: &str, jpg: &Path, wanted: &str, credit: &str) -> Result<St
     if credit.contains(['\'', '\n']) {
         return Err("a credit is one line".into());
     }
-    let tmp = format!("/var/tmp/cradle-wall-{}.jpg", std::process::id());
+    let tmp = format!("/var/tmp/hythe-wall-{}.jpg", std::process::id());
     crate::phone::put(host, jpg, &tmp)?;
     // As root: into the owner's folder under a name not taken, theirs.
     let script = format!(

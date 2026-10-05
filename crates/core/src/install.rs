@@ -1,7 +1,7 @@
 //! Erase and install: the release image (the port's
 //! tools/build-release-image.sh) put on a phone that runs the port - its
 //! userdata made anew, the image written in checked parts, the owner's ssh
-//! key put in so Cradle can reach it, and its first start awaited (it grows
+//! key put in so Hythe can reach it, and its first start awaited (it grows
 //! to fill userdata by itself). What userdata held goes: the whole system is
 //! backed up first, unless a fresh backup is here already.
 
@@ -22,11 +22,11 @@ pub struct Release {
     pub compressed: PathBuf,
 }
 
-/// Where release images are looked for: Cradle's own folder, and the port's
+/// Where release images are looked for: Hythe's own folder, and the port's
 /// out/release when its tree is here.
 pub fn places() -> Vec<PathBuf> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let mut dirs = vec![home.join(".local/share/cradle/releases")];
+    let mut dirs = vec![home.join(".local/share/hythe/releases")];
     if let Some(port) = crate::flash::port_tree() {
         dirs.push(port.join("out/release"));
     }
@@ -65,7 +65,7 @@ pub fn read(dir: &Path) -> Result<Release, String> {
     })
 }
 
-/// The key Cradle reaches phones with.
+/// The key Hythe reaches phones with.
 pub fn public_key() -> Result<String, String> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let candidates = std::env::var_os("SFDUO_PUBKEY").map(PathBuf::from).into_iter().chain(["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"].iter().map(|n| home.join(".ssh").join(n)));
@@ -77,7 +77,7 @@ pub fn public_key() -> Result<String, String> {
             }
         }
     }
-    Err("no ssh public key in ~/.ssh: Cradle could not reach the phone after installing (ssh-keygen -t ed25519 makes one)".into())
+    Err("no ssh public key in ~/.ssh: Hythe could not reach the phone after installing (ssh-keygen -t ed25519 makes one)".into())
 }
 
 /// Erase and install, from Linux. `confirm` must be the phone's word
@@ -121,7 +121,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
             }
         },
     }
-    crate::flash::log(&serial, &format!("erase and install {} begun ({}) - cradle", release.name, mode.words()))?;
+    crate::flash::log(&serial, &format!("erase and install {} begun ({}) - hythe", release.name, mode.words()))?;
 
     say("into TWRP".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
@@ -135,7 +135,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
         return Err(format!("{e} - nothing is erased"));
     }
 
-    crate::flash::log(&serial, &format!("ERASING userdata for {} - cradle", release.name))?;
+    crate::flash::log(&serial, &format!("ERASING userdata for {} - hythe", release.name))?;
     say("making userdata anew (what it held goes)".into());
     let blk = crate::android::BLK;
     adb_shell(&serial, &format!("umount /tmp/ud 2>/dev/null; mke2fs -F -t ext4 -L userdata {blk}/userdata >/dev/null && mkdir -p /tmp/ud && mount -t ext4 {blk}/userdata /tmp/ud && echo ok"))?;
@@ -157,11 +157,11 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     let put_key = (|| -> Result<(), String> {
         // A small text by adb push: through the socket it did not arrive
         // (2026-10-04) - the big transfers go that way, this need not.
-        push_text(&serial, &key, "/tmp/cradle.pub")?;
+        push_text(&serial, &key, "/tmp/hythe.pub")?;
         adb_shell(
             &serial,
-            "for d in /tmp/r/root /tmp/r/home/droidian; do mkdir -p $d/.ssh && cat /tmp/cradle.pub > $d/.ssh/authorized_keys && chmod 700 $d/.ssh && chmod 600 $d/.ssh/authorized_keys; done; \
-             chown -R 0:0 /tmp/r/root/.ssh; chown -R 32011:32011 /tmp/r/home/droidian/.ssh; rm -f /tmp/cradle.pub; \
+            "for d in /tmp/r/root /tmp/r/home/droidian; do mkdir -p $d/.ssh && cat /tmp/hythe.pub > $d/.ssh/authorized_keys && chmod 700 $d/.ssh && chmod 600 $d/.ssh/authorized_keys; done; \
+             chown -R 0:0 /tmp/r/root/.ssh; chown -R 32011:32011 /tmp/r/home/droidian/.ssh; rm -f /tmp/hythe.pub; \
              grep -q ssh- /tmp/r/root/.ssh/authorized_keys && echo ok",
         )
         .map(|_| ())
@@ -177,7 +177,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     say("clearing misc".into());
     adb_shell(&serial, &format!("dd if=/dev/zero of={blk}/misc bs=2048 count=1 2>/dev/null; sync"))?;
     let _ = std::fs::remove_file(crate::android::guest_path_of(&serial));
-    crate::flash::log(&serial, &format!("{} installed (userdata anew) - cradle", release.name))?;
+    crate::flash::log(&serial, &format!("{} installed (userdata anew) - hythe", release.name))?;
 
     say("starting the new system - its first start grows it to fill userdata".into());
     adb_shell(&serial, "reboot").ok();
@@ -189,7 +189,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
     crate::ramboot::arm_brake_linux(host)?;
-    crate::flash::log(&serial, "the new system answers, parking brake armed - cradle")?;
+    crate::flash::log(&serial, "the new system answers, parking brake armed - hythe")?;
     say(if mode == Mode::KeepFiles { "the new system is up: unlock with your PIN".into() } else { "the new system is up: unlock with 1234, then choose your own PIN".into() });
     Ok(())
 }
@@ -297,8 +297,8 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
     }
     let small = small.into_inner().map_err(|e| e.to_string())?;
     say(format!("putting back your files ({} MB, {} big)", small.len() >> 20, big.len()));
-    crate::full::push_file(serial, &small, "/tmp/cradle-small.tar")?;
-    adb_shell(serial, "tar -C /tmp/r -xpf /tmp/cradle-small.tar; rc=$?; rm -f /tmp/cradle-small.tar; exit $rc")?;
+    crate::full::push_file(serial, &small, "/tmp/hythe-small.tar")?;
+    adb_shell(serial, "tar -C /tmp/r -xpf /tmp/hythe-small.tar; rc=$?; rm -f /tmp/hythe-small.tar; exit $rc")?;
     for (path, size, mode, uid, gid) in &big {
         say(format!("putting back {path} ({} MB)", size >> 20));
         let mut a = open()?;
@@ -332,7 +332,7 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
 
 /// A small text put at `to` in TWRP, by adb push.
 fn push_text(serial: &str, text: &str, to: &str) -> Result<(), String> {
-    let tmp = std::env::temp_dir().join(format!("cradle-push-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("hythe-push-{}", std::process::id()));
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
     let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
     let _ = std::fs::remove_file(&tmp);

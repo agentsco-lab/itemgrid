@@ -1,4 +1,4 @@
-# cradle
+# hythe
 
 Look after a connected Surface Duo from a Linux computer: see what it is doing, update item, read its logs, take screenshots, and later back it up and flash it - safely.
 
@@ -6,8 +6,8 @@ First for the project's own daily work, then for people who run item on their Du
 
 ## How it is built
 
-- **cradle-core** (`crates/core`): a Rust library. It finds out what the phone is doing, carries out the actions, and holds the safety rules. Every action and every rule lives here, so no interface can go around them.
-- **cradle** (`crates/cli`): the command line over the core, e.g. `cradle status`, `cradle update`, `cradle logs --boot -1`.
+- **hythe-core** (`crates/core`): a Rust library. It finds out what the phone is doing, carries out the actions, and holds the safety rules. Every action and every rule lives here, so no interface can go around them.
+- **hythe** (`crates/cli`): the command line over the core, e.g. `hythe status`, `hythe update`, `hythe logs --boot -1`.
 - **The window** (later): GTK4/libadwaita over the same core.
 
 ## What the phone is doing

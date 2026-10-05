@@ -14,7 +14,7 @@
     </radialGradient>
   </defs>
   <ellipse cx="64" cy="116" rx="50" ry="7" fill="url(#floor)"/>
-  <!-- a cradle, the Duo resting in it -->
+  <!-- a hythe, the Duo resting in it -->
   <path d="M8 78 Q64 134 120 78" fill="none" stroke="#f6f5f4" stroke-width="7" stroke-linecap="round" opacity="0.92"/>
   <!-- the left panel -->
   <rect x="12" y="10" width="49" height="84" rx="9" fill="url(#body)"/>

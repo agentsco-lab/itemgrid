@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The Surface Duo 1, open flat, seen from the front - two SVG layers for
-Cradle's window: duo-body.svg under the live screens, duo-over.svg over them
+Hythe's window: duo-body.svg under the live screens, duo-over.svg over them
 (the inner bezels, the spine, the hinges). In millimetres, from agentsco.uk's
 DuoBody (measured off a straight-on photo and Microsoft's spec sheet:
 186.9 x 145.2 mm open). Run it to make the files beside it: the body whole and the over layer, and
@@ -95,7 +95,7 @@ body += f'<rect x="{SIDE}" y="{SCREEN_TOP}" width="{SCREEN_W}" height="{SCREEN_H
 
 over = f'<rect x="{COL_X}" y="{SCREEN_TOP}" width="{COL_W}" height="{SCREEN_H}" fill="#0c0c0d"/>' + spine() + block(False) + block(True)
 
-# Each half on its own (Cradle folds the right one about the spine): the
+# Each half on its own (Hythe folds the right one about the spine): the
 # body and the dead column cut at the middle.
 body_halves = body + f'<rect x="{COL_X}" y="{SCREEN_TOP}" width="{COL_W}" height="{SCREEN_H}" fill="#0c0c0d"/>'
 def cut(inner, left):
@@ -107,7 +107,7 @@ open(os.path.join(here, "duo-body.svg"), "w").write(svg(body))
 open(os.path.join(here, "duo-over.svg"), "w").write(svg(over))
 open(os.path.join(here, "duo-left.svg"), "w").write(svg(cut(body_halves, True)))
 open(os.path.join(here, "duo-right.svg"), "w").write(svg(cut(body_halves, False)))
-# The hinge as a strip the barrels' width (Cradle turns it to face the
+# The hinge as a strip the barrels' width (Hythe turns it to face the
 # viewer, a cylinder): the barrels and the rods between, at the strip's middle.
 def strip(inner):
     x0 = MID - BLOCK_W / 2

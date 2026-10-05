@@ -1,6 +1,6 @@
 //! The Duo owners' club - the device registry on agentsco.uk (AgentsCo's
 //! AC-191). Each Duo gets a number there, in order (00001, 00002, ...),
-//! written onto the phone (/etc/item/device-id) and shown by Cradle.
+//! written onto the phone (/etc/item/device-id) and shown by Hythe.
 //!
 //! - The token: a personal registry token made on the site (Settings ->
 //!   Device registry), kept in the desktop's keyring (Secret Service), never
@@ -8,7 +8,7 @@
 //! - The serial number never leaves this computer: what is sent is
 //!   sha256("cradle-device:" + serial), and the server keeps only its own
 //!   keyed hash of that.
-//! - The numbers known here are kept in ~/.local/share/cradle/devices.json
+//! - The numbers known here are kept in ~/.local/share/hythe/devices.json
 //!   (club and serial -> number, label), so the phone has its number offline
 //!   too.
 
@@ -17,16 +17,17 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+// Kept from when it was Cradle: the token is in the keyring under it.
 const SERVICE: &str = "cradle";
 const ACCOUNT: &str = "agentsco-registry";
 
-/// The registry's site: CRADLE_REGISTRY, ~/.config/cradle/registry, or
+/// The registry's site: HYTHE_REGISTRY, ~/.config/hythe/registry, or
 /// agentsco.uk.
 pub fn server() -> String {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    std::env::var("CRADLE_REGISTRY")
+    std::env::var("HYTHE_REGISTRY")
         .ok()
-        .or_else(|| std::fs::read_to_string(home.join(".config/cradle/registry")).ok().map(|s| s.trim().to_owned()))
+        .or_else(|| std::fs::read_to_string(home.join(".config/hythe/registry")).ok().map(|s| s.trim().to_owned()))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "https://agentsco.uk".into())
         .trim_end_matches('/')
@@ -61,6 +62,8 @@ pub fn forget_token() -> Result<(), String> {
 /// What the serial becomes before it leaves this computer.
 pub fn serial_hash(serial: &str) -> String {
     use sha2::{Digest, Sha256};
+    // "cradle-device:" kept from when it was Cradle: the club knows the
+    // phones by it.
     format!("{:x}", Sha256::digest(format!("cradle-device:{serial}").as_bytes()))
 }
 
@@ -74,7 +77,7 @@ pub struct Device {
 }
 
 fn local_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/cradle/devices.json")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/hythe/devices.json")
 }
 
 fn local() -> HashMap<String, Device> {
@@ -110,7 +113,7 @@ fn remember(serial: &str, device: &Device) {
 /// Registers the phone at `host` in the club - or finds its number if it is
 /// there already - and writes the number onto the phone.
 pub fn register(host: &str) -> Result<Device, String> {
-    let token = token().ok_or("no registry token yet: make one on the site (Settings -> Device registry) and give it to Cradle")?;
+    let token = token().ok_or("no registry token yet: make one on the site (Settings -> Device registry) and give it to Hythe")?;
     let serial = crate::backup::serial(host)?;
     let st = crate::status::read(host)?;
     let body = serde_json::json!({

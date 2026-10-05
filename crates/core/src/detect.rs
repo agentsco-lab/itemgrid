@@ -33,9 +33,9 @@ impl Mode {
     pub fn means(self) -> &'static str {
         match self {
             Mode::Linux => "status, update, logs, shell, screenshots, reboot",
-            Mode::Fastboot => "boot an image from RAM; flashing only after a good RAM boot (not yet in cradle)",
-            Mode::Recovery => "backups and restores (not yet in cradle)",
-            Mode::Android => "not Linux; switching images comes with flashing (not yet in cradle)",
+            Mode::Fastboot => "boot an image from RAM; flashing only after a good RAM boot (not yet in hythe)",
+            Mode::Recovery => "backups and restores (not yet in hythe)",
+            Mode::Android => "not Linux; switching images comes with flashing (not yet in hythe)",
             Mode::Gone => "check the cable, the battery; hold power and volume down for fastboot",
         }
     }
@@ -75,8 +75,8 @@ pub fn detect() -> Seen {
         return Seen { mode, via: serial.to_owned() };
     }
     // Off the cable: on the network, where the cable showed it (link.rs) -
-    // unless CRADLE_NO_WIFI=1 (a battery test: a look over Wi-Fi wakes it).
-    if std::env::var_os("CRADLE_NO_WIFI").is_some() {
+    // unless HYTHE_NO_WIFI=1 (a battery test: a look over Wi-Fi wakes it).
+    if std::env::var_os("HYTHE_NO_WIFI").is_some() {
         return Seen { mode: Mode::Gone, via: String::new() };
     }
     if let Some(host) = crate::link::wifi_hosts().into_iter().find(|h| crate::phone::answers(h)) {
@@ -96,7 +96,7 @@ fn learn_now_and_then() {
     }
     *last = Some(std::time::Instant::now());
     if let Err(e) = crate::link::learn() {
-        eprintln!("cradle: noting the phone for Wi-Fi: {e}");
+        eprintln!("hythe: noting the phone for Wi-Fi: {e}");
     }
 }
 

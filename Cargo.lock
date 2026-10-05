@@ -380,45 +380,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cradle"
-version = "0.1.0"
-dependencies = [
- "cradle-core",
- "libc",
-]
-
-[[package]]
-name = "cradle-core"
-version = "0.1.0"
-dependencies = [
- "bzip2",
- "flate2",
- "keyring",
- "lz4_flex",
- "lzma-rs",
- "png",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "ureq",
- "zip",
-]
-
-[[package]]
-name = "cradle-gui"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "cradle-core",
- "glow",
- "gtk4",
- "libadwaita",
- "libloading",
- "webkit6",
-]
-
-[[package]]
 name = "crc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1096,6 +1057,45 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "hythe"
+version = "0.1.0"
+dependencies = [
+ "hythe-core",
+ "libc",
+]
+
+[[package]]
+name = "hythe-core"
+version = "0.1.0"
+dependencies = [
+ "bzip2",
+ "flate2",
+ "keyring",
+ "lz4_flex",
+ "lzma-rs",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "ureq",
+ "zip",
+]
+
+[[package]]
+name = "hythe-gui"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "glow",
+ "gtk4",
+ "hythe-core",
+ "libadwaita",
+ "libloading",
+ "webkit6",
+]
 
 [[package]]
 name = "icu_collections"

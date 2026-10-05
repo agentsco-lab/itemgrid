@@ -1,12 +1,12 @@
 //! How the computer reaches the phone's Linux: the USB cable, or the home
 //! network (tracker #156).
 //!
-//! While the phone is on the cable, Cradle notes - per serial - its Wi-Fi
+//! While the phone is on the cable, Hythe notes - per serial - its Wi-Fi
 //! address, its name on the network and its ssh host key. Off the cable it
 //! looks for the phone at that address and by that name, and talks to it
 //! only if the host key is the one it noted: no other device on the network
 //! is taken for the phone. The key changes with each new system image; the
-//! cable teaches Cradle the new one.
+//! cable teaches Hythe the new one.
 //!
 //! Over Wi-Fi: status, logs, Update item, the quick backup, screenshots,
 //! restarts. Cable only: everything that takes the phone out of Linux (the
@@ -60,15 +60,15 @@ pub struct Known {
 }
 
 fn dir() -> PathBuf {
-    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/share/cradle")
+    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/share/hythe")
 }
 
 fn known_path() -> PathBuf {
     dir().join("links.json")
 }
 
-/// The known_hosts file Cradle checks Wi-Fi connections against: one alias
-/// per phone (cradle-SERIAL), whatever its address.
+/// The known_hosts file Hythe checks Wi-Fi connections against: one alias
+/// per phone (hythe-SERIAL), whatever its address.
 pub fn known_hosts_path() -> PathBuf {
     dir().join("known_hosts")
 }
@@ -81,7 +81,7 @@ fn save(all: &[Known]) -> Result<(), String> {
     std::fs::create_dir_all(dir()).map_err(|e| e.to_string())?;
     let text = serde_json::to_string_pretty(all).map_err(|e| e.to_string())?;
     std::fs::write(known_path(), text).map_err(|e| e.to_string())?;
-    let lines: String = all.iter().map(|k| format!("cradle-{} {}\n", k.serial, k.key)).collect();
+    let lines: String = all.iter().map(|k| format!("hythe-{} {}\n", k.serial, k.key)).collect();
     std::fs::write(known_hosts_path(), lines).map_err(|e| e.to_string())
 }
 
@@ -172,10 +172,10 @@ pub fn usb_up() -> bool {
         .unwrap_or(false)
 }
 
-/// `CRADLE_NO_CABLE=1`: the cable taken as not there (to try Wi-Fi with
+/// `HYTHE_NO_CABLE=1`: the cable taken as not there (to try Wi-Fi with
 /// the phone still plugged in).
 pub fn cable_ignored() -> bool {
-    std::env::var_os("CRADLE_NO_CABLE").is_some()
+    std::env::var_os("HYTHE_NO_CABLE").is_some()
 }
 
 /// Whether the phone is on the cable: its Linux there, or adb or fastboot.

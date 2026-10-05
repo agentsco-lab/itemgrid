@@ -1,13 +1,13 @@
 [package]
-name = "cradle"
+name = "hythe"
 edition.workspace = true
 version.workspace = true
-description = "The command line over cradle-core"
+description = "The command line over hythe-core"
 
 [[bin]]
-name = "cradle"
+name = "hythe"
 path = "src/main.rs"
 
 [dependencies]
 libc = "0.2"
-cradle-core = { path = "../core" }
+hythe-core = { path = "../core" }
