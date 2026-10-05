@@ -419,6 +419,8 @@ struct Ui {
     saver_mix: std::cell::Cell<f32>,
     /// Where the word stood on the table before the saver came.
     cubes_rest: std::cell::Cell<(f32, f32)>,
+    /// The wheel's lens: how near now, and where it goes.
+    zoom: std::cell::Cell<(f32, f32)>,
     /// The sections' facts as words, from the last look (for their boards).
     section_words: RefCell<std::collections::HashMap<&'static str, Vec<(&'static str, String)>>>,
     cable_plug: Vec<gtk::Picture>,
@@ -1166,6 +1168,7 @@ fn build(app: &adw::Application) {
         saver: std::cell::Cell::new(None),
         saver_mix: std::cell::Cell::new(0.0),
         cubes_rest: std::cell::Cell::new((0.0, 0.0)),
+        zoom: std::cell::Cell::new((1.0, 1.0)),
         section_words: RefCell::default(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
@@ -1325,10 +1328,17 @@ fn build(app: &adw::Application) {
         let say = Rc::new(say);
         let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         let (weak, s) = (Rc::downgrade(&ui), say.clone());
-        wheel.connect_scroll(move |_, _, dy| {
+        wheel.connect_scroll(move |c, _, dy| {
             let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
-            // A notch a millimetre (a touchpad's flow as it comes), eased
-            // there frame by frame.
+            // The wheel: the eye nearer or further, as a lens (a tenth a
+            // notch), eased there.
+            if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                let to = (ui.zoom.get().1 * 1.1f32.powf(-dy as f32)).clamp(0.4, 2.5);
+                ui.zoom.set((ui.zoom.get().0, to));
+                return glib::Propagation::Stop;
+            }
+            // With Ctrl (for now) the squares' size: a notch a millimetre
+            // (a touchpad's flow as it comes), eased there frame by frame.
             let from = match SQUARE_TO.load(std::sync::atomic::Ordering::Relaxed) {
                 0 => square(),
                 b => f32::from_bits(b),
@@ -2078,7 +2088,21 @@ fn build(app: &adw::Application) {
                 ui.saver_mix.set(now + step);
                 ui.saver.get().is_some() || step != 0.0
             };
-            let pressing = pressing || boarding || paging || saving;
+            // The wheel's lens eased toward where it was sent.
+            let zooming = {
+                let (now, to) = ui.zoom.get();
+                if (to - now).abs() > 0.0005 {
+                    let k = 1.0 - (-dt.clamp(0.0, 0.1) / 0.12).exp();
+                    ui.zoom.set((now + (to - now) * k, to));
+                    true
+                } else if now != to {
+                    ui.zoom.set((to, to));
+                    true
+                } else {
+                    false
+                }
+            };
+            let pressing = pressing || boarding || paging || saving || zooming;
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
@@ -4431,6 +4455,8 @@ fn show_fold(ui: &Ui, angle: f64) {
             let shown = on_page(&matrix(e), cubes_at);
             e.on = (e.on.0 + word_on.0 - shown.0, e.on.1 + word_on.1 - shown.1);
         }
+        // The wheel's lens on top (not the saver's).
+        e.near *= ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
         let at = e.on;
         let eye_x = e.look.0;
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
