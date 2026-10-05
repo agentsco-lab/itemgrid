@@ -3039,9 +3039,10 @@ struct FloorView {
     eye_x: f32,
     /// The word's cube whose button (on its front) is under the pointer.
     hover_button: Option<usize>,
-    /// How far the squares are drawn from the middle (px): further on a
-    /// larger page and as the eye draws back.
+    /// How far the squares are drawn (px) round where the eye looks:
+    /// further on a larger page and as the eye draws back.
     reach: f32,
+    grid_mid: (f32, f32),
 }
 
 /// Words set on the table, a letter a square of `cell` (px; a square of
@@ -3083,15 +3084,20 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     // At the start the squares grow out from the cubes' middle: a line
     // there when the growing has reached it.
     let grown = fv.grid * (reach + 3.0 * step);
+    // Round where the eye looks (it may look far off the middle).
+    let (mx, my) = fv.grid_mid;
     let alpha = |x: f32, y: f32| {
-        let d = (x * x + y * y).sqrt() / reach;
+        let d = ((x - mx) * (x - mx) + (y - my) * (y - my)).sqrt() / reach;
         let (cx, cy) = fv.cubes_at;
         let from_cubes = ((x - cx) * (x - cx) + (y - cy) * (y - cy)).sqrt();
-        let reached = ((grown - from_cubes) / (2.0 * step)).clamp(0.0, 1.0);
+        // Grown out (the start over), everywhere.
+        let reached = if fv.grid >= 1.0 { 1.0 } else { ((grown - from_cubes) / (2.0 * step)).clamp(0.0, 1.0) };
         0.15 * (1.0 - d).max(0.0).powf(1.3) as f64 * reached as f64
     };
     let n = (reach / step).ceil() as i32 + 1;
     let shift = floor_shift(k);
+    // The lines nearest that point first in each direction.
+    let (ix, iy) = (((mx - shift.0) / step).round() as i32, ((my - shift.1) / step).round() as i32);
     // Finer while the squares grow out (their edge in coarse pieces stepped).
     let pieces = if fv.grid < 1.0 { 160 } else { 40 };
     cr.set_line_width(1.6);
@@ -3103,10 +3109,11 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     for i in -n..=n {
         for along_x in [true, false] {
             // Rows at the shift in y, columns at the shift in x.
-            let t = i as f32 * step + if along_x { shift.1 } else { shift.0 };
+            let t = if along_x { (i + iy) as f32 * step + shift.1 } else { (i + ix) as f32 * step + shift.0 };
+            let from = if along_x { mx } else { my } - reach;
             for j in 0..pieces {
-                let u0 = -reach + 2.0 * reach * j as f32 / pieces as f32;
-                let u1 = -reach + 2.0 * reach * (j + 1) as f32 / pieces as f32;
+                let u0 = from + 2.0 * reach * j as f32 / pieces as f32;
+                let u1 = from + 2.0 * reach * (j + 1) as f32 / pieces as f32;
                 let ((ax, ay), (bx, by)) = if along_x { ((u0, t), (u1, t)) } else { ((t, u0), (t, u1)) };
                 let a = alpha((ax + bx) / 2.0, (ay + by) / 2.0);
                 if a < 0.004 {
@@ -4460,10 +4467,22 @@ fn show_fold(ui: &Ui, angle: f64) {
         let lens = ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
         e.near *= lens;
         let up = ((1.0 - lens) / 0.6).clamp(0.0, 1.0);
-        e.tilt *= 1.0 - up * up * (3.0 - 2.0 * up);
+        let rise = up * up * (3.0 - 2.0 * up);
+        e.tilt *= 1.0 - rise;
+        // ... and goes off the word, over the middle and on, until the
+        // cubes are out of sight - the table alone, its middle the page's.
+        if rise > 0.0 {
+            let (dx, dy) = (-cubes_at.0, -cubes_at.1);
+            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            let away = rise * (ui.floor.width().max(ui.floor.height()) as f32 * 0.6 / e.near.max(0.1));
+            e.look = (e.look.0 + dx / len * away, e.look.1 + dy / len * away);
+            let mid = (ui.floor.width() as f32 * 0.5 - off.0, ui.floor.height() as f32 * 0.5 - off.1);
+            e.on = (e.on.0 + (mid.0 - e.on.0) * rise, e.on.1 + (mid.1 - e.on.1) * rise);
+        }
         let at = e.on;
         let eye_x = e.look.0;
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
+        let grid_mid = e.look;
         let rest = matrix(e);
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
@@ -4523,9 +4542,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.reach != reach;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.reach != reach || fv.grid_mid != grid_mid;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, hover_button, reach };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
         }
