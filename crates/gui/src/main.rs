@@ -443,6 +443,12 @@ struct Ui {
     /// The window on its way into the wallpaper or back: since when, from
     /// and to (its frame on the screen), into it.
     wall_move: std::cell::Cell<Option<WallMove>>,
+    /// The word's and the buttons' places as drawn: on the way into the
+    /// wallpaper they glide to where they are laid (in whole squares, so a
+    /// square at a time as the card grows: they jumped), and gliding.
+    glide_cubes: std::cell::Cell<Option<(f32, f32)>>,
+    glide_buttons: std::cell::Cell<Option<(f32, f32)>>,
+    gliding: std::cell::Cell<bool>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
     shown: gtk::Widget,
@@ -1215,6 +1221,9 @@ fn build(app: &adw::Application) {
         saver_pointer: std::cell::Cell::new(None),
         wallpaper: std::cell::Cell::new(None),
         wall_move: std::cell::Cell::new(None),
+        glide_cubes: std::cell::Cell::new(None),
+        glide_buttons: std::cell::Cell::new(None),
+        gliding: std::cell::Cell::new(false),
         shown: view.clone().upcast(),
         stage: stage.clone(),
         wallpaper_mix: std::cell::Cell::new(0.0),
@@ -2213,8 +2222,8 @@ fn build(app: &adw::Application) {
                 ui.wallpaper_mix.set(now + step);
                 step != 0.0
             };
-            let walling = wall_step(&ui) || walling;
-            let pressing = pressing || boarding || paging || saving || zooming || walling;
+            let walling = wall_step(&ui, now_us) || walling;
+            let pressing = pressing || boarding || paging || saving || zooming || walling || ui.gliding.get();
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
@@ -3842,7 +3851,7 @@ fn wallpaper(ui: &Ui) {
             ui.wallpaper.set(None);
             place::desktop(&ui.window, false, None);
         }
-        ui.wall_move.set(Some(WallMove { phase: WallPhase::Move(std::time::Instant::now()), from: w.now, to, now: w.now, into, monitor }));
+        ui.wall_move.set(Some(WallMove { phase: WallPhase::Move(glib::monotonic_time()), from: w.now, to, now: w.now, into, monitor }));
         return;
     }
     if let Some((was, _)) = ui.wallpaper.take() {
@@ -3851,7 +3860,7 @@ fn wallpaper(ui: &Ui) {
         // to where it was, then the window made its own again (wall_step).
         place::desktop(&ui.window, false, None);
         ui.window.add_css_class("wall-move");
-        ui.wall_move.set(Some(WallMove { phase: WallPhase::Move(std::time::Instant::now()), from: monitor, to: was, now: monitor, into: false, monitor }));
+        ui.wall_move.set(Some(WallMove { phase: WallPhase::Move(glib::monotonic_time()), from: monitor, to: was, now: monitor, into: false, monitor }));
         return;
     }
     // Where its content is (the window's shadow aside): where it comes
@@ -3895,7 +3904,9 @@ enum WallPhase {
     Hidden(std::time::Instant),
     Over(std::time::Instant, u32),
     Shown(std::time::Instant),
-    Move(std::time::Instant),
+    /// Since when, in the frame clock's microseconds (the card where it
+    /// is when the frame is shown, not when it is worked out).
+    Move(i64),
 }
 
 /// The window's way into the wallpaper or back: the card's place on the
@@ -3990,12 +4001,17 @@ fn wall_card_off(ui: &Ui) {
 
 /// A frame of the window's way into the wallpaper or back (true while on
 /// it).
-fn wall_step(ui: &Ui) -> bool {
+fn wall_step(ui: &Ui, frame_us: i64) -> bool {
     let Some(mut w) = ui.wall_move.get() else { return false };
     let Some(back) = WALL_BACK.with(|b| b.get()) else {
         ui.wall_move.set(None);
         return false;
     };
+    // The eye stays as it is while the window is made over (before the card
+    // moves, and after it is back).
+    if !matches!(w.phase, WallPhase::Move(_)) {
+        ui.wallpaper_mix.set(0.0);
+    }
     let now = std::time::Instant::now();
     let after = |since: std::time::Instant, ms: u64| now.duration_since(since) >= std::time::Duration::from_millis(ms);
     match w.phase {
@@ -4087,10 +4103,12 @@ fn wall_step(ui: &Ui) -> bool {
                 WALL_BACK.with(|b| b.set(None));
                 return false;
             }
-            w.phase = WallPhase::Move(now);
+            w.phase = WallPhase::Move(frame_us);
         }
         WallPhase::Move(since) => {
-            let t = (now.duration_since(since).as_secs_f32() / WALL_S).min(1.0);
+            let t = ((frame_us - since) as f32 / 1e6 / WALL_S).clamp(0.0, 1.0);
+            // The eye going over by the same clock.
+            ui.wallpaper_mix.set(if w.into { t } else { 1.0 - t });
             let e = t * t * t * (t * (6.0 * t - 15.0) + 10.0);
             let at = |a: i32, b: i32| (a as f32 + (b - a) as f32 * e).round() as i32;
             w.now = (at(w.from.0, w.to.0), at(w.from.1, w.to.1), at(w.from.2, w.to.2), at(w.from.3, w.to.3));
@@ -4906,6 +4924,18 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The saver's page is another size: the word kept where it was on
         // the table (worked out anew it went far off, past the squares).
         let cubes_at = if ui.saver.get().is_some() { ui.cubes_rest.get() } else { ui.cubes_rest.replace(cubes_at); cubes_at };
+        let walling = ui.wall_move.get().is_some();
+        let glide = |cell: &std::cell::Cell<Option<(f32, f32)>>, to: (f32, f32)| {
+            let was = cell.get().unwrap_or(to);
+            let mut p = if walling || ui.gliding.get() { (was.0 + (to.0 - was.0) * 0.12, was.1 + (to.1 - was.1) * 0.12) } else { to };
+            if (p.0 - to.0).abs() < 0.05 && (p.1 - to.1).abs() < 0.05 {
+                p = to;
+            }
+            cell.set(Some(p));
+            p
+        };
+        let cubes_laid = cubes_at;
+        let cubes_at = glide(&ui.glide_cubes, cubes_laid);
         for (i, v) in [cubes_at.0, cubes_at.1].into_iter().enumerate() {
             CUBES_AT[i].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }
@@ -5055,7 +5085,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The buttons in the word's row, at the page's right (as the usual
         // view shows it): the last in the square seen a square or so in
         // from the edge.
-        let buttons_at = {
+        let buttons_laid = {
             let m = rest_m;
             let row = cubes_at.1;
             // As far in from the right as the word is from the left (the
@@ -5080,6 +5110,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let end = on_squares(k, (x, cubes_at.1 - 0.5 * cur));
             (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
+        let buttons_at = glide(&ui.glide_buttons, buttons_laid);
+        ui.gliding.set(walling || cubes_at != cubes_laid || buttons_at != buttons_laid);
         // The wheel's lens on top (not the saver's). Drawn back, the row of
         // the word and the buttons comes to the page's middle, the eye rises to straight above and
         // the perspective all but goes: the cubes go down into the table,
