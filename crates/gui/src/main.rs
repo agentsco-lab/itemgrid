@@ -52,7 +52,7 @@ const DUO_HINGE_W: f64 = 10.2;
 /// bottom edge (from the spine), and the room its picture has.
 const CABLE_PLUG: (f64, f64) = (11.0, 19.0);
 /// The port's middle from the spine (the plug's edge ~1.5 cm from it).
-const CABLE_PORT_X: f64 = 27.0;
+const CABLE_PORT_X: f64 = duo3d::PORT_X as f64;
 /// The plug's thickness (mm) and its layers, drawn as the halves' are.
 const CABLE_PLUG_T: f32 = 5.0;
 const CABLE_PLUG_LAYERS: usize = 7;

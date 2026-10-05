@@ -37,10 +37,17 @@ const THICK: f32 = 4.8;
 const R: f32 = 10.0;
 const NOTCH_W: f32 = 3.65;
 const NOTCH_D: f32 = 8.0;
-const NOTCH_FILLET: f32 = 1.8;
-/// The edges' rounding, all round each half: deep - a half's edge is near a
-/// pill's (the closed phone's photo).
-const EDGE: f32 = 1.6;
+const NOTCH_FILLET: f32 = 0.6;
+/// At each end the chassis goes on past the notch nearly to the spine, a
+/// thin ledge (a slit between the halves' two) over the hinge's block.
+const LEDGE: f32 = 1.2;
+const SLIT: f32 = 0.4;
+/// The edges' rounding, all round each half: elliptical - deep through the
+/// thickness (a half's edge is near a pill's, the closed phone's photo),
+/// shallow in the outline (the corners stay crisp, and the thin ledges
+/// keep their width).
+const EDGE: f32 = 0.55;
+const EDGE_Z: f32 = 1.6;
 
 /// Materials, as the fragment shader knows them.
 const GLASS: f32 = 0.0;
@@ -59,6 +66,8 @@ const LOGO_GAP: f32 = 0.7;
 const PANEL: (f32, f32) = (86.654, 115.539);
 const SCREEN_X: (f32, f32) = (4.1, 96.146);
 const SCREEN_TOP: f32 = 14.831;
+/// The USB-C port's middle from the spine (the window's cable plugs in there).
+pub const PORT_X: f32 = 27.0;
 
 /// What the window gives to draw: each half's place in the view (its frame
 /// to the duo drawing's px, without the perspective), and the perspective
@@ -124,16 +133,22 @@ fn left_outline() -> Vec<P2> {
     use std::f32::consts::PI;
     let (w, h, nw, nd, f) = (HALF_W, BODY_H, NOTCH_W, NOTCH_D, NOTCH_FILLET);
     let x = w - nw;
-    let mut o = vec![[R, 0.0], [x - f, 0.0]];
-    quad_bezier(&mut o, [x - f, 0.0], [x, 0.0], [x, f], 4);
+    let tip = MID - SLIT / 2.0;
+    // Along the top to the ledge's tip near the spine, back along its
+    // underside, down into the notch and out along its floor to the inner
+    // edge; the same at the bottom.
+    let mut o = vec![[R, 0.0], [tip, 0.0], [tip, LEDGE], [x + f, LEDGE]];
+    quad_bezier(&mut o, [x + f, LEDGE], [x, LEDGE], [x, LEDGE + f], 4);
     o.push([x, nd - f]);
     quad_bezier(&mut o, [x, nd - f], [x, nd], [x + f, nd], 4);
     o.push([w, nd]);
     o.push([w, h - nd]);
     o.push([x + f, h - nd]);
     quad_bezier(&mut o, [x + f, h - nd], [x, h - nd], [x, h - nd + f], 4);
-    o.push([x, h - f]);
-    quad_bezier(&mut o, [x, h - f], [x, h], [x - f, h], 4);
+    o.push([x, h - LEDGE - f]);
+    quad_bezier(&mut o, [x, h - LEDGE - f], [x, h - LEDGE], [x + f, h - LEDGE], 4);
+    o.push([tip, h - LEDGE]);
+    o.push([tip, h]);
     o.push([R, h]);
     arc(&mut o, [R, h - R], R, PI / 2.0, PI, 14);
     o.push([0.0, R]);
@@ -229,13 +244,21 @@ fn body(mesh: &mut Mesh, outline: &[P2], k: f32) {
     // The profile through the thickness: (inset, z, normal's out, up).
     let mut rings: Vec<(f32, f32, f32, f32)> = Vec::new();
     let steps = 5;
+    // An ellipse's quarter: its normal (cos a / EDGE, sin a / EDGE_Z).
+    let normal = |a: f32| {
+        let (u, v) = (a.cos() * EDGE_Z, a.sin() * EDGE);
+        let l = (u * u + v * v).sqrt().max(1e-6);
+        (u / l, v / l)
+    };
     for s in 0..=steps {
         let a = std::f32::consts::FRAC_PI_2 * (1.0 - s as f32 / steps as f32);
-        rings.push((EDGE - EDGE * a.cos(), -THICK + EDGE - EDGE * a.sin(), a.cos(), -a.sin()));
+        let (nh, nz) = normal(a);
+        rings.push((EDGE - EDGE * a.cos(), -THICK + EDGE_Z - EDGE_Z * a.sin(), nh, -nz));
     }
     for s in 0..=steps {
         let a = std::f32::consts::FRAC_PI_2 * s as f32 / steps as f32;
-        rings.push((EDGE - EDGE * a.cos(), -EDGE + EDGE * a.sin(), a.cos(), a.sin()));
+        let (nh, nz) = normal(a);
+        rings.push((EDGE - EDGE * a.cos(), -EDGE_Z + EDGE_Z * a.sin(), nh, nz));
     }
     let at = |i: usize, r: (f32, f32, f32, f32), out: P2| {
         let (_, miter, _, _, _) = frames[i];
@@ -311,35 +334,32 @@ fn bar(m: &mut Mesh, long: f32, thick: f32, cx: f32, cz: f32, y0: f32, y1: f32, 
     }
 }
 
-/// A box (mm), flat-shaded: for small parts.
-fn boxm(m: &mut Mesh, lo: [f32; 3], hi: [f32; 3], mat: f32, k: f32) {
-    let c = |x: f32, y: f32, z: f32| [x * k, y * k, z * k];
-    let (x0, y0, z0, x1, y1, z1) = (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
-    let faces = [
-        ([c(x0, y0, z1), c(x1, y0, z1), c(x1, y1, z1), c(x0, y1, z1)], [0.0, 0.0, 1.0]),
-        ([c(x0, y0, z0), c(x1, y0, z0), c(x1, y1, z0), c(x0, y1, z0)], [0.0, 0.0, -1.0]),
-        ([c(x0, y0, z0), c(x1, y0, z0), c(x1, y0, z1), c(x0, y0, z1)], [0.0, -1.0, 0.0]),
-        ([c(x0, y1, z0), c(x1, y1, z0), c(x1, y1, z1), c(x0, y1, z1)], [0.0, 1.0, 0.0]),
-        ([c(x0, y0, z0), c(x0, y1, z0), c(x0, y1, z1), c(x0, y0, z1)], [-1.0, 0.0, 0.0]),
-        ([c(x1, y0, z0), c(x1, y1, z0), c(x1, y1, z1), c(x1, y0, z1)], [1.0, 0.0, 0.0]),
-    ];
-    for (q, n) in faces {
-        m.quad((q[0], n), (q[1], n), (q[2], n), (q[3], n), mat);
-    }
-}
 
-/// At each end of a half, the chassis' ledge across its notch, nearly to
-/// the spine (a slit between the halves' two): it covers the end of the
-/// hinge's block, as photographed. For the left half; the right one's the
-/// same mirrored.
-fn ledges(m: &mut Mesh, mirror: bool, k: f32) {
-    const LEDGE: f32 = 1.2;
-    const SLIT: f32 = 0.4;
-    let (x0, x1) = (HALF_W - NOTCH_W - 0.4, MID - SLIT / 2.0);
-    let (x0, x1) = if mirror { (MID - x1, MID - x0) } else { (x0, x1) };
-    for (y0, y1) in [(0.05, LEDGE), (BODY_H - LEDGE, BODY_H - 0.05)] {
-        boxm(m, [x0, y0, -THICK + 0.35], [x1, y1, -0.35], CHASSIS, k);
+
+/// On the right half's bottom edge: the USB-C opening (a rounded slot, the
+/// plug in it when the cable is) and, right of it, the speaker's slot - as
+/// photographed. Dark, a hair out of the edge's face.
+fn bottom_edge(m: &mut Mesh, port_x: f32, k: f32) {
+    let y = BODY_H + 0.03;
+    let n = [0.0, 1.0, 0.0];
+    let zc = -THICK / 2.0;
+    // The port: a stadium 8.4 x 2.6.
+    let (pw, ph) = (8.4_f32, 2.6_f32);
+    let r = ph / 2.0;
+    let mut ring: Vec<P2> = Vec::new();
+    for (cx, from) in [(port_x + pw / 2.0 - r, -std::f32::consts::FRAC_PI_2), (port_x - pw / 2.0 + r, std::f32::consts::FRAC_PI_2)] {
+        for i in 0..=10 {
+            let t = from + std::f32::consts::PI * i as f32 / 10.0;
+            ring.push([cx + r * t.cos(), zc + r * t.sin()]);
+        }
     }
+    let c = |q: P2| ([q[0] * k, y * k, q[1] * k], n);
+    for i in 0..ring.len() {
+        m.tri(c([port_x, zc]), c(ring[i]), c(ring[(i + 1) % ring.len()]), DARK);
+    }
+    // The speaker: a long slot.
+    let (x0, x1, h) = (port_x + 18.0, port_x + 33.0, 0.9);
+    m.quad(c([x0, zc - h / 2.0]), c([x1, zc - h / 2.0]), c([x1, zc + h / 2.0]), c([x0, zc + h / 2.0]), DARK);
 }
 
 /// The hinge, one assembly (the Duo's: its halves come off a central
@@ -358,7 +378,7 @@ fn spine(k: f32) -> Mesh {
     }
     // The end blocks, filling the notches.
     let block_w = 2.0 * NOTCH_W + GAP - 0.4;
-    for (y0, y1) in [(1.4, ends), (BODY_H - ends, BODY_H - 1.4)] {
+    for (y0, y1) in [(LEDGE + 0.1, ends), (BODY_H - ends, BODY_H - LEDGE - 0.1)] {
         bar(&mut m, block_w, THICK - 0.5, 0.0, 0.0, y0, y1, CHROME, k);
     }
     m
@@ -387,7 +407,9 @@ fn half(i: usize, k: f32) -> Mesh {
     // spine).
     let outline: Vec<P2> = if i == 0 { left } else { left.iter().map(|p| [MID - p[0], p[1]]).collect() };
     body(&mut m, &outline, k);
-    ledges(&mut m, i == 1, k);
+    if i == 1 {
+        bottom_edge(&mut m, PORT_X, k);
+    }
     if i == 0 {
         logo(&mut m, k);
     }
@@ -432,7 +454,7 @@ void main() {
     int m = int(v_mat + 0.5);
     vec3 base; float ks; float sh; float amb;
     if (m == 0) { base = vec3(0.035, 0.036, 0.04); ks = 0.55; sh = 90.0; amb = 0.6; }        // glass
-    else if (m == 1) { base = vec3(0.79, 0.80, 0.77); ks = 0.22; sh = 24.0; amb = 0.45; }    // chassis
+    else if (m == 1) { base = vec3(0.86, 0.87, 0.85); ks = 0.18; sh = 20.0; amb = 0.78; }    // chassis: white, as lit by the whole room
     else if (m == 2) { base = vec3(0.83, 0.845, 0.81); ks = 0.12; sh = 12.0; amb = 0.5; }    // back: frosted
     else if (m == 3) { base = vec3(0.42, 0.42, 0.40); ks = 0.7; sh = 60.0; amb = 0.4; }      // hinge: darker polished metal
     else if (m == 4) { base = vec3(0.25, 0.25, 0.22); ks = 0.6; sh = 50.0; amb = 0.4; }      // rods
