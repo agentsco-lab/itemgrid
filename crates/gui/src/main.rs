@@ -298,6 +298,8 @@ struct Ui {
     /// in that world; and the one at the computer's bearing from north, as
     /// the last look told it (kept: ~/.config/cradle/user-heading).
     yaw_ref: std::cell::Cell<Option<f64>>,
+    /// Where the reference goes (a look, the compass): eased there.
+    yaw_ref_to: std::cell::Cell<Option<f64>>,
     north: std::cell::Cell<Option<f64>>,
     user_heading: std::cell::Cell<Option<f64>>,
     motion_on: std::cell::Cell<bool>,
@@ -1007,6 +1009,7 @@ fn build(app: &adw::Application) {
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         orient: std::cell::Cell::new(([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], false)),
         yaw_ref: std::cell::Cell::new(None),
+        yaw_ref_to: std::cell::Cell::new(None),
         north: std::cell::Cell::new(None),
         user_heading: std::cell::Cell::new(std::fs::read_to_string(user_heading_file()).ok().and_then(|s| s.trim().parse().ok())),
         motion_on: std::cell::Cell::new(false),
@@ -1462,7 +1465,18 @@ fn build(app: &adw::Application) {
                 let l = n.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-12);
                 ui.orient.set((n.map(|v| v / l), oq_to, true));
             }
-            let far = qfar || (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05 || (orbit[i] - orbit_to[i]).abs() > 0.05);
+            // The reference toward where a look or the compass puts it,
+            // slowly (about a second): no jump in the drawing.
+            let mut rfar = false;
+            if let (Some(y), Some(to)) = (ui.yaw_ref.get(), ui.yaw_ref_to.get()) {
+                let d = wrap(to - y);
+                if d.abs() > 1e-4 {
+                    let kr = 1.0 - (-1.0f64 / 60.0 / 0.6).exp();
+                    ui.yaw_ref.set(Some(y + d * kr));
+                    rfar = true;
+                }
+            }
+            let far = rfar || qfar || (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05 || (orbit[i] - orbit_to[i]).abs() > 0.05);
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
                 let now = shown + (to - shown) * k;
@@ -2052,6 +2066,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
     };
     ui.motion_on.set(motion);
     ui.yaw_ref.set(None);
+    ui.yaw_ref_to.set(None);
     ui.north.set(None);
     trace(format_args!("follow: through {}", if motion { "duo-motion" } else { "sfduo-posture" }));
     let Ok((mut follow, stop)) = follow else { return };
@@ -2094,14 +2109,26 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     fold_to(&ui, shut(&ui, a));
                 }
                 cradle_core::posture::Reading::Compass(n) => {
+                    // Smoothed hard (a few seconds): it wanders near the
+                    // computer and in the hand.
+                    let n = match ui.north.get() {
+                        Some(o) => o + wrap(n - o) * 0.08,
+                        None => n,
+                    };
                     ui.north.set(Some(n));
                     // Between looks the compass holds the reference (the
-                    // gyroscope's yaw drifts): gently toward where the user's
-                    // bearing puts it.
+                    // gyroscope's yaw drifts) - only while the phone lies
+                    // still, where it reads truest; eased there in the tick.
+                    let [p, r] = ui.tilt.get().1;
+                    let lying = p.abs() < 8.0 && r.abs() < 8.0;
                     if let Some(h) = ui.user_heading.get() {
                         let want = h + n + std::f64::consts::FRAC_PI_2;
-                        let now = ui.yaw_ref.get().unwrap_or(want);
-                        ui.yaw_ref.set(Some(now + wrap(want - now) * if ui.yaw_ref.get().is_some() { 0.05 } else { 1.0 }));
+                        if ui.yaw_ref.get().is_none() {
+                            ui.yaw_ref.set(Some(want));
+                            ui.yaw_ref_to.set(Some(want));
+                        } else if lying {
+                            ui.yaw_ref_to.set(Some(want));
+                        }
                     }
                 }
                 cradle_core::posture::Reading::Look(l) => {
@@ -2110,7 +2137,10 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     // viewer (-y in that world: the drawing's +y), and their
                     // bearing from north kept for the next time.
                     trace(format_args!("look {l:.3} (north {:?})", ui.north.get()));
-                    ui.yaw_ref.set(Some(l + std::f64::consts::FRAC_PI_2));
+                    ui.yaw_ref_to.set(Some(l + std::f64::consts::FRAC_PI_2));
+                    if ui.yaw_ref.get().is_none() {
+                        ui.yaw_ref.set(Some(l + std::f64::consts::FRAC_PI_2));
+                    }
                     if let Some(n) = ui.north.get() {
                         let h = wrap(l - n);
                         ui.user_heading.set(Some(h));
@@ -2122,19 +2152,11 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     // The reference taken off: the compass's, else where it
                     // was at the start.
                     let yaw = |q: [f64; 4]| (2.0 * (q[0] * q[3] + q[1] * q[2])).atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
-                    let y0 = match ui.yaw_ref.get() {
-                        Some(y) => y,
-                        None => {
-                            // The top away from the viewer, as it lay: its y
-                            // (to its top) at +90 degrees.
-                            let y = yaw(q);
-                            ui.yaw_ref.set(Some(y));
-                            y
-                        }
-                    };
-                    let (c, s) = ((-y0 / 2.0).cos(), (-y0 / 2.0).sin());
-                    // (c, 0, 0, s) * q
-                    let q = [c * q[0] - s * q[3], c * q[1] - s * q[2], c * q[2] + s * q[1], c * q[3] + s * q[0]];
+                    // No reference yet: drawn as it lay at the start.
+                    if ui.yaw_ref.get().is_none() {
+                        ui.yaw_ref.set(Some(yaw(q)));
+                        ui.yaw_ref_to.set(Some(yaw(q)));
+                    }
                     let (shown, _, have) = ui.orient.get();
                     ui.orient.set((if have { shown } else { q }, q, true));
                     // Which way is down, from it: for lying, held, the shadows.
@@ -2602,8 +2624,15 @@ fn show_fold(ui: &Ui, angle: f64) {
     // right half's: y up its panel) to the drawing's (y down): S R S, S
     // flipping y.
     let orient = ui.orient.get();
+    let yref = ui.yaw_ref.get().unwrap_or(0.0);
     let turn = move |t: gsk::Transform| -> gsk::Transform {
-        match orient.2.then_some(orient.0) {
+        // The reference taken off about the world's vertical: (c,0,0,s) * q.
+        let q = orient.2.then(|| {
+            let q = orient.0;
+            let (c, s) = ((-yref / 2.0).cos(), (-yref / 2.0).sin());
+            [c * q[0] - s * q[3], c * q[1] - s * q[2], c * q[2] + s * q[1], c * q[3] + s * q[0]]
+        });
+        match q {
             Some([w, x, y, z]) => {
                 let (w, x, y, z) = (w as f32, x as f32, y as f32, z as f32);
                 let rm = [

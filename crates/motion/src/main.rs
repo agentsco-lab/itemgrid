@@ -264,6 +264,9 @@ fn main() {
     let mut still_since: Option<Instant> = None;
     let mut looked_at = Instant::now() - Duration::from_secs(10);
     let mut reopen_at: Option<Instant> = None;
+    // The gyroscope's offset, learnt while still; since when down has held.
+    let mut bias = [0.0f64; 3];
+    let mut steady_since: Option<Instant> = None;
     let mut alive = true;
     while alive {
         let mut fds: Vec<PollFd> = Vec::new();
@@ -281,7 +284,21 @@ fn main() {
         if let Some(g) = gyro.as_mut() {
             for r in g.take() {
                 // milli-degrees a second
-                rate = [0, 1, 2].map(|i| (f32_at(&r, 8 + 4 * i) as f64 / 1000.0).to_radians());
+                let raw = [0, 1, 2].map(|i| (f32_at(&r, 8 + 4 * i) as f64 / 1000.0).to_radians());
+                // Still (nothing turning to speak of, down steady for half a
+                // second): what the gyroscope says then is its own offset -
+                // learnt, and taken off (left in, the phone lying on the
+                // table turned slowly, up to 10 degrees a minute).
+                let spin = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+                let still = spin < 0.06 && steady_since.is_some_and(|t: Instant| t.elapsed() >= Duration::from_millis(500));
+                if still {
+                    bias = [0, 1, 2].map(|i| bias[i] + (raw[i] - bias[i]) * 0.05);
+                }
+                rate = [0, 1, 2].map(|i| raw[i] - bias[i]);
+                // Lying still, what is left is noise: no turn at all.
+                if still && (rate[0] * rate[0] + rate[1] * rate[1] + rate[2] * rate[2]).sqrt() < 0.006 {
+                    rate = [0.0; 3];
+                }
             }
         }
         if let Some(a) = accel.as_mut() {
@@ -289,6 +306,14 @@ fn main() {
                 let t = u64_at(&r, 0);
                 // milli-g
                 let raw = [0, 1, 2].map(|i| f32_at(&r, 8 + 4 * i) as f64 / 1000.0);
+                // Down steady: the reading near the smoothed one, about 1 g.
+                let off = (0..3).map(|i| (raw[i] - down[i]).abs()).fold(0.0, f64::max);
+                let g = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+                if off < 0.02 && (g - 1.0).abs() < 0.05 {
+                    steady_since.get_or_insert_with(Instant::now);
+                } else {
+                    steady_since = None;
+                }
                 down = [0, 1, 2].map(|i| down[i] + (raw[i] - down[i]) * 0.15);
                 if !fusion.started {
                     fusion.start(raw);
