@@ -21,6 +21,7 @@ use adw::prelude::*;
 use cradle_core::{screenshot, status, Mode};
 use gtk::{gdk, gio, glib};
 
+mod cable;
 mod card;
 mod journey;
 mod sections;
@@ -58,6 +59,8 @@ const CABLE_ROOM: (f64, f64) = (90.0, 80.0);
 const CABLE_PAD: f64 = 4.0;
 /// How far the plug's housing goes into the edge (mm).
 const CABLE_IN: f64 = 0.7;
+/// The strain relief's length after the housing (mm).
+const CABLE_RELIEF: f64 = 6.0;
 const DUO_FLOOR_PAD: f32 = 30.0;
 /// The drawn Duo's room, in its body's heights and widths: the raised half
 /// above it, its near edge wider in perspective.
@@ -265,7 +268,9 @@ struct Ui {
     spine: gtk::Picture,
     /// The USB-C cable in the right half's port, while the phone is on it:
     /// its cord, and its plug in layers (bottom to top).
-    cable: gtk::Picture,
+    cable: gtk::DrawingArea,
+    rope: Rc<RefCell<cable::Rope>>,
+    table_grid: gtk::DrawingArea,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -424,9 +429,46 @@ fn build(app: &adw::Application) {
     }
     let cable_px = |mm: f64| (mm * DUO_PX_PER_MM) as f32;
     let (cw, ch) = (cable_px(CABLE_ROOM.0) as i32, cable_px(CABLE_ROOM.1) as i32);
-    let cable = leaf(&duo_cable(), cw, ch);
-    cable.set_visible(false);
-    duo.put(&cable, 0.0, 0.0);
+    // The cord (cable.rs): drawn over the whole room and well past it, as
+    // it hangs and lies.
+    let rope: Rc<RefCell<cable::Rope>> = Rc::default();
+    let past = 320;
+    let cable = gtk::DrawingArea::builder()
+        .content_width((bw as f64 * DUO_ROOM_W) as i32 + 2 * past)
+        .content_height(room + 2 * past)
+        .can_target(false)
+        .visible(false)
+        .build();
+    rope.borrow_mut().offset = (-past as f32, -past as f32);
+    cable.set_draw_func({
+        let rope = rope.clone();
+        move |_, cr, _, _| rope.borrow().draw(cr)
+    });
+    cable.add_tick_callback({
+        let rope = rope.clone();
+        let last = std::cell::Cell::new(0i64);
+        move |area, clock| {
+            let now = clock.frame_time();
+            let dt = if last.get() == 0 { 1.0 / 60.0 } else { (now - last.get()) as f32 / 1e6 };
+            last.set(now);
+            if area.is_visible() && rope.borrow_mut().step(dt) {
+                area.queue_draw();
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+    duo.put(&cable, -past as f64, -past as f64);
+    // The table's surface in centimetre squares, under everything.
+    let table_grid = gtk::DrawingArea::builder()
+        .content_width((bw as f64 * DUO_ROOM_W) as i32 + 2 * past)
+        .content_height(room + 2 * past)
+        .can_target(false)
+        .build();
+    table_grid.set_draw_func({
+        let rope = rope.clone();
+        move |_, cr, _, _| rope.borrow().draw_table(cr)
+    });
+    duo.put(&table_grid, -past as f64, -past as f64);
     let cable_plug: Vec<gtk::Picture> = (0..CABLE_PLUG_LAYERS)
         .map(|i| {
             let t = i as f64 / (CABLE_PLUG_LAYERS - 1) as f64;
@@ -854,6 +896,8 @@ fn build(app: &adw::Application) {
         halves: halves.clone(),
         spine: spine.clone(),
         cable: cable.clone(),
+        rope: rope.clone(),
+        table_grid: table_grid.clone(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1931,92 +1975,6 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
     }
 }
 
-/// The USB-C cable as it lies from the port: the plug's housing (graphite,
-/// lit along its top), its strain relief, and the cord curving off toward
-/// the bottom right, fading; a soft shadow under all of it. In mm from the
-/// picture's top left, the plug's top CABLE_PAD in from it.
-fn duo_cable() -> gdk::Paintable {
-    use gtk::graphene;
-    let k = DUO_PX_PER_MM;
-    let (w, h) = (CABLE_ROOM.0 * k, CABLE_ROOM.1 * k);
-    let snap = gtk::Snapshot::new();
-    let cr = snap.append_cairo(&graphene::Rect::new(0.0, 0.0, w as f32, h as f32));
-    cr.scale(k, k);
-    let (pw, pl) = CABLE_PLUG;
-    let x0 = CABLE_PAD;
-    let y0 = CABLE_PAD;
-    let cx = x0 + pw / 2.0;
-    let relief = 6.0;
-    let cord = |cr: &gtk::cairo::Context| {
-        cr.move_to(cx, y0 + pl + relief - 0.5);
-        cr.curve_to(cx, y0 + pl + 18.0, cx + 26.0, y0 + pl + 14.0, cx + 66.0, y0 + pl + 30.0);
-    };
-    let plug = |cr: &gtk::cairo::Context, dx: f64, dy: f64| {
-        let r = 2.2;
-        let (x, y, ww, hh) = (x0 + dx, y0 + dy, pw, pl);
-        cr.new_sub_path();
-        cr.arc(x + ww - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
-        cr.arc(x + ww - r, y + hh - r, r, 0.0, std::f64::consts::FRAC_PI_2);
-        cr.arc(x + r, y + hh - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
-        cr.arc(x + r, y + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
-        cr.close_path();
-        // The strain relief, narrower, below it.
-        let rw = 5.0;
-        cr.rectangle(x + (ww - rw) / 2.0, y + hh - 0.5, rw, relief);
-    };
-    let fade = |cr: &gtk::cairo::Context, rgb: (f64, f64, f64), a: f64| {
-        let g = gtk::cairo::LinearGradient::new(cx, y0 + pl, cx + 66.0, y0 + pl + 30.0);
-        g.add_color_stop_rgba(0.0, rgb.0, rgb.1, rgb.2, a);
-        g.add_color_stop_rgba(0.55, rgb.0, rgb.1, rgb.2, a);
-        g.add_color_stop_rgba(1.0, rgb.0, rgb.1, rgb.2, 0.0);
-        let _ = cr.set_source(&g);
-    };
-    cr.set_line_cap(gtk::cairo::LineCap::Round);
-    // The shadow: the same, a little down and right, soft (three widths).
-    for (grow, a) in [(3.0, 0.05), (1.8, 0.08), (0.8, 0.11)] {
-        cr.save().ok();
-        cr.translate(1.2, 1.8);
-        cord(&cr);
-        fade(&cr, (0.0, 0.0, 0.0), a);
-        cr.set_line_width(3.4 + grow);
-        let _ = cr.stroke();
-        plug(&cr, 0.0, 0.0);
-        cr.set_source_rgba(0.0, 0.0, 0.0, a);
-        let _ = cr.fill();
-        cr.restore().ok();
-    }
-    // The cord, a tube: dark at its sides, lighter toward the middle, a thin
-    // highlight a little to the light's side (up and left).
-    for (wd, c, dx, dy) in [(3.4, 0.74, 0.0, 0.0), (2.6, 0.86, -0.15, -0.15), (1.7, 0.94, -0.3, -0.3)] {
-        cr.save().ok();
-        cr.translate(dx, dy);
-        cord(&cr);
-        fade(&cr, (c, c + 0.005, c + 0.02), 1.0);
-        cr.set_line_width(wd);
-        let _ = cr.stroke();
-        cr.restore().ok();
-    }
-    cr.save().ok();
-    cr.translate(-0.55, -0.55);
-    cord(&cr);
-    fade(&cr, (1.0, 1.0, 1.0), 0.9);
-    cr.set_line_width(0.6);
-    let _ = cr.stroke();
-    cr.restore().ok();
-    // The strain relief (the plug's housing is its own layers:
-    // duo_cable_plug).
-    let rw = 5.0;
-    let g = gtk::cairo::LinearGradient::new(cx - rw / 2.0, 0.0, cx + rw / 2.0, 0.0);
-    g.add_color_stop_rgb(0.0, 0.76, 0.765, 0.77);
-    g.add_color_stop_rgb(0.35, 0.96, 0.96, 0.955);
-    g.add_color_stop_rgb(1.0, 0.72, 0.725, 0.73);
-    let _ = cr.set_source(&g);
-    cr.rectangle(cx - rw / 2.0, y0 + pl - 0.5, rw, relief);
-    let _ = cr.fill();
-    drop(cr);
-    flatten(&snap, w as f32, h as f32)
-}
-
 /// One layer of the plug's housing (as the halves' edges are drawn: its
 /// silhouette layer on layer): `t` 0 the bottom, darker, to 1; the top one
 /// lit - a band of light along it and a bevel round its rim.
@@ -2039,6 +1997,9 @@ fn duo_cable_plug(t: f64, top: bool) -> gdk::Paintable {
         cr.close_path();
     };
     shape(&cr, 0.0);
+    // The strain relief, narrower, after it (the cord goes on from there:
+    // cable.rs).
+    cr.rectangle(x + (pw - 5.0) / 2.0, y + pl - 0.5, 5.0, CABLE_RELIEF + 0.5);
     if top {
         let g = gtk::cairo::LinearGradient::new(x, y, x + pw, y + pl * 0.4);
         g.add_color_stop_rgb(0.0, 0.86, 0.865, 0.87);
@@ -2320,28 +2281,75 @@ fn show_fold(ui: &Ui, angle: f64) {
     // halves (the plug goes into the port), after the shadows; a leaning
     // half (the tent) holds it in the air: faded there.
     let k = DUO_PX_PER_MM as f32;
-    let cable_at = |z: f32| {
-        local(view(at, true).translate(&graphene::Point::new(mid, 0.0)), 1, rock, raise).translate_3d(&graphene::Point3D::new(
+    // The plug: fixed to the right half, its housing's end a little inside
+    // the bottom edge (in the port).
+    let plug_frame = |t: gsk::Transform| {
+        local(t.translate(&graphene::Point::new(mid, 0.0)), 1, rock, raise).translate_3d(&graphene::Point3D::new(
             ((CABLE_PORT_X - CABLE_PLUG.0 / 2.0 - CABLE_PAD) as f32) * k,
-            // Its end a little inside the edge: in the port.
             h - ((CABLE_PAD + CABLE_IN) as f32) * k,
-            -DUO_THICK / 2.0 + z,
+            -DUO_THICK / 2.0,
         ))
     };
-    let shown = rock.to_radians().cos().powi(4).max(0.0) as f64;
-    ui.duo.set_child_transform(&ui.cable, Some(&cable_at(0.0)));
-    ui.cable.set_opacity(shown);
-    // Over the right half's layers - its bottom edge's face too: the plug
-    // goes into it - and under a half nearer than that one.
-    let right_last: Option<gtk::Widget> = ui.halves[1].order.borrow().last().map(|w| w.clone().upcast());
-    ui.cable.insert_after(&ui.duo, right_last.as_ref());
-    // The plug's layers, bottom to top, over the cord.
-    let mut after: gtk::Widget = ui.cable.clone().upcast();
+    let cable_at = |z: f32| plug_frame(view(at, true)).translate_3d(&graphene::Point3D::new(0.0, 0.0, z));
+    // The cord from where the strain relief ends, in the table's frame (the
+    // view without the phone's own turn): there it hangs (cable.rs).
+    let [yaw, more] = ui.orbit.get().0;
+    let table_view = gsk::Transform::new()
+        .translate(&graphene::Point::new(at.0, at.1))
+        .perspective(3.2 * h)
+        .rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
+        .rotate_3d(yaw, &graphene::Vec3::z_axis());
+    let in_table = gsk::Transform::new()
+        .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
+        .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
+        .translate(&graphene::Point::new(-mid, -h / 2.0));
+    let pm = plug_frame(in_table.clone()).to_matrix();
+    // The table under the phone: where its back lies, or - held, tipped
+    // past it - under its lowest corner (in the hand, over the desk): the
+    // cord hangs down to it.
+    let mut table = -DUO_THICK;
+    for i in 0..2 {
+        let m = local(in_table.clone().translate(&graphene::Point::new(mid, 0.0)), i, rock, raise).to_matrix();
+        for x in [0.0, mid] {
+            for y in [0.0, h] {
+                for z in [0.0, -DUO_THICK] {
+                    table = table.min(m.transform_point3d(&graphene::Point3D::new(x, y, z)).z());
+                }
+            }
+        }
+    }
+    let at_mm = |x: f64, y: f64| {
+        let p = pm.transform_point3d(&graphene::Point3D::new(x as f32 * k, y as f32 * k, 0.0));
+        [p.x(), p.y(), p.z()]
+    };
+    let (pw, pl) = CABLE_PLUG;
+    let (x0, y0) = (CABLE_PAD, CABLE_PAD);
+    let start = at_mm(x0 + pw / 2.0, y0 + pl + CABLE_RELIEF);
+    let ahead = at_mm(x0 + pw / 2.0, y0 + pl + CABLE_RELIEF + 1.0);
+    let d = [ahead[0] - start[0], ahead[1] - start[1], ahead[2] - start[2]];
+    let dl = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-4);
+    {
+        let mut rope = ui.rope.borrow_mut();
+        rope.k = k;
+        rope.table = table;
+        rope.start = start;
+        rope.dir = [d[0] / dl, d[1] / dl, d[2] / dl];
+        rope.end = [mid + 48.0 * k, h / 2.0 + 62.0 * k, table + 1.7 * k];
+        rope.plug = [at_mm(x0, y0), at_mm(x0 + pw, y0), at_mm(x0 + pw, y0 + pl + CABLE_RELIEF), at_mm(x0, y0 + pl + CABLE_RELIEF)];
+        rope.screen = Some(table_view.to_matrix());
+    }
+    ui.cable.queue_draw();
+    ui.table_grid.queue_draw();
+    // The cord under the halves (past the plug it is outside them), over
+    // the shadows; the plug over the right half's layers - its bottom
+    // edge's face too: it goes into it - and under a half nearer than it.
+    ui.cable.insert_after(&ui.duo, Some(&ui.halves[0].floor));
+    ui.table_grid.insert_before(&ui.duo, ui.duo.first_child().as_ref());
+    let mut after: gtk::Widget = ui.halves[1].order.borrow().last().map(|w| w.clone().upcast()).unwrap_or_else(|| ui.cable.clone().upcast());
     let n = ui.cable_plug.len().max(2) as f32 - 1.0;
     for (i, p) in ui.cable_plug.iter().enumerate() {
         let z = (i as f32 / n - 0.5) * CABLE_PLUG_T * k;
         ui.duo.set_child_transform(p, Some(&cable_at(z)));
-        p.set_opacity(shown);
         p.insert_after(&ui.duo, Some(&after));
         after = p.clone().upcast();
     }
