@@ -3616,26 +3616,19 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         if f.turn <= 0.0 {
             letter(whole.0, whole.1, whole.2, f.from, t.rgba);
         } else {
-            // The whole square turning over: its near edge
-            // kept on the table, its far edge up and over toward the eye,
-            // down where the near one was - the old letter on its face, the
-            // new one on its back; no line across it.
-            let a = f.turn * std::f32::consts::PI;
+            // The whole square turning over in its place on the table: its
+            // far and near edges closing on its middle (as if turned on
+            // edge) and opening again, the old letter on its face, the new
+            // on its back - nothing lifted toward the eye (lifted it showed
+            // bigger: the letters jumped); no line across it.
+            let c = (f.turn * std::f32::consts::PI).cos();
             let ym = y0 + side / 2.0;
-            let edge = |u: f32, far: bool| {
-                if far {
-                    p3(x0 + u * side, ym - side / 2.0 * a.cos(), z0 + side * a.sin())
-                } else {
-                    p3(x0 + u * side, ym + side / 2.0 * a.cos(), z0)
-                }
-            };
-            let (f0, f1, n0) = (edge(0.0, true), edge(1.0, true), edge(0.0, false));
-            if a < std::f32::consts::FRAC_PI_2 {
-                letter(f0, f1, n0, f.from, t.rgba);
-            } else {
-                // Its back: the letter's top at the edge now farther off.
-                let n1 = edge(1.0, false);
-                letter(n0, n1, f0, f.to, t.rgba);
+            let half = side / 2.0 * c.abs();
+            let row = |y: f32, u: f32| p3(x0 + u * side, y, z0);
+            let (top, bottom) = (ym - half, ym + half);
+            let ch = if c > 0.0 { f.from } else { f.to };
+            if half > 0.5 {
+                letter(row(top, 0.0), row(top, 1.0), row(bottom, 0.0), ch, t.rgba);
             }
         }
     }
