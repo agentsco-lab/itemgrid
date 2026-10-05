@@ -2547,6 +2547,8 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
     ui.repair_note.set_visible(!cable);
     match status {
         Some(Ok(s)) => fill(ui, &s, if cable { "cable" } else { "Wi-Fi" }),
+        // Shut and falling asleep (off the cable): not an error.
+        Some(Err(_)) if ui.shut_away.get() => say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: item/grid finds it again."),
         Some(Err(e)) => {
             // Said plainly on the simple page; the error itself for developers.
             if dev {
@@ -2954,8 +2956,9 @@ fn follow_hinge(ui: &Rc<Ui>) {
                 itemgrid_core::posture::Reading::Gravity(g) => {
                     ui.gravity_at.set(Some(std::time::Instant::now()));
                     // With duo-motion the quaternion tells the tilt (this is
-                    // its accelerometer, the swings in it).
-                    if !ui.motion_on.get() {
+                    // its accelerometer, the swings in it). Shut off the
+                    // cable it lies on the table (Lid below), whatever comes.
+                    if !ui.motion_on.get() && (cable || ui.lid_shut_at.get().is_none()) {
                         tilt_to(&ui, g);
                     }
                     let mut gs = ui.gravities.borrow_mut();
@@ -2977,6 +2980,14 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     ui.lid_shut_at.set(Some(std::time::Instant::now()));
                     *ui.pose_name.borrow_mut() = "closed".into();
                     fold_to(&ui, 0.0);
+                    // Off the cable nothing keeps it awake: it sleeps now and
+                    // goes from the network. Drawn lying shut on the table at
+                    // once, asleep (it hung in the air at its last tilt until
+                    // the link was found dead, then was taken for restarting).
+                    if !cable {
+                        ui.shut_away.set(true);
+                        tilt_to(&ui, [0.0, 0.0, 1.0]);
+                    }
                 }
                 itemgrid_core::posture::Reading::Lid(false) => {
                     ui.lid_shut_at.set(None);

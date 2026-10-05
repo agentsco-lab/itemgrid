@@ -33,7 +33,9 @@ fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
         let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
         c.args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={dir}/itemgrid-%C"), "-o", "ControlPersist=60", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
     } else {
-        c.args(["-o", "ControlMaster=no", "-o", "ControlPath=none"]);
+        // Its own: noticed dead within ~6 s too (a phone asleep on Wi-Fi
+        // left it hanging for the system's own timeout, ~40 s).
+        c.args(["-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
     }
     c.arg(format!("root@{host}"));
     c
