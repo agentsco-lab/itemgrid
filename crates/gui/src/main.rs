@@ -2075,9 +2075,13 @@ fn follow_hinge(ui: &Rc<Ui>) {
     // lid and the hinge come at once.
     let cable = cradle_core::link::Via::of(&host) == cradle_core::link::Via::Cable;
     trace(format_args!("follow: start {host} awake {cable}"));
-    // duo-motion when it is here (put on the phone as needed), else
-    // sfduo-posture through gdbus.
-    let (follow, motion) = match cradle_core::posture::follow_motion(&host, cable) {
+    // duo-motion on the cable (put on the phone as needed), else
+    // sfduo-posture through gdbus. Only where the phone is kept from
+    // sleeping: it went to sleep under duo-motion's sensors (Wi-Fi, no
+    // inhibitor) and sensorfw stuck - sfduo-posture lets go of its own with
+    // the screen.
+    let motion_try = if cable { cradle_core::posture::follow_motion(&host, cable) } else { None };
+    let (follow, motion) = match motion_try {
         Some(Ok(f)) => (Ok(f), true),
         Some(Err(e)) => {
             trace(format_args!("follow: duo-motion failed: {e}"));
