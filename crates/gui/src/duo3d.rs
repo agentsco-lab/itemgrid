@@ -37,21 +37,23 @@ const THICK: f32 = 4.8;
 const R: f32 = 10.0;
 const NOTCH_W: f32 = 3.65;
 const NOTCH_D: f32 = 8.0;
-const NOTCH_FILLET: f32 = 0.6;
-/// The edges' rounding, all round each half.
-const EDGE: f32 = 0.5;
+const NOTCH_FILLET: f32 = 1.8;
+/// The edges' rounding, all round each half: deep - a half's edge is near a
+/// pill's (the closed phone's photo).
+const EDGE: f32 = 1.6;
 
 /// Materials, as the fragment shader knows them.
 const GLASS: f32 = 0.0;
 const CHASSIS: f32 = 1.0;
 const BACK: f32 = 2.0;
-const HINGE: f32 = 3.0;
+const DARK: f32 = 5.0;
 const SCREEN: f32 = 6.0;
+const CHROME: f32 = 8.0;
 const MIRROR: f32 = 7.0;
 /// The Microsoft logo on the left half's back, mirror-polished: four
 /// squares (mm) with a gap, at the back's middle.
-const LOGO_SQUARE: f32 = 4.4;
-const LOGO_GAP: f32 = 0.5;
+const LOGO_SQUARE: f32 = 5.6;
+const LOGO_GAP: f32 = 0.7;
 /// The screens (mm): each panel's size, the left edge of each in the body,
 /// and their top.
 const PANEL: (f32, f32) = (86.654, 115.539);
@@ -281,42 +283,52 @@ fn logo(mesh: &mut Mesh, k: f32) {
     }
 }
 
-/// The hinge's spine, whole: one metal bar the length of the phone that
-/// both halves hang on (the Duo's halves come off a central spine; two
-/// geared hinges and two rods are inside it). Its section a rounded bar
-/// twice the phone's thickness long, about its middle: turned with half the
-/// fold, it lies across the gap open flat (just under the glass, seen
-/// between the screens) and stands as the stack's round spine closed.
-fn spine(k: f32) -> Mesh {
-    let mut m = Mesh::default();
-    let (long, thick) = (2.0 * THICK, THICK - 0.4);
+/// A bar along the spine: its section a rounded rectangle `long` across by
+/// `thick` (its ends half-round), about (`cx`, `cz`), from `y0` to `y1`, its
+/// ends closed.
+fn bar(m: &mut Mesh, long: f32, thick: f32, cx: f32, cz: f32, y0: f32, y1: f32, mat: f32, k: f32) {
     let r = thick / 2.0;
-    // The section, round: from the right end's top round to its bottom,
-    // then the left end's.
     let mut sec: Vec<(P2, P2)> = Vec::new();
     let n = 14;
-    for (cx, from) in [(long / 2.0 - r, std::f32::consts::FRAC_PI_2), (-long / 2.0 + r, -std::f32::consts::FRAC_PI_2)] {
+    for (ex, from) in [(long / 2.0 - r, std::f32::consts::FRAC_PI_2), (-long / 2.0 + r, -std::f32::consts::FRAC_PI_2)] {
         for i in 0..=n {
-            // Clockwise round each end (x right, z up): right end from top
-            // down, left end from bottom up.
             let t = from - std::f32::consts::PI * i as f32 / n as f32;
-            sec.push(([cx + r * t.cos(), r * t.sin()], [t.cos(), t.sin()]));
+            sec.push(([cx + ex + r * t.cos(), cz + r * t.sin()], [t.cos(), t.sin()]));
         }
     }
-    let (y0, y1) = (0.3, BODY_H - 0.3);
     let p = |q: P2, y: f32| [q[0] * k, y * k, q[1] * k];
     let nor = |q: P2| [q[0], 0.0, q[1]];
     for i in 0..sec.len() {
         let ((a, na), (b, nb)) = (sec[i], sec[(i + 1) % sec.len()]);
-        // The straight runs between the ends shade flat.
-        let (na, nb) = if (a[1] - b[1]).abs() < 1e-3 && (a[0] - b[0]).abs() > 1e-3 { ([0.0, a[1].signum()], [0.0, a[1].signum()]) } else { (na, nb) };
-        m.quad((p(a, y0), nor(na)), (p(b, y0), nor(nb)), (p(b, y1), nor(nb)), (p(a, y1), nor(na)), HINGE);
+        let (na, nb) = if (a[1] - b[1]).abs() < 1e-3 && (a[0] - b[0]).abs() > 1e-3 { ([0.0, (a[1] - cz).signum()], [0.0, (a[1] - cz).signum()]) } else { (na, nb) };
+        m.quad((p(a, y0), nor(na)), (p(b, y0), nor(nb)), (p(b, y1), nor(nb)), (p(a, y1), nor(na)), mat);
     }
     for (y, ny) in [(y0, -1.0), (y1, 1.0)] {
         for i in 0..sec.len() {
             let (a, b) = (sec[i].0, sec[(i + 1) % sec.len()].0);
-            m.tri((p([0.0, 0.0], y), [0.0, ny, 0.0]), (p(a, y), [0.0, ny, 0.0]), (p(b, y), [0.0, ny, 0.0]), HINGE);
+            m.tri((p([cx, cz], y), [0.0, ny, 0.0]), (p(a, y), [0.0, ny, 0.0]), (p(b, y), [0.0, ny, 0.0]), mat);
         }
+    }
+}
+
+/// The hinge, one assembly (the Duo's: its halves come off a central
+/// spine; as photographed open flat): a dark core along the spine, two
+/// polished rods on it the whole length, just under the glass, and at each
+/// end a polished block in the halves' notches. It turns with half the fold:
+/// across the gap open flat, the stack's spine closed.
+fn spine(k: f32) -> Mesh {
+    let mut m = Mesh::default();
+    let ends = 8.0;
+    // The core, dark, a little down from the glass.
+    bar(&mut m, 2.0 * THICK - 1.2, THICK - 1.4, 0.0, -0.4, ends, BODY_H - ends, DARK, k);
+    // The rods: round (a bar as thick as long), near the glass.
+    for x in [-0.85, 0.85] {
+        bar(&mut m, 1.2, 1.2, x, 1.2, ends - 0.2, BODY_H - ends + 0.2, CHROME, k);
+    }
+    // The end blocks, filling the notches.
+    let block_w = 2.0 * NOTCH_W + GAP - 0.4;
+    for (y0, y1) in [(1.4, ends), (BODY_H - ends, BODY_H - 1.4)] {
+        bar(&mut m, block_w, THICK - 0.5, 0.0, 0.0, y0, y1, CHROME, k);
     }
     m
 }
@@ -390,7 +402,7 @@ void main() {
     if (m == 0) { base = vec3(0.035, 0.036, 0.04); ks = 0.55; sh = 90.0; amb = 0.6; }        // glass
     else if (m == 1) { base = vec3(0.79, 0.80, 0.77); ks = 0.22; sh = 24.0; amb = 0.45; }    // chassis
     else if (m == 2) { base = vec3(0.83, 0.845, 0.81); ks = 0.12; sh = 12.0; amb = 0.5; }    // back: frosted
-    else if (m == 3) { base = vec3(0.62, 0.61, 0.57); ks = 0.55; sh = 40.0; amb = 0.4; }     // hinge
+    else if (m == 3) { base = vec3(0.42, 0.42, 0.40); ks = 0.7; sh = 60.0; amb = 0.4; }      // hinge: darker polished metal
     else if (m == 4) { base = vec3(0.25, 0.25, 0.22); ks = 0.6; sh = 50.0; amb = 0.4; }      // rods
     else { base = vec3(0.02, 0.02, 0.022); ks = 0.05; sh = 8.0; amb = 0.5; }                 // the gap
     float diff = max(dot(n, l), 0.0);
@@ -404,9 +416,14 @@ void main() {
     float up = clamp(-r.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 room = mix(vec3(0.05), vec3(0.95), smoothstep(0.35, 0.95, up));
     float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-    if (m == 7) {
+    if (m == 8) {
+        // Chrome: nearly all the room mirrored, a hard bright highlight.
+        c = vec3(0.04) + room * 0.9 + vec3(pow(max(dot(n, h), 0.0), 120.0) * 2.0);
+    } else if (m == 7) {
         // Mirror-polished metal: the room as it is mirrored, a hard highlight.
-        c = mix(vec3(0.3, 0.3, 0.31), room, 0.85) + vec3(pow(max(dot(n, h), 0.0), 200.0) * 1.5);
+        // Dark as it mirrors the room's dim (the photo: near black), bright
+        // where it catches the light.
+        c = vec3(0.07, 0.075, 0.085) + room * 0.35 * mix(0.4, 1.0, fres) + vec3(pow(max(dot(n, h), 0.0), 200.0) * 1.6);
     } else if (m == 6) {
         // A screen: its own light, under the glass's reflection.
         c = texture(u_tex, v_uv).rgb * 0.96 + room * mix(0.03, 0.45, fres);

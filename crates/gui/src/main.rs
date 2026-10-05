@@ -2506,14 +2506,19 @@ fn show_fold(ui: &Ui, angle: f64) {
     // A half in the hinge's frame (the hinge at x 0, the half toward +x):
     // the whole phone rocked about the hinge and raised, the left half
     // turned by the fold.
+    // Folded, the halves come in to the spine (the Duo's hinge has an axis
+    // for each half: shut, their inner edges meet over it, the spine all
+    // but hidden in their rounded edges; flat, the gap between them is
+    // where it lies).
+    let tuck = (lift.abs() / 180.0).clamp(0.0, 1.0) * (1.85 - 0.25) * DUO_PX_PER_MM as f32;
     let local = |t: gsk::Transform, i: usize, rock: f32, raise: f32| {
         let t = t.translate_3d(&graphene::Point3D::new(0.0, 0.0, raise)).rotate_3d(rock, &graphene::Vec3::y_axis());
         if i == 0 {
             t.translate_3d(&graphene::Point3D::new(0.0, 0.0, axis))
                 .rotate_3d(lift, &graphene::Vec3::y_axis())
-                .translate_3d(&graphene::Point3D::new(-mid, 0.0, -axis))
+                .translate_3d(&graphene::Point3D::new(-mid + tuck, 0.0, -axis))
         } else {
-            t
+            t.translate(&graphene::Point::new(-tuck, 0.0))
         }
     };
     let lowest = |rock: f32| {
