@@ -22,6 +22,7 @@ struct X11 {
     intern_atom: unsafe extern "C" fn(Display, *const std::ffi::c_char, i32) -> std::ffi::c_ulong,
     change_property: unsafe extern "C" fn(Display, Window, std::ffi::c_ulong, std::ffi::c_ulong, i32, i32, *const u8, i32) -> i32,
     move_resize: unsafe extern "C" fn(Display, Window, i32, i32, u32, u32) -> i32,
+    change_attributes: unsafe extern "C" fn(Display, Window, std::ffi::c_ulong, *const u8) -> i32,
 }
 
 /// GTK's X11 functions and Xlib's, from the process (both are loaded when
@@ -42,6 +43,7 @@ fn x11() -> Option<&'static X11> {
             intern_atom: std::mem::transmute(get(b"XInternAtom\0")?),
             change_property: std::mem::transmute(get(b"XChangeProperty\0")?),
             move_resize: std::mem::transmute(get(b"XMoveResizeWindow\0")?),
+            change_attributes: std::mem::transmute(get(b"XChangeWindowAttributes\0")?),
         })
     })
     .as_ref()
@@ -105,8 +107,25 @@ pub fn move_to(window: &adw::ApplicationWindow, x: i32, y: i32) {
     }
 }
 
+/// A window of the program's own over everything, exactly at `rect`, left
+/// to it alone (override-redirect: no window manager placing, framing or
+/// stacking it) - before it is shown. False off X11.
+pub fn own_over(window: &impl IsA<gtk::Window>, rect: (i32, i32, i32, i32)) -> bool {
+    let Some((x11, dpy, id)) = handle(window) else { return false };
+    // XSetWindowAttributes (LP64): override_redirect, a Bool, at byte 88.
+    let mut attrs = [0u8; 112];
+    attrs[88..92].copy_from_slice(&1i32.to_ne_bytes());
+    const CW_OVERRIDE_REDIRECT: std::ffi::c_ulong = 1 << 9;
+    unsafe {
+        (x11.change_attributes)(dpy, id, CW_OVERRIDE_REDIRECT, attrs.as_ptr());
+        (x11.move_resize)(dpy, id, rect.0, rect.1, rect.2.max(1) as u32, rect.3.max(1) as u32);
+        (x11.flush)(dpy);
+    }
+    true
+}
+
 /// The window's frame moved and sized on the screen.
-pub fn move_resize(window: &adw::ApplicationWindow, (x, y, w, h): (i32, i32, i32, i32)) {
+pub fn move_resize(window: &impl IsA<gtk::Window>, (x, y, w, h): (i32, i32, i32, i32)) {
     let Some((x11, dpy, id)) = handle(window) else { return };
     unsafe {
         (x11.move_resize)(dpy, id, x, y, w.max(1) as u32, h.max(1) as u32);
