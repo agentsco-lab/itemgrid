@@ -22,6 +22,7 @@ use cradle_core::{screenshot, status, Mode};
 use gtk::{gdk, gio, glib};
 
 mod cable;
+mod duo3d;
 mod card;
 mod journey;
 mod sections;
@@ -273,6 +274,9 @@ struct Ui {
     /// its cord, and its plug in layers (bottom to top).
     cable: gtk::DrawingArea,
     rope: Rc<RefCell<cable::Rope>>,
+    /// The Duo in 3D (duo3d.rs), and what it draws.
+    gl3d: gtk::GLArea,
+    scene3d: Rc<RefCell<duo3d::Scene>>,
     /// The table under the Duo as the page's floor: the view of the phone
     /// at rest (not turned by the pointer, nor as it is held).
     floor: gtk::DrawingArea,
@@ -464,6 +468,11 @@ fn build(app: &adw::Application) {
         }
     });
     duo.put(&cable, -past as f64, -past as f64);
+    // The Duo itself, in 3D, over the same room as the cord.
+    let scene3d: Rc<RefCell<duo3d::Scene>> = Rc::default();
+    let gl3d = duo3d::area(scene3d.clone(), (bw as f64 * DUO_ROOM_W) as i32 + 2 * past, room + 2 * past, DUO_PX_PER_MM as f32);
+    duo.put(&gl3d, -past as f64, -past as f64);
+    rope.borrow_mut().gl_past = past as f32;
 
     let cable_plug: Vec<gtk::Picture> = (0..CABLE_PLUG_LAYERS)
         .map(|i| {
@@ -710,7 +719,10 @@ fn build(app: &adw::Application) {
     overview.set_margin_bottom(16);
     overview.append(&sections);
     overview.append(&device);
-    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&overview).hexpand(true).build();
+    // Not in a scrolled window: it clipped the drawn Duo at its edge, and
+    // GTK's bounds for a half turned in 3D are loose - the raised half went
+    // whole when it neared the top.
+    let scroll = &overview;
     // Behind it the table, in centimetre squares, across the whole page and
     // still (it does not turn with the Duo).
     let floor = gtk::DrawingArea::builder().hexpand(true).vexpand(true).can_target(false).build();
@@ -721,7 +733,7 @@ fn build(app: &adw::Application) {
     });
     let home_page = gtk::Overlay::new();
     home_page.set_child(Some(&floor));
-    home_page.add_overlay(&scroll);
+    home_page.add_overlay(scroll);
     // Developer: what Developer Mode shows - software, slots, backups,
     // Android, the screen, the system.
     let developer = gtk::Box::new(gtk::Orientation::Vertical, 16);
@@ -904,6 +916,8 @@ fn build(app: &adw::Application) {
         spine: spine.clone(),
         cable: cable.clone(),
         rope: rope.clone(),
+        gl3d: gl3d.clone(),
+        scene3d: scene3d.clone(),
         floor: floor.clone(),
         floor_view: floor_view.clone(),
         cable_plug: cable_plug.clone(),
@@ -1860,9 +1874,16 @@ fn follow_hinge(ui: &Rc<Ui>) {
     });
     let ui = ui.clone();
     glib::spawn_future_local(async move {
+        // The hinge's sensor reads a few degrees shut (its posture is
+        // "closed" up to 10): closed, the Duo is drawn shut.
+        let mut raw = None::<f64>;
+        let shut = |ui: &Ui, a: f64| if ui.pose_name.borrow().as_str() == "closed" { 0.0 } else { a };
         while let Ok(r) = rx.recv().await {
             match r {
-                cradle_core::posture::Reading::Angle(a) => fold_to(&ui, a),
+                cradle_core::posture::Reading::Angle(a) => {
+                    raw = Some(a);
+                    fold_to(&ui, shut(&ui, a));
+                }
                 cradle_core::posture::Reading::Gravity(g) => {
                     tilt_to(&ui, g);
                     let mut gs = ui.gravities.borrow_mut();
@@ -1871,7 +1892,12 @@ fn follow_hinge(ui: &Rc<Ui>) {
                         gs.pop_front();
                     }
                 }
-                cradle_core::posture::Reading::Posture(p) => *ui.pose_name.borrow_mut() = p,
+                cradle_core::posture::Reading::Posture(p) => {
+                    *ui.pose_name.borrow_mut() = p;
+                    if let Some(a) = raw {
+                        fold_to(&ui, shut(&ui, a));
+                    }
+                }
             }
             say_pose(&ui);
         }
@@ -2432,7 +2458,13 @@ fn show_fold(ui: &Ui, angle: f64) {
     // its depth - under a half nearer than it (a raised half's back hid it
     // only so), over the rest.
     let vm = view(at, false).to_matrix();
-    let spine_depth = vm.transform_point3d(&graphene::Point3D::new(mid, h / 2.0, -DUO_THICK / 2.0)).z();
+    // The hinge between the halves' inner edges, at the middle of their
+    // thickness: flat, in line with them; closed, at the seam of the stack
+    // (it was kept at the right half's middle, half a phone off).
+    let edge_mid = |i: usize, x: f32| local(gsk::Transform::new(), i, rock, raise).to_matrix().transform_point3d(&graphene::Point3D::new(x, 0.0, -DUO_THICK / 2.0));
+    let (er, el) = (edge_mid(1, 0.0), edge_mid(0, mid));
+    let spine_c = ((er.x() + el.x()) / 2.0, (er.z() + el.z()) / 2.0);
+    let spine_depth = vm.transform_point3d(&graphene::Point3D::new(mid + spine_c.0, h / 2.0, spine_c.1)).z();
     let order: [usize; 2] = if depth[0] <= depth[1] { [0, 1] } else { [1, 0] };
     for h in &ui.halves {
         h.floor.insert_before(&ui.duo, ui.duo.first_child().as_ref());
@@ -2456,10 +2488,8 @@ fn show_fold(ui: &Ui, angle: f64) {
     let face = dx.z().atan2(dz.z()).to_degrees();
     let hw = ui.spine.width().max(1) as f32;
     let hinge = view(at, true)
-        .translate_3d(&graphene::Point3D::new(mid, 0.0, raise))
-        .rotate_3d(rock, &graphene::Vec3::y_axis())
-        .translate_3d(&graphene::Point3D::new(0.0, 0.0, -DUO_THICK / 2.0))
-        .rotate_3d(face - rock, &graphene::Vec3::y_axis())
+        .translate_3d(&graphene::Point3D::new(mid + spine_c.0, 0.0, spine_c.1))
+        .rotate_3d(face, &graphene::Vec3::y_axis())
         .translate(&graphene::Point::new(-hw / 2.0, 0.0));
     ui.duo.set_child_transform(&ui.spine, Some(&hinge));
     // The cable from the right half's bottom edge, in its plane, under the
@@ -2524,6 +2554,35 @@ fn show_fold(ui: &Ui, angle: f64) {
         rope.screen = Some(table_view.to_matrix());
     }
     ui.cable.queue_draw();
+    // The Duo in 3D: each half's place (the pictures' frame), and the
+    // perspective to the GL area's clip space (it begins `past` before the
+    // duo's drawing, as the cord's does).
+    {
+        let past = ui.rope.borrow().gl_past;
+        let (w, hh) = (ui.gl3d.width_request() as f32, ui.gl3d.height_request() as f32);
+        let ndc = gsk::Transform::new()
+            .translate_3d(&graphene::Point3D::new(-1.0, 1.0, 0.0))
+            .scale_3d(2.0 / w, -2.0 / hh, -1.0 / 1500.0)
+            .translate(&graphene::Point::new(past, past));
+        let persp = gsk::Transform::new()
+            .translate(&graphene::Point::new(at.0, at.1))
+            .perspective(3.2 * h)
+            .translate(&graphene::Point::new(-at.0, -at.1));
+        let mut sc = ui.scene3d.borrow_mut();
+        sc.proj = Some(ndc.transform(Some(&persp)).to_matrix());
+        sc.eye = [at.0, at.1, 3.2 * h];
+        for i in 0..2 {
+            sc.halves[i] = Some(local(view(at, false).translate(&graphene::Point::new(mid, 0.0)), i, rock, raise).to_matrix());
+        }
+    }
+    ui.gl3d.queue_render();
+    // The pictures of the halves and the hinge give way to it.
+    for half in &ui.halves {
+        for w in std::iter::once(&half.back).chain(&half.edge).chain([&half.front, &half.glare, &half.shade]) {
+            w.set_visible(false);
+        }
+    }
+    ui.spine.set_visible(false);
     // The floor: the table as the phone at rest sees it (no turn by the
     // pointer, no tilt in the hand), where the duo's drawing is on the page.
     {
@@ -2544,7 +2603,8 @@ fn show_fold(ui: &Ui, angle: f64) {
     // the shadows; the plug over the right half's layers - its bottom
     // edge's face too: it goes into it - and under a half nearer than it.
     ui.cable.insert_after(&ui.duo, Some(&ui.halves[0].floor));
-    let mut after: gtk::Widget = ui.halves[1].order.borrow().last().map(|w| w.clone().upcast()).unwrap_or_else(|| ui.cable.clone().upcast());
+    ui.gl3d.insert_after(&ui.duo, Some(&ui.cable));
+    let mut after: gtk::Widget = ui.gl3d.clone().upcast();
     let n = ui.cable_plug.len().max(2) as f32 - 1.0;
     for (i, p) in ui.cable_plug.iter().enumerate() {
         let z = (i as f32 / n - 0.5) * CABLE_PLUG_T * k;
@@ -2596,7 +2656,7 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
         p.set_visible(link == "cable");
     }
     if let Some(a) = s.hinge {
-        fold_to(ui, a);
+        fold_to(ui, if ui.pose_name.borrow().as_str() == "closed" { 0.0 } else { a });
     }
     // The club's number, if this computer knows it.
     *ui.serial.borrow_mut() = s.serial.clone();

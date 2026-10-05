@@ -1,0 +1,562 @@
+//! The drawn Duo in 3D: its body and hinge as meshes, drawn with GL in a
+//! GtkGLArea - a depth buffer for what is in front, lit materials, edges
+//! smoothed (multisampled) - in place of pictures turned in 3D (their
+//! edges were layers, their order guessed, GTK's bounds for them loose).
+//!
+//! The geometry is the Surface Duo 1's, in millimetres, from the drawing
+//! Cradle has (data/duo-body.py: agentsco.uk's DuoBody, off a straight-on
+//! photo and Microsoft's spec sheet): each half 91.6 x 145.2 mm and 4.8 thick,
+//! its outer corners round (R 10), at its inner edge the notches the hinge's
+//! knuckles sit in; its edges rounded all round. Each half is made in the
+//! same frame as the window's pictures of it (x from the left edge of the
+//! left half's, or from the spine for the right one; y down from the top;
+//! z up from the screen's plane, the back at -4.8 mm), so the window's
+//! transforms for the halves - the fold, the tent, the hand, the pointer's
+//! turn - place them here as they did the pictures.
+//!
+//! The hinge: on each half a knuckle in its notch - a block rounded at its
+//! spine end (radius half the thickness) - turning with it; open flat the
+//! knuckles meet at the spine, closed they lie one on the other and are the
+//! stack's rounded spine. Between them, along the spine, a rod for each half
+//! and the dark of the gap.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use glow::HasContext;
+use gtk::prelude::*;
+use gtk::{glib, graphene};
+
+/// The body (mm).
+const BODY_W: f32 = 186.9;
+const BODY_H: f32 = 145.2;
+const GAP: f32 = 3.7;
+const HALF_W: f32 = (BODY_W - GAP) / 2.0;
+const MID: f32 = BODY_W / 2.0;
+const THICK: f32 = 4.8;
+const R: f32 = 10.0;
+const NOTCH_W: f32 = 3.65;
+const NOTCH_D: f32 = 8.0;
+const NOTCH_FILLET: f32 = 0.6;
+/// The edges' rounding, all round each half.
+const EDGE: f32 = 0.5;
+/// The hinge's knuckles: from the spine, and along it.
+const KNUCKLE_W: f32 = 5.1;
+const KNUCKLE_TOP: f32 = 1.7;
+const KNUCKLE_H: f32 = 6.3;
+/// The rods along the spine (from it, their radius).
+const ROD_X: f32 = 0.775;
+const ROD_R: f32 = 0.375;
+
+/// Materials, as the fragment shader knows them.
+const GLASS: f32 = 0.0;
+const CHASSIS: f32 = 1.0;
+const BACK: f32 = 2.0;
+const HINGE: f32 = 3.0;
+const ROD: f32 = 4.0;
+const DARK: f32 = 5.0;
+
+/// What the window gives to draw: each half's place in the view (its frame
+/// to the duo drawing's px, without the perspective), and the perspective
+/// to the GL area's clip space.
+#[derive(Default)]
+pub struct Scene {
+    pub halves: [Option<graphene::Matrix>; 2],
+    pub proj: Option<graphene::Matrix>,
+    /// Where the eye is (the perspective's), in the halves' view.
+    pub eye: [f32; 3],
+}
+
+/// A mesh's vertices: position (px), normal, material.
+#[derive(Default)]
+struct Mesh {
+    v: Vec<f32>,
+}
+
+impl Mesh {
+    fn vert(&mut self, p: [f32; 3], n: [f32; 3], m: f32) {
+        self.v.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2], m]);
+    }
+    fn tri(&mut self, a: ([f32; 3], [f32; 3]), b: ([f32; 3], [f32; 3]), c: ([f32; 3], [f32; 3]), m: f32) {
+        self.vert(a.0, a.1, m);
+        self.vert(b.0, b.1, m);
+        self.vert(c.0, c.1, m);
+    }
+    fn quad(&mut self, a: ([f32; 3], [f32; 3]), b: ([f32; 3], [f32; 3]), c: ([f32; 3], [f32; 3]), d: ([f32; 3], [f32; 3]), m: f32) {
+        self.tri(a, b, c, m);
+        self.tri(a, c, d, m);
+    }
+}
+
+type P2 = [f32; 2];
+
+fn quad_bezier(out: &mut Vec<P2>, a: P2, c: P2, b: P2, n: usize) {
+    for i in 1..=n {
+        let t = i as f32 / n as f32;
+        let u = 1.0 - t;
+        out.push([u * u * a[0] + 2.0 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2.0 * u * t * c[1] + t * t * b[1]]);
+    }
+}
+
+fn arc(out: &mut Vec<P2>, c: P2, r: f32, from: f32, to: f32, n: usize) {
+    for i in 1..=n {
+        let a = from + (to - from) * i as f32 / n as f32;
+        out.push([c[0] + r * a.cos(), c[1] + r * a.sin()]);
+    }
+}
+
+/// The left half's outline (mm, its picture's frame), as duo-body.py's
+/// half_path: the outer corners round, the inner edge's notches.
+fn left_outline() -> Vec<P2> {
+    use std::f32::consts::PI;
+    let (w, h, nw, nd, f) = (HALF_W, BODY_H, NOTCH_W, NOTCH_D, NOTCH_FILLET);
+    let x = w - nw;
+    let mut o = vec![[R, 0.0], [x - f, 0.0]];
+    quad_bezier(&mut o, [x - f, 0.0], [x, 0.0], [x, f], 4);
+    o.push([x, nd - f]);
+    quad_bezier(&mut o, [x, nd - f], [x, nd], [x + f, nd], 4);
+    o.push([w, nd]);
+    o.push([w, h - nd]);
+    o.push([x + f, h - nd]);
+    quad_bezier(&mut o, [x + f, h - nd], [x, h - nd], [x, h - nd + f], 4);
+    o.push([x, h - f]);
+    quad_bezier(&mut o, [x, h - f], [x, h], [x - f, h], 4);
+    o.push([R, h]);
+    arc(&mut o, [R, h - R], R, PI / 2.0, PI, 14);
+    o.push([0.0, R]);
+    arc(&mut o, [R, R], R, PI, 1.5 * PI, 14);
+    o.pop(); // back at the start
+    o
+}
+
+fn area2(p: &[P2]) -> f32 {
+    let mut a = 0.0;
+    for i in 0..p.len() {
+        let (u, v) = (p[i], p[(i + 1) % p.len()]);
+        a += u[0] * v[1] - v[0] * u[1];
+    }
+    a / 2.0
+}
+
+/// Ear clipping: the outline's triangles (it is simple, partly concave).
+fn triangulate(p: &[P2]) -> Vec<[usize; 3]> {
+    let ccw = area2(p) > 0.0;
+    let cross = |a: P2, b: P2, c: P2| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    let inside = |a: P2, b: P2, c: P2, q: P2| {
+        let (d1, d2, d3) = (cross(a, b, q), cross(b, c, q), cross(c, a, q));
+        let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+        let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+        !(neg && pos)
+    };
+    let mut idx: Vec<usize> = (0..p.len()).collect();
+    let mut out = Vec::new();
+    let mut guard = 0;
+    while idx.len() > 3 && guard < 100_000 {
+        guard += 1;
+        let n = idx.len();
+        let mut cut = None;
+        for i in 0..n {
+            let (a, b, c) = (idx[(i + n - 1) % n], idx[i], idx[(i + 1) % n]);
+            let cv = cross(p[a], p[b], p[c]);
+            let convex = if ccw { cv > 1e-6 } else { cv < -1e-6 };
+            if !convex {
+                continue;
+            }
+            if idx.iter().any(|&j| j != a && j != b && j != c && inside(p[a], p[b], p[c], p[j])) {
+                continue;
+            }
+            out.push([a, b, c]);
+            cut = Some(i);
+            break;
+        }
+        match cut {
+            Some(i) => {
+                idx.remove(i);
+            }
+            None => break,
+        }
+    }
+    if idx.len() == 3 {
+        out.push([idx[0], idx[1], idx[2]]);
+    }
+    out
+}
+
+/// Each vertex's way out (unit), its miter (to offset the outline by a
+/// distance keeping its edges parallel), and whether the outline turns
+/// sharply there (its sides then shaded flat on each side).
+fn vertex_frames(p: &[P2]) -> Vec<(P2, P2, bool, P2, P2)> {
+    let ccw = area2(p) > 0.0;
+    let n = p.len();
+    let edge_out = |a: P2, b: P2| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+        if ccw { [dy / l, -dx / l] } else { [-dy / l, dx / l] }
+    };
+    (0..n)
+        .map(|i| {
+            let (a, b, c) = (p[(i + n - 1) % n], p[i], p[(i + 1) % n]);
+            let (e0, e1) = (edge_out(a, b), edge_out(b, c));
+            let s = [e0[0] + e1[0], e0[1] + e1[1]];
+            let l = (s[0] * s[0] + s[1] * s[1]).sqrt().max(1e-6);
+            let avg = [s[0] / l, s[1] / l];
+            let cos = (avg[0] * e0[0] + avg[1] * e0[1]).max(0.3);
+            let miter = [avg[0] / cos, avg[1] / cos];
+            let sharp = e0[0] * e1[0] + e0[1] * e1[1] < 0.8;
+            (avg, miter, sharp, e0, e1)
+        })
+        .collect()
+}
+
+/// A half's body: its outline extruded through its thickness with rounded
+/// edges, its glass on top, its back below.
+fn body(mesh: &mut Mesh, outline: &[P2], k: f32) {
+    let frames = vertex_frames(outline);
+    let n = outline.len();
+    // The profile through the thickness: (inset, z, normal's out, up).
+    let mut rings: Vec<(f32, f32, f32, f32)> = Vec::new();
+    let steps = 5;
+    for s in 0..=steps {
+        let a = std::f32::consts::FRAC_PI_2 * (1.0 - s as f32 / steps as f32);
+        rings.push((EDGE - EDGE * a.cos(), -THICK + EDGE - EDGE * a.sin(), a.cos(), -a.sin()));
+    }
+    for s in 0..=steps {
+        let a = std::f32::consts::FRAC_PI_2 * s as f32 / steps as f32;
+        rings.push((EDGE - EDGE * a.cos(), -EDGE + EDGE * a.sin(), a.cos(), a.sin()));
+    }
+    let at = |i: usize, r: (f32, f32, f32, f32), out: P2| {
+        let (_, miter, _, _, _) = frames[i];
+        let p = outline[i];
+        (
+            [(p[0] - miter[0] * r.0) * k, (p[1] - miter[1] * r.0) * k, r.1 * k],
+            [out[0] * r.2, out[1] * r.2, r.3],
+        )
+    };
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (avg_i, _, sharp_i, _, e1_i) = frames[i];
+        let (avg_j, _, sharp_j, e0_j, _) = frames[j];
+        let ni = if sharp_i { e1_i } else { avg_i };
+        let nj = if sharp_j { e0_j } else { avg_j };
+        for r in 0..rings.len() - 1 {
+            let (r0, r1) = (rings[r], rings[r + 1]);
+            mesh.quad(at(i, r0, ni), at(j, r0, nj), at(j, r1, nj), at(i, r1, ni), CHASSIS);
+        }
+    }
+    // The faces: the glass (z 0) and the back (z -THICK), the outline inset
+    // by the edges' rounding.
+    let inset: Vec<P2> = (0..n).map(|i| [outline[i][0] - frames[i].1[0] * EDGE, outline[i][1] - frames[i].1[1] * EDGE]).collect();
+    for t in triangulate(&inset) {
+        let v = |i: usize, z: f32, nz: f32| ([inset[i][0] * k, inset[i][1] * k, z * k], [0.0, 0.0, nz]);
+        mesh.tri(v(t[0], 0.0, 1.0), v(t[1], 0.0, 1.0), v(t[2], 0.0, 1.0), GLASS);
+        mesh.tri(v(t[0], -THICK, -1.0), v(t[1], -THICK, -1.0), v(t[2], -THICK, -1.0), BACK);
+    }
+}
+
+/// A knuckle of the hinge: from `x0` (the spine) `KNUCKLE_W` out along
+/// `dir` (+1 or -1), rounded at its spine end, `y0` to `y1` along it.
+fn knuckle(mesh: &mut Mesh, x0: f32, dir: f32, y0: f32, y1: f32, k: f32) {
+    let r = THICK / 2.0;
+    // The profile in (across, z), from the top round to the bottom, then the
+    // outer side and back: points with their normals.
+    let mut prof: Vec<(P2, P2)> = vec![([KNUCKLE_W, 0.0], [0.0, 1.0])];
+    prof.push(([r, 0.0], [0.0, 1.0]));
+    let n = 16;
+    for i in 0..=n {
+        let t = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / n as f32;
+        prof.push(([r + r * t.cos(), -r + r * t.sin()], [t.cos(), t.sin()]));
+    }
+    prof.push(([KNUCKLE_W, -THICK], [0.0, -1.0]));
+    let to3 = |q: P2, y: f32| [(x0 + dir * q[0]) * k, y * k, q[1] * k];
+    let nor = |m: P2| [dir * m[0], 0.0, m[1]];
+    for i in 0..prof.len() - 1 {
+        let ((a, na), (b, nb)) = (prof[i], prof[i + 1]);
+        // A straight run shades flat, the round smooth.
+        let flat = (a[1] - b[1]).abs() < 1e-4 || (a[0] - b[0]).abs() < 1e-4;
+        let (na, nb) = if flat { (na, na) } else { (na, nb) };
+        mesh.quad((to3(a, y0), nor(na)), (to3(b, y0), nor(nb)), (to3(b, y1), nor(nb)), (to3(a, y1), nor(na)), HINGE);
+    }
+    // Its outer side and its ends.
+    mesh.quad(
+        (to3([KNUCKLE_W, -THICK], y0), nor([1.0, 0.0])),
+        (to3([KNUCKLE_W, 0.0], y0), nor([1.0, 0.0])),
+        (to3([KNUCKLE_W, 0.0], y1), nor([1.0, 0.0])),
+        (to3([KNUCKLE_W, -THICK], y1), nor([1.0, 0.0])),
+        HINGE,
+    );
+    let c = [KNUCKLE_W * 0.6, -r];
+    for (y, ny) in [(y0, -1.0), (y1, 1.0)] {
+        for i in 0..prof.len() - 1 {
+            let (a, b) = (prof[i].0, prof[i + 1].0);
+            mesh.tri((to3(c, y), [0.0, ny, 0.0]), (to3(a, y), [0.0, ny, 0.0]), (to3(b, y), [0.0, ny, 0.0]), HINGE);
+        }
+        let (a, b) = (prof[prof.len() - 1].0, prof[0].0);
+        mesh.tri((to3(c, y), [0.0, ny, 0.0]), (to3(a, y), [0.0, ny, 0.0]), (to3(b, y), [0.0, ny, 0.0]), HINGE);
+    }
+}
+
+/// A rod along the spine: at `x` (mm), the middle of the thickness.
+fn rod(mesh: &mut Mesh, x: f32, y0: f32, y1: f32, k: f32) {
+    let n = 12;
+    let z = -THICK / 2.0;
+    for i in 0..n {
+        let (a, b) = (std::f32::consts::TAU * i as f32 / n as f32, std::f32::consts::TAU * (i + 1) as f32 / n as f32);
+        let p = |t: f32, y: f32| ([(x + ROD_R * t.cos()) * k, y * k, (z + ROD_R * t.sin()) * k], [t.cos(), 0.0, t.sin()]);
+        mesh.quad(p(a, y0), p(b, y0), p(b, y1), p(a, y1), ROD);
+    }
+}
+
+/// A box (mm): its six faces.
+fn block(mesh: &mut Mesh, lo: [f32; 3], hi: [f32; 3], m: f32, k: f32) {
+    let c = |x: f32, y: f32, z: f32| [x * k, y * k, z * k];
+    let (x0, y0, z0, x1, y1, z1) = (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    let f = |a: [f32; 3], b: [f32; 3], cc: [f32; 3], d: [f32; 3], n: [f32; 3], mesh: &mut Mesh| mesh.quad((a, n), (b, n), (cc, n), (d, n), m);
+    f(c(x0, y0, z1), c(x1, y0, z1), c(x1, y1, z1), c(x0, y1, z1), [0.0, 0.0, 1.0], mesh);
+    f(c(x0, y0, z0), c(x1, y0, z0), c(x1, y1, z0), c(x0, y1, z0), [0.0, 0.0, -1.0], mesh);
+    f(c(x0, y0, z0), c(x1, y0, z0), c(x1, y0, z1), c(x0, y0, z1), [0.0, -1.0, 0.0], mesh);
+    f(c(x0, y1, z0), c(x1, y1, z0), c(x1, y1, z1), c(x0, y1, z1), [0.0, 1.0, 0.0], mesh);
+    f(c(x0, y0, z0), c(x0, y1, z0), c(x0, y1, z1), c(x0, y0, z1), [-1.0, 0.0, 0.0], mesh);
+    f(c(x1, y0, z0), c(x1, y1, z0), c(x1, y1, z1), c(x1, y0, z1), [1.0, 0.0, 0.0], mesh);
+}
+
+/// Half `i` (0 left, 1 right) whole, in its picture's frame, in px (`k` px
+/// a mm).
+fn half(i: usize, k: f32) -> Mesh {
+    let mut m = Mesh::default();
+    let left = left_outline();
+    // The right half the left one mirrored, in its own frame (from the
+    // spine).
+    let outline: Vec<P2> = if i == 0 { left } else { left.iter().map(|p| [MID - p[0], p[1]]).collect() };
+    body(&mut m, &outline, k);
+    // Its knuckles, its rod and the gap's dark, at the spine.
+    let (spine, dir) = if i == 0 { (MID, -1.0) } else { (0.0, 1.0) };
+    for (y0, y1) in [(KNUCKLE_TOP, KNUCKLE_TOP + KNUCKLE_H), (BODY_H - KNUCKLE_TOP - KNUCKLE_H, BODY_H - KNUCKLE_TOP)] {
+        knuckle(&mut m, spine, dir, y0, y1, k);
+    }
+    rod(&mut m, spine + dir * ROD_X, NOTCH_D, BODY_H - NOTCH_D, k);
+    let (xa, xb) = if i == 0 { (MID - GAP / 2.0, MID - 0.05) } else { (0.05, GAP / 2.0) };
+    block(&mut m, [xa, NOTCH_D, -THICK + 0.8], [xb, BODY_H - NOTCH_D, -0.6], DARK, k);
+    m
+}
+
+const VERTEX: &str = r#"
+in vec3 a_pos;
+in vec3 a_nor;
+in float a_mat;
+uniform mat4 u_mv;
+uniform mat4 u_p;
+out vec3 v_pos;
+out vec3 v_nor;
+out float v_mat;
+void main() {
+    vec4 p = u_mv * vec4(a_pos, 1.0);
+    v_pos = p.xyz;
+    v_nor = mat3(u_mv) * a_nor;
+    v_mat = a_mat;
+    gl_Position = u_p * p;
+}
+"#;
+
+/// Lit as the window's light is (above, a little left and in front; y is
+/// down): a soft diffuse with a sky above, a highlight by the material.
+const FRAGMENT: &str = r#"
+in vec3 v_pos;
+in vec3 v_nor;
+in float v_mat;
+uniform vec3 u_eye;
+out vec4 o;
+void main() {
+    vec3 n = normalize(v_nor);
+    vec3 l = normalize(vec3(-0.3, -0.75, 0.85));
+    vec3 v = normalize(u_eye - v_pos);
+    int m = int(v_mat + 0.5);
+    vec3 base; float ks; float sh; float amb;
+    if (m == 0) { base = vec3(0.035, 0.036, 0.04); ks = 0.55; sh = 90.0; amb = 0.6; }        // glass
+    else if (m == 1) { base = vec3(0.79, 0.80, 0.77); ks = 0.22; sh = 24.0; amb = 0.45; }    // chassis
+    else if (m == 2) { base = vec3(0.83, 0.845, 0.81); ks = 0.12; sh = 12.0; amb = 0.5; }    // back: frosted
+    else if (m == 3) { base = vec3(0.62, 0.61, 0.57); ks = 0.55; sh = 40.0; amb = 0.4; }     // hinge
+    else if (m == 4) { base = vec3(0.25, 0.25, 0.22); ks = 0.6; sh = 50.0; amb = 0.4; }      // rods
+    else { base = vec3(0.02, 0.02, 0.022); ks = 0.05; sh = 8.0; amb = 0.5; }                 // the gap
+    float diff = max(dot(n, l), 0.0);
+    float sky = 0.5 + 0.5 * (-n.y);
+    vec3 h = normalize(l + v);
+    float spec = pow(max(dot(n, h), 0.0), sh) * ks;
+    vec3 c = base * (amb * mix(0.55, 1.0, sky) + 0.6 * diff) + vec3(spec);
+    // Glossy glass mirrors the room: a bright sky above fading to the floor,
+    // stronger toward grazing (Fresnel); the frosted back a softer sheen.
+    vec3 r = reflect(-v, n);
+    float up = clamp(-r.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 room = mix(vec3(0.05), vec3(0.95), smoothstep(0.35, 0.95, up));
+    float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+    if (m == 0) {
+        c += room * mix(0.08, 0.6, fres);
+    } else if (m == 2) {
+        c = mix(c, room, 0.06 + 0.25 * fres);
+    }
+    o = vec4(c, 1.0);
+}
+"#;
+
+struct Gpu {
+    gl: glow::Context,
+    prog: glow::Program,
+    halves: [(glow::VertexArray, glow::Buffer, i32); 2],
+    /// The multisampled target, and its size.
+    msaa: Option<(glow::Framebuffer, glow::Renderbuffer, glow::Renderbuffer, i32, i32)>,
+}
+
+/// GL's functions, from EGL (GTK draws through it) or else GLX.
+fn loader() -> impl Fn(&str) -> *const std::ffi::c_void {
+    type GetProc = unsafe extern "C" fn(*const std::ffi::c_char) -> *const std::ffi::c_void;
+    let lib: &'static libloading::Library = Box::leak(Box::new(unsafe {
+        libloading::Library::new("libEGL.so.1").or_else(|_| libloading::Library::new("libGL.so.1")).expect("libEGL or libGL")
+    }));
+    let get: GetProc = unsafe {
+        lib.get::<GetProc>(b"eglGetProcAddress\0").or_else(|_| lib.get::<GetProc>(b"glXGetProcAddressARB\0")).map(|s| *s).expect("a GL loader")
+    };
+    move |name: &str| {
+        let c = std::ffi::CString::new(name).unwrap_or_default();
+        unsafe { get(c.as_ptr()) }
+    }
+}
+
+impl Gpu {
+    fn new(es: bool, k: f32) -> Result<Gpu, String> {
+        let load = loader();
+        let gl = unsafe { glow::Context::from_loader_function(|s| load(s)) };
+        let head = if es { "#version 300 es\nprecision highp float;\n" } else { "#version 330 core\n" };
+        unsafe {
+            let prog = gl.create_program()?;
+            let mut shaders = Vec::new();
+            for (kind, src) in [(glow::VERTEX_SHADER, VERTEX), (glow::FRAGMENT_SHADER, FRAGMENT)] {
+                let s = gl.create_shader(kind)?;
+                gl.shader_source(s, &format!("{head}{src}"));
+                gl.compile_shader(s);
+                if !gl.get_shader_compile_status(s) {
+                    return Err(gl.get_shader_info_log(s));
+                }
+                gl.attach_shader(prog, s);
+                shaders.push(s);
+            }
+            gl.bind_attrib_location(prog, 0, "a_pos");
+            gl.bind_attrib_location(prog, 1, "a_nor");
+            gl.bind_attrib_location(prog, 2, "a_mat");
+            gl.link_program(prog);
+            if !gl.get_program_link_status(prog) {
+                return Err(gl.get_program_info_log(prog));
+            }
+            for s in shaders {
+                gl.delete_shader(s);
+            }
+            let upload = |m: &Mesh| -> Result<(glow::VertexArray, glow::Buffer, i32), String> {
+                let vao = gl.create_vertex_array()?;
+                let vbo = gl.create_buffer()?;
+                gl.bind_vertex_array(Some(vao));
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+                let bytes: &[u8] = std::slice::from_raw_parts(m.v.as_ptr() as *const u8, m.v.len() * 4);
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+                let stride = 7 * 4;
+                gl.enable_vertex_attrib_array(0);
+                gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
+                gl.enable_vertex_attrib_array(1);
+                gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, stride, 12);
+                gl.enable_vertex_attrib_array(2);
+                gl.vertex_attrib_pointer_f32(2, 1, glow::FLOAT, false, stride, 24);
+                gl.bind_vertex_array(None);
+                Ok((vao, vbo, (m.v.len() / 7) as i32))
+            };
+            let halves = [upload(&half(0, k))?, upload(&half(1, k))?];
+            Ok(Gpu { gl, prog, halves, msaa: None })
+        }
+    }
+
+    fn render(&mut self, scene: &Scene, w: i32, h: i32) {
+        let Some(proj) = scene.proj else { return };
+        let gl = &self.gl;
+        unsafe {
+            // GTK's framebuffer, to resolve into.
+            let target = std::num::NonZeroU32::new(gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32).map(glow::NativeFramebuffer);
+            // The multisampled target, made again when the size changes.
+            if self.msaa.map(|m| (m.3, m.4)) != Some((w, h)) {
+                if let Some((f, c, d, _, _)) = self.msaa.take() {
+                    gl.delete_framebuffer(f);
+                    gl.delete_renderbuffer(c);
+                    gl.delete_renderbuffer(d);
+                }
+                let samples = gl.get_parameter_i32(glow::MAX_SAMPLES).clamp(1, 8);
+                let (Ok(f), Ok(c), Ok(d)) = (gl.create_framebuffer(), gl.create_renderbuffer(), gl.create_renderbuffer()) else { return };
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(c));
+                gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples, glow::RGBA8, w, h);
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(d));
+                gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples, glow::DEPTH_COMPONENT24, w, h);
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::RENDERBUFFER, Some(c));
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(d));
+                self.msaa = Some((f, c, d, w, h));
+            }
+            let Some((fb, _, _, _, _)) = self.msaa else { return };
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fb));
+            gl.viewport(0, 0, w, h);
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.clear_depth_f32(1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_func(glow::LESS);
+            gl.disable(glow::CULL_FACE);
+            gl.use_program(Some(self.prog));
+            let u_mv = gl.get_uniform_location(self.prog, "u_mv");
+            let u_p = gl.get_uniform_location(self.prog, "u_p");
+            gl.uniform_matrix_4_f32_slice(u_p.as_ref(), false, &proj.to_float());
+            let u_eye = gl.get_uniform_location(self.prog, "u_eye");
+            gl.uniform_3_f32(u_eye.as_ref(), scene.eye[0], scene.eye[1], scene.eye[2]);
+            for (i, (vao, _, count)) in self.halves.iter().enumerate() {
+                let Some(mv) = scene.halves[i] else { continue };
+                gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
+                gl.bind_vertex_array(Some(*vao));
+                gl.draw_arrays(glow::TRIANGLES, 0, *count);
+            }
+            gl.bind_vertex_array(None);
+            // Onto GTK's framebuffer, resolved.
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fb));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, target);
+            gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, target);
+        }
+    }
+}
+
+/// The GL area drawing `scene`, `w` x `h` px, `k` px a mm.
+pub fn area(scene: Rc<RefCell<Scene>>, w: i32, h: i32, k: f32) -> gtk::GLArea {
+    let area = gtk::GLArea::builder().has_depth_buffer(false).can_target(false).width_request(w).height_request(h).build();
+    let gpu: Rc<RefCell<Option<Gpu>>> = Rc::default();
+    area.connect_realize({
+        let gpu = gpu.clone();
+        move |a| {
+            a.make_current();
+            if let Some(e) = a.error() {
+                eprintln!("cradle: 3D: {e}");
+                return;
+            }
+            let es = a.context().is_some_and(|c| c.api() == gtk::gdk::GLAPI::GLES);
+            match Gpu::new(es, k) {
+                Ok(g) => *gpu.borrow_mut() = Some(g),
+                Err(e) => eprintln!("cradle: 3D: {e}"),
+            }
+        }
+    });
+    area.connect_unrealize({
+        let gpu = gpu.clone();
+        move |a| {
+            a.make_current();
+            gpu.borrow_mut().take();
+        }
+    });
+    area.connect_render(move |a, _| {
+        if let Some(g) = gpu.borrow_mut().as_mut() {
+            let s = a.scale_factor();
+            g.render(&scene.borrow(), a.width() * s, a.height() * s);
+        }
+        glib::Propagation::Stop
+    });
+    area
+}

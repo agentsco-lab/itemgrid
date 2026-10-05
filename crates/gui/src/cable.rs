@@ -52,6 +52,8 @@ pub struct Rope {
     /// The hole in the table the far end goes down: its square (x0, y0, x1,
     /// y1) and depth.
     pub hole: Option<([f32; 4], f32)>,
+    /// How far before the duo's drawing the cord's and the 3D area begin.
+    pub gl_past: f32,
     /// Where the drawing's origin is in the duo's (it reaches past it).
     pub offset: (f32, f32),
     /// Steps since anything moved: at rest, not worked out again.
