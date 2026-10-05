@@ -65,9 +65,28 @@ const CABLE_PAD: f64 = 4.0;
 /// The floor's squares (mm), and the depth of the hole the cord goes down.
 const FLOOR_SQUARE: f64 = 20.0;
 
-/// Night: the table dark, its lines light (the day/night square on the
-/// table; kept in ~/.config/hythe/night).
+/// Night: the table dark, its lines light - by the time of day (20:00 to
+/// 7:00), unless set to stay day or night (settings; kept in
+/// ~/.config/hythe/night: auto, day or night).
 static NIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How night is chosen: "auto" (by the hour), "night" or "day".
+fn night_mode() -> String {
+    match std::fs::read_to_string(night_file()).ok().as_deref().map(str::trim) {
+        Some("night") => "night".into(),
+        Some("day") => "day".into(),
+        _ => "auto".into(),
+    }
+}
+
+/// Whether it should be night now, by the mode and the hour.
+fn night_due() -> bool {
+    match night_mode().as_str() {
+        "night" => true,
+        "day" => false,
+        _ => glib::DateTime::now_local().map_or(false, |t| t.hour() >= 20 || t.hour() < 7),
+    }
+}
 
 fn night() -> bool {
     NIGHT.load(std::sync::atomic::Ordering::Relaxed)
@@ -516,7 +535,7 @@ const NAV: &[(&str, &str, &str)] = &[
 fn build(app: &adw::Application) {
     // Light whatever the desktop's scheme: white, small type (LOOK) - or
     // dark, if the night was chosen on the table.
-    NIGHT.store(night_file().exists(), std::sync::atomic::Ordering::Relaxed);
+    NIGHT.store(night_due(), std::sync::atomic::Ordering::Relaxed);
     adw::StyleManager::default().set_color_scheme(if night() { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
     let css = gtk::CssProvider::new();
     css.load_from_string(&format!("{CSS}{}{}", card::CSS, sections::CSS));
@@ -1188,6 +1207,15 @@ fn build(app: &adw::Application) {
     // The letters the page sets, made ahead.
     glyphs_ahead("abcdefghijklmnopqrstuvwxyz?-&.");
     glyphs_ahead(intro::CREDIT);
+    // Night by the hour: looked at each minute.
+    {
+        let weak = Rc::downgrade(&ui);
+        glib::timeout_add_seconds_local(60, move || {
+            let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+            show_night(&ui);
+            glib::ControlFlow::Continue
+        });
+    }
     // Looked at from outside (HYTHE_CONTROL=1, control.rs; hythe-mcp).
     {
         let weak = Rc::downgrade(&ui);
@@ -1351,7 +1379,8 @@ fn build(app: &adw::Application) {
                 g.set_state(gtk::EventSequenceState::Claimed);
                 ui.buttons.borrow_mut().pressed = Some((i, std::time::Instant::now()));
                 trace(format_args!("button {:?}", FLOOR_BUTTONS[i]));
-                match FLOOR_BUTTONS[i] {
+                let Some(button) = FLOOR_BUTTONS[i] else { return };
+                match button {
                     FloorButton::Menu => {
                         // The sections as a board on the table (open, it
                         // closes).
@@ -1380,7 +1409,6 @@ fn build(app: &adw::Application) {
                             ui.intro.borrow_mut().clear_note();
                         }
                     }
-                    FloorButton::Night => toggle_night(&ui),
                     FloorButton::Replay => ui.intro.borrow_mut().replay(),
                     FloorButton::Minimize => win.minimize(),
                     FloorButton::Close => win.close(),
@@ -1400,7 +1428,7 @@ fn build(app: &adw::Application) {
                 if let Some(l) = page_line {
                     let key = ui.page.borrow().as_ref().map(|(_, b)| b.lines[l].key.clone()).unwrap_or_default();
                     match key.as_str() {
-                        "set:night" => toggle_night(&ui),
+                        "set:night" => turn_night_mode(&ui),
                         "set:developer" => set_developer_mode(!developer_mode()),
                         _ => return,
                     }
@@ -3261,7 +3289,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         let ch = letter.chars().next().unwrap_or(' ');
         draw_glyph(cr, ch, c.top[0], c.top[1], c.top[3], (0.16, 0.16, 0.18, 0.88 * (c.there as f64 / 0.25).min(1.0)));
         // Its button on its front: darker under the pointer.
-        if let (Some([a, b, d]), Some(button)) = (c.front, FLOOR_BUTTONS.get(c.i)) {
+        if let (Some([a, b, d]), Some(Some(button))) = (c.front, FLOOR_BUTTONS.get(c.i)) {
             let strong = if fv.hover_button == Some(c.i) { 0.9 } else { 0.5 };
             draw_sign(cr, *button, a, b, d, strong);
         }
@@ -3478,36 +3506,52 @@ fn draw_glyph(cr: &gtk::cairo::Context, ch: char, a: (f64, f64), b: (f64, f64), 
 /// Hythe's settings as a board's lines (each clicked turns it).
 fn settings_lines() -> Vec<board::Line> {
     let onoff = |on: bool| if on { "on" } else { "off" };
-    vec![board::Line::new("set:night", format!("night      {}", onoff(night()))), board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode())))]
+    let night = match night_mode().as_str() {
+        "night" => "on".to_owned(),
+        "day" => "off".to_owned(),
+        _ => "auto".to_owned(),
+    };
+    vec![board::Line::new("set:night", format!("night      {night}")), board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode())))]
 }
 
-/// Day and night turned: the table, the window, kept.
-fn toggle_night(ui: &Ui) {
-    let on = !night();
+/// Night or day shown as due: the table, the window.
+fn show_night(ui: &Ui) {
+    let on = night_due();
+    if on == night() {
+        return;
+    }
     NIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
     if on {
-        let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
-        let _ = std::fs::write(night_file(), "");
         ui.window.add_css_class("night");
     } else {
-        let _ = std::fs::remove_file(night_file());
         ui.window.remove_css_class("night");
     }
     adw::StyleManager::default().set_color_scheme(if on { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
     ui.floor.queue_draw();
 }
 
+/// The night setting turned: auto, night, day, auto again.
+fn turn_night_mode(ui: &Ui) {
+    let next = match night_mode().as_str() {
+        "auto" => "night",
+        "night" => "day",
+        _ => "auto",
+    };
+    let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(night_file(), format!("{next}\n"));
+    show_night(ui);
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum FloorButton {
     Menu,
-    Night,
     Replay,
     Minimize,
     Close,
 }
 
-/// On the fronts of the word's cubes, h y t h e.
-const FLOOR_BUTTONS: [FloorButton; 5] = [FloorButton::Menu, FloorButton::Night, FloorButton::Replay, FloorButton::Minimize, FloorButton::Close];
+/// On the fronts of the word's cubes, h y t h e (t's blank).
+const FLOOR_BUTTONS: [Option<FloorButton>; 5] = [Some(FloorButton::Menu), Some(FloorButton::Replay), None, Some(FloorButton::Minimize), Some(FloorButton::Close)];
 
 /// The buttons' hover and press, eased.
 #[derive(Default)]
@@ -3547,7 +3591,7 @@ fn button_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
     cube_shapes(fv).into_iter().rev().find_map(|c| {
         let [a, b, d] = c.front?;
         let q = [a, b, (b.0 + d.0 - a.0, b.1 + d.1 - a.1), d];
-        (c.i < FLOOR_BUTTONS.len() && inside(&q, p)).then_some(c.i)
+        (FLOOR_BUTTONS.get(c.i).is_some_and(|b| b.is_some()) && inside(&q, p)).then_some(c.i)
     })
 }
 
@@ -3568,29 +3612,6 @@ fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f
                 cr.line_to(68.0, y);
             }
             let _ = cr.stroke();
-        }
-        FloorButton::Night if night() => {
-            // The sun: back to day.
-            cr.arc(50.0, 50.0, 10.0, 0.0, std::f64::consts::TAU);
-            let _ = cr.stroke();
-            for k in 0..8 {
-                let t = k as f64 * std::f64::consts::TAU / 8.0;
-                cr.move_to(50.0 + 17.0 * t.cos(), 50.0 + 17.0 * t.sin());
-                cr.line_to(50.0 + 23.0 * t.cos(), 50.0 + 23.0 * t.sin());
-            }
-            let _ = cr.stroke();
-        }
-        FloorButton::Night => {
-            // The moon: to night (a circle, one beside it taken out).
-            let _ = cr.push_group();
-            cr.arc(50.0, 50.0, 18.0, 0.0, std::f64::consts::TAU);
-            let _ = cr.fill();
-            cr.set_operator(gtk::cairo::Operator::Clear);
-            cr.arc(61.0, 42.0, 15.0, 0.0, std::f64::consts::TAU);
-            let _ = cr.fill();
-            cr.set_operator(gtk::cairo::Operator::Over);
-            let _ = cr.pop_group_to_source();
-            let _ = cr.paint();
         }
         FloorButton::Minimize => {
             cr.move_to(34.0, 62.0);
