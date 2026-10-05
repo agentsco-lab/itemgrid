@@ -1246,6 +1246,24 @@ fn build(app: &adw::Application) {
             say(&ui, format!("Squares moved {:.0}, {:.0} mm", at.0, at.1));
         });
         page.add_controller(drag);
+        // A cube clicked: the phone looked for at once.
+        let click = gtk::GestureClick::new();
+        let weak = Rc::downgrade(&ui);
+        click.connect_released(move |g, n, x, y| {
+            let Some(ui) = weak.upgrade() else { return };
+            let standing = ui.intro.borrow().done() && ui.intro.borrow().duo() < 0.5;
+            if n != 1 || !standing {
+                return;
+            }
+            let Some(i) = cube_at(&ui.floor_view.borrow(), (x, y)) else { return };
+            g.set_state(gtk::EventSequenceState::Claimed);
+            trace(format_args!("cube {i} pressed: looking for the phone"));
+            ui.intro.borrow_mut().press(i);
+            if !ui.looking.get() {
+                look(&ui);
+            }
+        });
+        page.add_controller(click);
     }
     *owner.borrow_mut() = Some(ui.clone());
 
@@ -1939,6 +1957,11 @@ fn look(ui: &Rc<Ui>) {
         .await;
         ui.looking.set(false);
         let Ok((place, guest, status)) = found else { return };
+        // Looked for from a cube: the wave ends; not found, a note.
+        let note = (place == Place::Gone).then(|| "No Duo found\nPlug it in with the USB cable, or turn on its Wi-Fi (the same network as this computer).\nIf it is off, hold the power key for a few seconds.".to_owned());
+        if let Some(took) = ui.intro.borrow_mut().found(note) {
+            trace(format_args!("looked for from a cube: {:.2} s, {}", took, if place == Place::Gone { "not found" } else { "found" }));
+        }
         let (busy, elsewhere) = {
             let st = ui.state.borrow();
             (st.busy, st.elsewhere)
@@ -2609,6 +2632,8 @@ struct FloorView {
     eye: f32,
     /// The cubes' middle on the table (px, in the table's squares).
     cubes_at: (f32, f32),
+    /// The note under them (not found) and its strength.
+    note: Option<(String, f32)>,
 }
 
 /// The table under the Duo across the page, in 2 cm squares, in the very
@@ -2767,25 +2792,99 @@ fn table_under(fv: &FloorView, at: (f64, f64)) -> Option<(f32, f32)> {
     ((f.0 - want.0).abs() < 1.0 && (f.1 - want.1).abs() < 1.0).then_some(p)
 }
 
+type Quad = [(f64, f64); 4];
+
+/// A cube as the page shows it: its shadow, its faces turned to the eye
+/// (each with its light), its top; how much it is there and its height.
+struct CubeShape {
+    i: usize,
+    shadow: Quad,
+    faces: Vec<(Quad, f64)>,
+    top: Quad,
+    there: f32,
+    size: f32,
+    /// Its front edge's left end on the table (where a note goes under).
+    foot: (f64, f64),
+}
+
 /// The start's cubes (intro.rs): five of the table's squares in a row
 /// where the Duo lies, risen out of it as cubes - their edges the squares'
 /// own lines, their faces the table's white - the word's letters on their
-/// tops; seen from above at first, five of the squares.
-fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
+/// tops; seen from above at first, five of the squares. In the order they
+/// are drawn: farthest from the eye's line first (a cube nearer it covers
+/// its neighbour's side).
+fn cube_shapes(fv: &FloorView) -> Vec<CubeShape> {
     use gtk::graphene;
-    let Some(m) = fv.matrix else { return };
-    if fv.word <= 0.0 {
-        return;
-    }
-    let k = fv.k;
-    let step = square() * k;
-    let inset = 0.0;
-    let size = step - 2.0 * inset;
+    let Some(m) = fv.matrix else { return Vec::new() };
+    let step = square() * fv.k;
     let p3 = |x: f32, y: f32, z: f32| {
         let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
         ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
     };
-    let area = |q: &[(f64, f64)]| (0..q.len()).map(|i| q[i].0 * q[(i + 1) % q.len()].1 - q[(i + 1) % q.len()].0 * q[i].1).sum::<f64>();
+    // Five squares in a row about their middle (laid in the squares by
+    // show_fold).
+    let (cx, cy) = fv.cubes_at;
+    let left = |i: usize| cx + (i as f32 - 2.5) * step;
+    let (y0, y1) = (cy - step / 2.0, cy + step / 2.0);
+    let z0 = fv.table;
+    let mut order: Vec<usize> = (0..5).collect();
+    order.sort_by(|a, b| (left(*b) + step / 2.0).abs().partial_cmp(&(left(*a) + step / 2.0).abs()).unwrap());
+    order
+        .into_iter()
+        .filter(|i| fv.cubes[*i].0 > 0.0)
+        .map(|i| {
+            let (there, h) = fv.cubes[i];
+            let (x0, x1) = (left(i), left(i) + step);
+            let zt = z0 + h * step;
+            // The shadow toward the viewer.
+            let reach = 0.45 * h * step;
+            let shadow = [p3(x0, y0, z0), p3(x1, y0, z0), p3(x1 + reach * 0.3, y1 + reach, z0), p3(x0 + reach * 0.3, y1 + reach, z0)];
+            // Each face wound so that seen from outside it turns as the top
+            // does seen from above: kept only so turned.
+            let top = [p3(x0, y0, zt), p3(x1, y0, zt), p3(x1, y1, zt), p3(x0, y1, zt)];
+            let facing = area(&top).signum();
+            let faces = [
+                ([p3(x0, y1, z0), p3(x0, y1, zt), p3(x1, y1, zt), p3(x1, y1, z0)], 0.93),
+                ([p3(x1, y0, z0), p3(x1, y0, zt), p3(x0, y0, zt), p3(x0, y0, z0)], 0.99),
+                ([p3(x1, y1, z0), p3(x1, y1, zt), p3(x1, y0, zt), p3(x1, y0, z0)], 0.965),
+                ([p3(x0, y0, z0), p3(x0, y0, zt), p3(x0, y1, zt), p3(x0, y1, z0)], 0.965),
+            ]
+            .into_iter()
+            .filter(|(q, _)| area(q).signum() == facing)
+            .collect();
+            CubeShape { i, shadow, faces, top, there, size: step, foot: p3(left(0), y1, z0) }
+        })
+        .collect()
+}
+
+/// Twice a polygon's signed area (its turn).
+fn area(q: &[(f64, f64)]) -> f64 {
+    (0..q.len()).map(|i| q[i].0 * q[(i + 1) % q.len()].1 - q[(i + 1) % q.len()].0 * q[i].1).sum()
+}
+
+fn inside(q: &[(f64, f64)], p: (f64, f64)) -> bool {
+    let mut odd = false;
+    for i in 0..q.len() {
+        let (a, b) = (q[i], q[(i + 1) % q.len()]);
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+            odd = !odd;
+        }
+    }
+    odd
+}
+
+/// The cube under a point of the page, the nearest one drawn over others.
+fn cube_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
+    if fv.word <= 0.0 {
+        return None;
+    }
+    cube_shapes(fv).into_iter().rev().find(|c| inside(&c.top, p) || c.faces.iter().any(|(q, _)| inside(q, p))).map(|c| c.i)
+}
+
+fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
+    if fv.word <= 0.0 {
+        return;
+    }
     let path = |q: &[(f64, f64)]| {
         cr.new_path();
         cr.move_to(q[0].0, q[0].1);
@@ -2794,82 +2893,80 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         cr.close_path();
     };
-    // Five squares in a row about their middle (laid in the squares by
-    // show_fold).
-    let (cx, cy) = fv.cubes_at;
-    let left = |i: usize| cx + (i as f32 - 2.5) * step;
-    let (y0, y1) = (cy - step / 2.0 + inset, cy + step / 2.0 - inset);
-    let z0 = fv.table;
-    // Farthest from the eye's line first: a cube nearer it covers its
-    // neighbour's side.
-    let mut order: Vec<usize> = (0..5).collect();
-    order.sort_by(|a, b| (left(*b) + step / 2.0).abs().partial_cmp(&(left(*a) + step / 2.0).abs()).unwrap());
+    let line = |cr: &gtk::cairo::Context| {
+        // As the table's lines are drawn near the middle.
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
+        cr.set_line_width(1.6);
+        let _ = cr.stroke();
+    };
+    let shapes = cube_shapes(fv);
     let _ = cr.push_group();
-    for i in order {
-        let (there, h) = fv.cubes[i];
-        if there <= 0.0 {
-            continue;
-        }
-        let x0 = left(i) + inset;
-        let x1 = x0 + size;
-        let zt = z0 + h * size;
-        // Its shadow on the table, toward the viewer.
-        let reach = 0.45 * h * size;
-        path(&[p3(x0, y0, z0), p3(x1, y0, z0), p3(x1 + reach * 0.3, y1 + reach, z0), p3(x0 + reach * 0.3, y1 + reach, z0)]);
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h * fv.eye) as f64);
+    for c in &shapes {
+        let h = fv.cubes[c.i].1;
+        path(&c.shadow);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h.min(1.0) * fv.eye) as f64);
         let _ = cr.fill();
-        // Its faces, each wound so that seen from outside it turns as the
-        // top does seen from above: drawn only so turned.
-        let top = [p3(x0, y0, zt), p3(x1, y0, zt), p3(x1, y1, zt), p3(x0, y1, zt)];
-        let facing = area(&top).signum();
-        let faces = [
-            ([p3(x0, y1, z0), p3(x0, y1, zt), p3(x1, y1, zt), p3(x1, y1, z0)], 0.93),
-            ([p3(x1, y0, z0), p3(x1, y0, zt), p3(x0, y0, zt), p3(x0, y0, z0)], 0.99),
-            ([p3(x1, y1, z0), p3(x1, y1, zt), p3(x1, y0, zt), p3(x1, y0, z0)], 0.965),
-            ([p3(x0, y0, z0), p3(x0, y0, zt), p3(x0, y1, zt), p3(x0, y1, z0)], 0.965),
-        ];
-        let line = |cr: &gtk::cairo::Context| {
-            // As the table's lines are drawn near the middle.
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
-            cr.set_line_width(1.6);
-            let _ = cr.stroke();
-        };
-        for (q, light) in faces {
-            if area(&q).signum() == facing {
-                path(&q);
-                cr.set_source_rgb(light, light, light * 1.005);
-                let _ = cr.fill_preserve();
-                line(cr);
-            }
+        for (q, light) in &c.faces {
+            path(q);
+            cr.set_source_rgb(*light, *light, light * 1.005);
+            let _ = cr.fill_preserve();
+            line(cr);
         }
-        path(&top);
+        path(&c.top);
         cr.set_source_rgb(1.0, 1.0, 1.0);
         let _ = cr.fill_preserve();
         line(cr);
         // The letter on the top: the face's own frame (its corners), the
         // letter laid in it.
-        let (a, b, c) = (top[0], top[1], top[3]);
-        let s = size as f64;
+        let (a, b, d) = (c.top[0], c.top[1], c.top[3]);
+        let s = c.size as f64;
         cr.save().ok();
-        cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (c.0 - a.0) / s, (c.1 - a.1) / s, a.0, a.1));
+        cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
         let layout = pangocairo::functions::create_layout(cr);
         let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
         font.set_weight(gtk::pango::Weight::Light);
         font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
         layout.set_font_description(Some(&font));
-        layout.set_text(intro::WORD[i]);
+        layout.set_text(intro::WORD[c.i]);
         // Across: the letter's ink centred; up and down: the line's, so the
         // letters keep one baseline.
         let (ink, logical) = layout.pixel_extents();
         let x = (s - ink.width() as f64) / 2.0 - ink.x() as f64;
         let y = (s - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * s;
         cr.move_to(x, y);
-        cr.set_source_rgba(0.16, 0.16, 0.18, 0.88 * (there as f64 / 0.25).min(1.0));
+        cr.set_source_rgba(0.16, 0.16, 0.18, 0.88 * (c.there as f64 / 0.25).min(1.0));
         pangocairo::functions::show_layout(cr, &layout);
         cr.restore().ok();
     }
     let _ = cr.pop_group_to_source();
     let _ = cr.paint_with_alpha(fv.word as f64);
+    // The note under the word (not found): its first line darker.
+    if let (Some((text, strength)), Some(c)) = (fv.note.as_ref(), shapes.first()) {
+        let layout = pangocairo::functions::create_layout(cr);
+        layout.set_font_description(Some(&gtk::pango::FontDescription::from_string("Ubuntu Sans, Ubuntu, sans-serif 10")));
+        let (head, rest) = text.split_once('\n').unwrap_or((text.as_str(), ""));
+        layout.set_markup(&format!("<span weight='600' foreground='#3a3a3e'>{}</span>\n<span foreground='#8a8a90'>{}</span>", gtk::glib::markup_escape_text(head), gtk::glib::markup_escape_text(rest)));
+        layout.set_spacing(3 * gtk::pango::SCALE);
+        cr.push_group();
+        // On the table's white, its lines kept off the words.
+        let (_, ext) = layout.pixel_extents();
+        let (x, y) = (c.foot.0, c.foot.1 + 26.0);
+        let pad = 8.0;
+        let (w, h) = (ext.width() as f64 + 2.0 * pad, ext.height() as f64 + 2.0 * pad);
+        let r = 8.0;
+        cr.new_sub_path();
+        cr.arc(x - pad + w - r, y - pad + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+        cr.arc(x - pad + w - r, y - pad + h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+        cr.arc(x - pad + r, y - pad + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        cr.arc(x - pad + r, y - pad + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
+        cr.close_path();
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.92);
+        let _ = cr.fill();
+        cr.move_to(x, y);
+        pangocairo::functions::show_layout(cr, &layout);
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint_with_alpha(*strength as f64);
+    }
 }
 
 /// One layer of the plug's housing (as the halves' edges are drawn: its
@@ -3423,6 +3520,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             .rotate_3d(TILT * intro.eye(), &graphene::Vec3::x_axis())
             .to_matrix();
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
+        let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
         ui.duo.set_opacity(intro.duo() as f64);
@@ -3434,9 +3532,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at);
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note };
         if changed {
             ui.floor.queue_draw();
         }

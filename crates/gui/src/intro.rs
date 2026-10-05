@@ -4,6 +4,9 @@
 //! on the table, the word written on them. They stand while there is no
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
+//!
+//! A cube clicked looks for the phone at once: the cube pressed in, a wave
+//! along the word while it is looked for; not found, a note under it.
 
 use std::time::Instant;
 
@@ -26,14 +29,25 @@ pub struct Intro {
     pub sink_to: f32,
     /// The start's last frame drawn (at its very end).
     ended: bool,
+    /// A cube clicked: which, when; the looking begun then and when it
+    /// ended; the note after it (not found) and since when.
+    pressed: Option<(usize, Instant)>,
+    search: Option<(Instant, Option<Instant>)>,
+    note: Option<(String, Instant)>,
 }
+
+/// The wave goes on at least so long (a look over the cable alone is over
+/// in a moment, and the cubes would only twitch).
+const SEARCH_MIN_S: f32 = 1.2;
+/// A press: in and back.
+const PRESS_S: f32 = 0.35;
 
 impl Default for Intro {
     fn default() -> Intro {
         // HYTHE_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("HYTHE_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(EYE.1));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None }
     }
 }
 
@@ -102,8 +116,70 @@ impl Intro {
         let risen = smooth(self.eye() / 0.7);
         std::array::from_fn(|i| {
             let there = 1.0 - smooth((self.sink - i as f32 * 0.1) / 0.6);
-            (there, there * risen)
+            (there, there * risen * (1.0 + self.hop(i)))
         })
+    }
+
+    /// A cube pressed: the phone looked for from now.
+    pub fn press(&mut self, i: usize) {
+        let now = Instant::now();
+        self.pressed = Some((i, now));
+        if !self.searching() {
+            self.search = Some((now, None));
+        }
+        self.note = None;
+    }
+
+    /// The wave still going (looking, or not yet long enough).
+    pub fn searching(&self) -> bool {
+        match self.search {
+            Some((since, None)) => since.elapsed().as_secs_f32() < 30.0,
+            Some((since, Some(_))) => since.elapsed().as_secs_f32() < SEARCH_MIN_S,
+            None => false,
+        }
+    }
+
+    /// The looking over: its seconds; a note to leave if not found.
+    pub fn found(&mut self, note: Option<String>) -> Option<f32> {
+        let (since, end) = self.search.as_mut()?;
+        if end.is_some() {
+            return None;
+        }
+        *end = Some(Instant::now());
+        let took = since.elapsed().as_secs_f32();
+        // Shown once the wave is over.
+        let at = *since + std::time::Duration::from_secs_f32(SEARCH_MIN_S.max(took));
+        self.note = note.map(|n| (n, at));
+        Some(took)
+    }
+
+    /// Each cube's lift above its height (a part of it): the press, the
+    /// wave along the word.
+    fn hop(&self, i: usize) -> f32 {
+        let mut lift = 0.0;
+        if let Some((p, at)) = self.pressed {
+            let t = at.elapsed().as_secs_f32() / PRESS_S;
+            if p == i && t < 1.0 {
+                lift -= 0.25 * (t * std::f32::consts::PI).sin();
+            }
+        }
+        if let Some((since, _)) = self.search {
+            if self.searching() {
+                let t = since.elapsed().as_secs_f32();
+                // Softly in at the start; along the word, a hop a cube.
+                let phase = t * 1.6 - i as f32 * 0.14;
+                let hop = (phase * std::f32::consts::TAU).sin().max(0.0).powi(2);
+                lift += 0.22 * hop * smooth(t / 0.3);
+            }
+        }
+        lift
+    }
+
+    /// The note under the word (not found) and its strength.
+    pub fn note(&self) -> Option<(&str, f32)> {
+        let (text, at) = self.note.as_ref()?;
+        let t = Instant::now().saturating_duration_since(*at).as_secs_f32();
+        (Instant::now() >= *at).then_some((text.as_str(), smooth(t / 0.4)))
     }
 
     /// The Duo: seen as the last cube goes down, gone as the first rises.
@@ -127,10 +203,14 @@ impl Intro {
             self.ended = true;
             return true;
         }
+        // Pressed, looking, the note coming.
+        let moving = self.pressed.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < PRESS_S + 0.05)
+            || self.search.is_some_and(|(since, _)| since.elapsed().as_secs_f32() < 30.0 && (self.searching() || since.elapsed().as_secs_f32() < SEARCH_MIN_S + 0.4))
+            || self.note.as_ref().is_some_and(|(_, at)| Instant::now().saturating_duration_since(*at).as_secs_f32() < 0.5);
         let d = self.sink_to - self.sink;
         if d.abs() < 1e-4 {
             self.sink = self.sink_to;
-            return false;
+            return moving;
         }
         self.sink += d.signum() * (dt / SINK_S).min(d.abs());
         true
