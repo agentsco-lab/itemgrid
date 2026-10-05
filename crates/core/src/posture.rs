@@ -67,11 +67,11 @@ impl Stop {
 pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
     // As root for the wakelock; the following itself as the owner (in a
     // subshell: as_owner ends in exec).
+    // Each following its own lock: with one name, an earlier following's far
+    // end letting go (its link gone in a sleep) let go of the new one's too.
+    let name = format!("cradle-follow-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()).unwrap_or(0));
     let script = if awake {
-        format!("echo cradle-follow > /sys/power/wake_lock
-( {} )
-echo cradle-follow > /sys/power/wake_unlock
-", crate::phone::as_owner(FOLLOW))
+        format!("echo {name} > /sys/power/wake_lock\n( {} )\necho {name} > /sys/power/wake_unlock\n", crate::phone::as_owner(FOLLOW))
     } else {
         crate::phone::as_owner(FOLLOW)
     };

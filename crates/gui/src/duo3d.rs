@@ -56,6 +56,11 @@ const HINGE: f32 = 3.0;
 const ROD: f32 = 4.0;
 const DARK: f32 = 5.0;
 const SCREEN: f32 = 6.0;
+const MIRROR: f32 = 7.0;
+/// The Microsoft logo on the left half's back, mirror-polished: four
+/// squares (mm) with a gap, at the back's middle.
+const LOGO_SQUARE: f32 = 4.4;
+const LOGO_GAP: f32 = 0.5;
 /// The screens (mm): each panel's size, the left edge of each in the body,
 /// and their top.
 const PANEL: (f32, f32) = (86.654, 115.539);
@@ -332,6 +337,20 @@ fn block(mesh: &mut Mesh, lo: [f32; 3], hi: [f32; 3], m: f32, k: f32) {
     f(c(x1, y0, z0), c(x1, y1, z0), c(x1, y1, z1), c(x1, y0, z1), [1.0, 0.0, 0.0], mesh);
 }
 
+/// The logo on the left half's back: four squares, a hair out of the glass.
+fn logo(mesh: &mut Mesh, k: f32) {
+    let (cx, cy) = (HALF_W / 2.0, BODY_H / 2.0);
+    let z = (-THICK - 0.03) * k;
+    let n = [0.0, 0.0, -1.0];
+    let s = LOGO_SQUARE;
+    let g = LOGO_GAP / 2.0;
+    for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let (x0, y0) = (cx + if dx < 0.0 { -g - s } else { g }, cy + if dy < 0.0 { -g - s } else { g });
+        let c = |x: f32, y: f32| ([x * k, y * k, z], n);
+        mesh.quad(c(x0, y0), c(x0 + s, y0), c(x0 + s, y0 + s), c(x0, y0 + s), MIRROR);
+    }
+}
+
 /// Half `i`'s screen: its panel on the glass, a hair over it, its picture
 /// mapped corner to corner.
 fn screen(i: usize, k: f32) -> Mesh {
@@ -355,6 +374,9 @@ fn half(i: usize, k: f32) -> Mesh {
     // spine).
     let outline: Vec<P2> = if i == 0 { left } else { left.iter().map(|p| [MID - p[0], p[1]]).collect() };
     body(&mut m, &outline, k);
+    if i == 0 {
+        logo(&mut m, k);
+    }
     // Its knuckles, its rod and the gap's dark, at the spine.
     let (spine, dir) = if i == 0 { (MID, -1.0) } else { (0.0, 1.0) };
     for (y0, y1) in [(KNUCKLE_TOP, KNUCKLE_TOP + KNUCKLE_H), (BODY_H - KNUCKLE_TOP - KNUCKLE_H, BODY_H - KNUCKLE_TOP)] {
@@ -420,7 +442,10 @@ void main() {
     float up = clamp(-r.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 room = mix(vec3(0.05), vec3(0.95), smoothstep(0.35, 0.95, up));
     float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-    if (m == 6) {
+    if (m == 7) {
+        // Mirror-polished metal: the room as it is mirrored, a hard highlight.
+        c = mix(vec3(0.3, 0.3, 0.31), room, 0.85) + vec3(pow(max(dot(n, h), 0.0), 200.0) * 1.5);
+    } else if (m == 6) {
         // A screen: its own light, under the glass's reflection.
         c = texture(u_tex, v_uv).rgb * 0.96 + room * mix(0.03, 0.45, fres);
     } else if (m == 0) {

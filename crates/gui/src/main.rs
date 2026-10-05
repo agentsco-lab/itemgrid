@@ -302,6 +302,10 @@ struct Ui {
     /// The phone was closed and went (asleep): drawn shut, lying on the
     /// table, not waiting open; and the hinge's last angle read.
     shut_away: std::cell::Cell<bool>,
+    /// When the lid was shut (and not opened since), and when the last
+    /// gravity came: shut, the display goes dark and the gravity with it.
+    lid_shut_at: std::cell::Cell<Option<std::time::Instant>>,
+    gravity_at: std::cell::Cell<Option<std::time::Instant>>,
     /// The phone's USB link up at the last second's check.
     usb_was: std::cell::Cell<bool>,
     last_angle: std::cell::Cell<Option<f64>>,
@@ -342,6 +346,16 @@ struct Ui {
 
 /// A phone not seen for this long is away; before that, restarting.
 const GONE_AFTER_S: u64 = 90;
+
+/// CRADLE_TRACE=1: what the window hears and does, with the time (to see
+/// where the drawn Duo lags the phone).
+fn trace(what: std::fmt::Arguments) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("CRADLE_TRACE").is_some()) {
+        let t = glib::DateTime::now_local().ok().and_then(|d| d.format("%T.%f").ok()).map(|s| s[..12].to_string()).unwrap_or_default();
+        eprintln!("{t} {what}");
+    }
+}
 
 /// The sections under the Duo (#169): key, title, icon.
 const NAV: &[(&str, &str, &str)] = &[
@@ -965,6 +979,8 @@ fn build(app: &adw::Application) {
         idle: std::cell::Cell::new(false),
         shut_away: std::cell::Cell::new(false),
         usb_was: std::cell::Cell::new(false),
+        lid_shut_at: std::cell::Cell::new(None),
+        gravity_at: std::cell::Cell::new(None),
         last_angle: std::cell::Cell::new(None),
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         pose: pose.clone(),
@@ -1390,10 +1406,11 @@ fn build(app: &adw::Application) {
     // each second while the window is in front (each 5 s behind it).
     ui.duo.add_tick_callback({
         let ui = Rc::downgrade(&ui);
+        let drawn_at = std::cell::Cell::new(-1);
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
             // Waiting for the phone: the drawn one opens and closes, slowly.
-            if ui.idle.get() && !ui.shut_away.get() {
+            if ui.idle.get() && !ui.shut_away.get() && std::env::var_os("CRADLE_FOLD").is_none() {
                 let t = clock.frame_time() as f64 / 1e6;
                 ui.fold.set((ui.fold.get().0, 135.0 + 40.0 * (t * 0.6).sin()));
             }
@@ -1410,6 +1427,11 @@ fn build(app: &adw::Application) {
                 ui.fold.set((now, to));
                 ui.tilt.set(([0, 1].map(|i| tilt[i] + (tilt_to[i] - tilt[i]) * k), tilt_to));
                 show_fold(&ui, now);
+            } else if ui.duo.width() != drawn_at.get() {
+                // Drawn once at the start and when the room's size changes,
+                // moving or not (nothing was, until it moved).
+                drawn_at.set(ui.duo.width());
+                show_fold(&ui, shown);
             }
             glib::ControlFlow::Continue
         }
@@ -1420,6 +1442,19 @@ fn build(app: &adw::Application) {
         let ui = ui.clone();
         move || {
             follow_hinge(&ui);
+            // Shut over a second ago and no gravity since (the display went
+            // dark, the accelerometer with it): put down, most likely -
+            // drawn lying on the table, not held where it last was (it hung
+            // in the air until the phone slept, ten seconds and more).
+            if let Some(shut) = ui.lid_shut_at.get() {
+                let fresh = ui.gravity_at.get().is_some_and(|g| g > shut + std::time::Duration::from_millis(300));
+                if shut.elapsed() > std::time::Duration::from_millis(1200) && !fresh && !ui.shut_away.get() {
+                    trace(format_args!("lid shut, no gravity: laid down"));
+                    ui.shut_away.set(true);
+                    fold_to(&ui, 0.0);
+                    tilt_to(&ui, [0.0, 0.0, 1.0]);
+                }
+            }
             // Not seen and the phone's USB link just came up (it woke): look
             // now, not at the next round (up to 5 s).
             let usb = cradle_core::link::usb_up();
@@ -1448,6 +1483,10 @@ fn build(app: &adw::Application) {
                 glib::ControlFlow::Continue
             });
         }
+    }
+    // CRADLE_FOLD: shown so from the start too, phone or not.
+    if std::env::var_os("CRADLE_FOLD").is_some() {
+        fold_to(&ui, 180.0);
     }
     // CRADLE_MENU=1: the sections' menu open at the start (to picture it).
     if std::env::var_os("CRADLE_MENU").is_some() {
@@ -1614,6 +1653,7 @@ fn look(ui: &Rc<Ui>) {
 }
 
 fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::Status, String>>) {
+    trace(format_args!("look: {} {}", match &place { Place::Linux(h) => format!("linux {h}"), Place::Gone => "gone".into(), _ => "other".into() }, status.as_ref().map_or("-".to_string(), |s| s.as_ref().map(|s| format!("locked {:?} hinge {:?}", s.locked, s.hinge)).unwrap_or_else(|e| e.clone()))));
     let was = ui.state.borrow().host.clone();
     let now = std::time::Instant::now();
     {
@@ -1957,6 +1997,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
     // On the cable (charging) the phone is kept awake while followed: the
     // lid and the hinge come at once.
     let cable = cradle_core::link::Via::of(&host) == cradle_core::link::Via::Cable;
+    trace(format_args!("follow: start {host} awake {cable}"));
     let Ok((mut follow, stop)) = cradle_core::posture::follow(&host, cable) else { return };
     *ui.following.borrow_mut() = Some((host, stop.clone()));
     let (tx, rx) = async_channel::bounded::<cradle_core::posture::Reading>(16);
@@ -1974,6 +2015,9 @@ fn follow_hinge(ui: &Rc<Ui>) {
         let mut raw = None::<f64>;
         let shut = |ui: &Ui, a: f64| if ui.pose_name.borrow().as_str() == "closed" { 0.0 } else { a };
         while let Ok(r) = rx.recv().await {
+            if !matches!(r, cradle_core::posture::Reading::Gravity(_)) {
+                trace(format_args!("reading: {r:?}"));
+            }
             match r {
                 cradle_core::posture::Reading::Angle(a) => {
                     raw = Some(a);
@@ -1981,6 +2025,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     fold_to(&ui, shut(&ui, a));
                 }
                 cradle_core::posture::Reading::Gravity(g) => {
+                    ui.gravity_at.set(Some(std::time::Instant::now()));
                     tilt_to(&ui, g);
                     let mut gs = ui.gravities.borrow_mut();
                     gs.push_back((std::time::Instant::now(), g));
@@ -1998,10 +2043,12 @@ fn follow_hinge(ui: &Rc<Ui>) {
                 // opening (a laptop's angle) until the hinge's own reading
                 // comes - seconds later, once the display is lit.
                 cradle_core::posture::Reading::Lid(true) => {
+                    ui.lid_shut_at.set(Some(std::time::Instant::now()));
                     *ui.pose_name.borrow_mut() = "closed".into();
                     fold_to(&ui, 0.0);
                 }
                 cradle_core::posture::Reading::Lid(false) => {
+                    ui.lid_shut_at.set(None);
                     if ui.pose_name.borrow().as_str() == "closed" {
                         ui.pose_name.borrow_mut().clear();
                     }
@@ -2013,6 +2060,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
             }
             say_pose(&ui);
         }
+        trace(format_args!("follow: ended (pose {:?}, last angle {:?}, tilt to {:?})", ui.pose_name.borrow(), ui.last_angle.get(), ui.tilt.get().1));
         // It ended (the phone went, or was stopped): started again next second.
         // Gone just as it was being closed - it went to sleep: drawn closing
         // the rest of the way and lying down on the table, gently (it froze
@@ -2515,7 +2563,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         // Tipped, it is in the hand: higher over the table the more it is
         // tipped (the sensors tell the tilt, not the height) - so the cord
         // is seen hanging from it, not lying under it.
-        let lying = ((pitch as f32).to_radians().cos() * (roll as f32).to_radians().cos()).clamp(0.0, 1.0);
+        // Flat on the table either way up (closed, either half may be under):
+        // lying, not held.
+        let lying = ((pitch as f32).to_radians().cos() * (roll as f32).to_radians().cos()).abs().clamp(0.0, 1.0);
         held.set(-DUO_THICK - low + 35.0 * DUO_PX_PER_MM as f32 * (1.0 - lying));
     }
     let place = |at: (f32, f32), i: usize, z: f32, persp: bool| {
@@ -2739,7 +2789,7 @@ fn show_fold(ui: &Ui, angle: f64) {
     // The shadows on the table: the right half's under it; the left's under
     // it while it lies there, narrowing toward the spine as it rises, gone
     // when it folds under.
-    let lying = (pitch.to_radians().cos() * roll.to_radians().cos()).clamp(0.0, 1.0);
+    let lying = (pitch.to_radians().cos() * roll.to_radians().cos()).abs().clamp(0.0, 1.0);
     // Each half's shadow as wide as the half seen from above, from the
     // spine out (the halves turn about it: in the tent the outer edges come
     // in toward it).
