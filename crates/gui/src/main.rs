@@ -4537,8 +4537,26 @@ fn show_fold(ui: &Ui, angle: f64) {
             (b.lift, b.hover)
         };
         let cubes: [(f32, f32); 5] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
-        // The buttons in the word's row, fifteen squares past it.
-        let buttons_at = on_squares(k, (cubes_at.0 + 2.5 * cur + 15.0 * cur, cubes_at.1 - 0.5 * cur));
+        // The buttons in the word's row, at the page's right (as the usual
+        // view shows it): the last in the square seen a square or so in
+        // from the edge.
+        let buttons_at = {
+            let m = rest_m;
+            let row = cubes_at.1;
+            let want = ui.floor.width() as f32 - off.0 - 1.2 * cur;
+            // Along the row to that point of the page (Newton's way).
+            let mut x = cubes_at.0 + 15.0 * cur;
+            for _ in 0..12 {
+                let f = on_page(&m, (x, row)).0 - want;
+                let d = on_page(&m, (x + 1.0, row)).0 - on_page(&m, (x, row)).0;
+                if d.abs() < 1e-4 {
+                    break;
+                }
+                x -= f / d;
+            }
+            let end = on_squares(k, (x, cubes_at.1 - 0.5 * cur));
+            (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
+        };
         let button_lift: [f32; 5] = std::array::from_fn(|i| lift[i] * (1.0 - flat));
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
