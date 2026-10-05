@@ -29,6 +29,7 @@ mod card;
 mod control;
 mod journey;
 mod place;
+mod saver;
 mod sections;
 
 const APP_ID: &str = "lab.agentsco.Hythe";
@@ -412,6 +413,12 @@ struct Ui {
     /// it is there).
     page: RefCell<Option<(String, board::Board)>>,
     page_back: std::cell::Cell<f32>,
+    /// The screen saver on since (saver.rs), and how far the eye has gone
+    /// over to drifting (eased).
+    saver: std::cell::Cell<Option<std::time::Instant>>,
+    saver_mix: std::cell::Cell<f32>,
+    /// Where the word stood on the table before the saver came.
+    cubes_rest: std::cell::Cell<(f32, f32)>,
     /// The sections' facts as words, from the last look (for their boards).
     section_words: RefCell<std::collections::HashMap<&'static str, Vec<(&'static str, String)>>>,
     cable_plug: Vec<gtk::Picture>,
@@ -1156,6 +1163,9 @@ fn build(app: &adw::Application) {
         board: RefCell::default(),
         page: RefCell::default(),
         page_back: std::cell::Cell::new(0.0),
+        saver: std::cell::Cell::new(None),
+        saver_mix: std::cell::Cell::new(0.0),
+        cubes_rest: std::cell::Cell::new((0.0, 0.0)),
         section_words: RefCell::default(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
@@ -1207,6 +1217,22 @@ fn build(app: &adw::Application) {
     // The letters the page sets, made ahead.
     glyphs_ahead("abcdefghijklmnopqrstuvwxyz?-&.");
     glyphs_ahead(intro::CREDIT);
+    // The saver: idle five minutes, on; anything done since it came, off
+    // (looked at each second).
+    {
+        let weak = Rc::downgrade(&ui);
+        glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+            let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(idle) = saver::idle_ms() else { return glib::ControlFlow::Continue };
+            match ui.saver.get() {
+                None if idle >= saver::AFTER_MS => saver_on(&ui),
+                // Idle less than it has been on: something was done since.
+                Some(since) if idle + 700 < since.elapsed().as_millis() as u64 => saver_off(&ui),
+                _ => {}
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     // Night by the hour: looked at each minute.
     {
         let weak = Rc::downgrade(&ui);
@@ -1410,6 +1436,7 @@ fn build(app: &adw::Application) {
                         }
                     }
                     FloorButton::Replay => ui.intro.borrow_mut().replay(),
+                    FloorButton::Saver => saver_on(&ui),
                     FloorButton::Minimize => win.minimize(),
                     FloorButton::Close => win.close(),
                 }
@@ -2020,7 +2047,15 @@ fn build(app: &adw::Application) {
                 }
                 moving || step != 0.0
             };
-            let pressing = pressing || boarding || paging;
+            // The saver: the eye going over to drifting (and back), the
+            // frames going on while it drifts.
+            let saving = {
+                let (now, to) = (ui.saver_mix.get(), if ui.saver.get().is_some() { 1.0 } else { 0.0 });
+                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 2.0).min((to - now).abs());
+                ui.saver_mix.set(now + step);
+                ui.saver.get().is_some() || step != 0.0
+            };
+            let pressing = pressing || boarding || paging || saving;
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
@@ -2957,6 +2992,9 @@ struct FloorView {
     eye_x: f32,
     /// The word's cube whose button (on its front) is under the pointer.
     hover_button: Option<usize>,
+    /// How far the squares are drawn from the middle (px): further on a
+    /// larger page and as the eye draws back.
+    reach: f32,
 }
 
 /// Words set on the table, a letter a square of `cell` (px; a square of
@@ -2986,7 +3024,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     let Some(m) = fv.matrix else { return };
     let k = fv.k;
     let step = square() * k;
-    let reach = 520.0 * k;
+    let reach = fv.reach;
     let z = fv.table;
     let project = |x: f32, y: f32| -> Option<(f64, f64)> {
         let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
@@ -3503,6 +3541,43 @@ fn draw_glyph(cr: &gtk::cairo::Context, ch: char, a: (f64, f64), b: (f64, f64), 
 
 /// The table's buttons (three squares under the word): the sections'
 /// menu, day or night, the start again.
+/// The saver on: boards closed, the window filling the second monitor,
+/// the pointer hidden over it.
+fn saver_on(ui: &Ui) {
+    if ui.saver.get().is_some() {
+        return;
+    }
+    trace(format_args!("saver: on"));
+    if let Some(b) = ui.board.borrow_mut().as_mut() {
+        b.close();
+    }
+    if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
+        b.close();
+    }
+    ui.saver.set(Some(std::time::Instant::now()));
+    let display = WidgetExt::display(&ui.window);
+    match saver::second_monitor(&display) {
+        Some(m) => ui.window.fullscreen_on_monitor(&m),
+        None => ui.window.fullscreen(),
+    }
+    ui.window.present();
+    if let Some(page) = ui.floor.parent() {
+        page.set_cursor_from_name(Some("none"));
+    }
+}
+
+/// The saver off: the window back where it was.
+fn saver_off(ui: &Ui) {
+    if ui.saver.take().is_none() {
+        return;
+    }
+    trace(format_args!("saver: off"));
+    ui.window.unfullscreen();
+    if let Some(page) = ui.floor.parent() {
+        page.set_cursor_from_name(None);
+    }
+}
+
 /// Hythe's settings as a board's lines (each clicked turns it).
 fn settings_lines() -> Vec<board::Line> {
     let onoff = |on: bool| if on { "on" } else { "off" };
@@ -3546,12 +3621,13 @@ fn turn_night_mode(ui: &Ui) {
 enum FloorButton {
     Menu,
     Replay,
+    Saver,
     Minimize,
     Close,
 }
 
-/// On the fronts of the word's cubes, h y t h e (t's blank).
-const FLOOR_BUTTONS: [Option<FloorButton>; 5] = [Some(FloorButton::Menu), Some(FloorButton::Replay), None, Some(FloorButton::Minimize), Some(FloorButton::Close)];
+/// On the fronts of the word's cubes, h y t h e.
+const FLOOR_BUTTONS: [Option<FloorButton>; 5] = [Some(FloorButton::Menu), Some(FloorButton::Replay), Some(FloorButton::Saver), Some(FloorButton::Minimize), Some(FloorButton::Close)];
 
 /// The buttons' hover and press, eased.
 #[derive(Default)]
@@ -3611,6 +3687,15 @@ fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f
                 cr.move_to(32.0, y);
                 cr.line_to(68.0, y);
             }
+            let _ = cr.stroke();
+        }
+        FloorButton::Saver => {
+            // A screen on its stand.
+            cr.rectangle(31.0, 32.0, 38.0, 26.0);
+            cr.move_to(50.0, 58.0);
+            cr.line_to(50.0, 66.0);
+            cr.move_to(42.0, 67.0);
+            cr.line_to(58.0, 67.0);
             let _ = cr.stroke();
         }
         FloorButton::Minimize => {
@@ -4177,6 +4262,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         let first = ((p.0 - sx) / step - 2.5).round();
         let moved = grid_at();
         let cubes_at = (sx + (first + 2.5) * step + moved.0 * k, ((p.1 / step).floor() + 0.5) * step + moved.1 * k);
+        // The saver's page is another size: the word kept where it was on
+        // the table (worked out anew it went far off, past the squares).
+        let cubes_at = if ui.saver.get().is_some() { ui.cubes_rest.get() } else { ui.cubes_rest.replace(cubes_at); cubes_at };
         for (i, v) in [cubes_at.0, cubes_at.1].into_iter().enumerate() {
             CUBES_AT[i].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }
@@ -4203,11 +4291,14 @@ fn show_fold(ui: &Ui, angle: f64) {
             far: lerp(a.far, b.far, t),
         };
         let matrix = |e: Eye| {
+            // Nearness as a lens's (the picture scaled about its point),
+            // not the eye brought nearer: scaled before the perspective the
+            // far table went behind the eye and was cut off.
             gsk::Transform::new()
                 .translate(&graphene::Point::new(e.on.0, e.on.1))
+                .scale(e.near, e.near)
                 .perspective(e.far * h)
                 .rotate_3d(e.tilt, &graphene::Vec3::x_axis())
-                .scale_3d(e.near, e.near, e.near)
                 .translate_3d(&graphene::Point3D::new(-e.look.0, -e.look.1, 0.0))
                 .to_matrix()
         };
@@ -4293,6 +4384,25 @@ fn show_fold(ui: &Ui, angle: f64) {
         let back = ui.page_back.get();
         let back = back * back * (3.0 - 2.0 * back);
         let mut e = mix(mix(mix(above, rest, eye), near_note, intro.near_note()), page_view, back);
+        // The saver: the eye drifting slowly over the table, round the word.
+        let drift = ui.saver_mix.get();
+        // The page's size against the usual window's: the saver's scene as
+        // large as its screen.
+        let page_scale = (ui.floor.width() as f32 / 1000.0).max(ui.floor.height() as f32 / 800.0).max(1.0);
+        if drift > 0.0 {
+            let t = ui.saver.get().map_or(0.0, |s| s.elapsed().as_secs_f32()) + 40.0;
+            // Round the word, in the page's middle.
+            let page_mid = (ui.floor.width() as f32 * 0.5 - off.0, ui.floor.height() as f32 * 0.5 - off.1);
+            let wander = Eye {
+                look: (cubes_at.0 + 1.5 * cur * (t * 0.031).sin(), cubes_at.1 + 1.0 * cur + 1.5 * cur * (t * 0.023).cos()),
+                on: page_mid,
+                tilt: TILT + 8.0 * (t * 0.041).sin(),
+                near: page_scale * (0.9 + 0.12 * (t * 0.027).sin()),
+                far: 3.2,
+            };
+            let d = drift * drift * (3.0 - 2.0 * drift);
+            e = mix(e, wander, d);
+        }
         // Coming down, the word kept where it is on the page.
         if eye < 1.0 {
             let shown = on_page(&matrix(e), cubes_at);
@@ -4300,6 +4410,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         let at = e.on;
         let eye_x = e.look.0;
+        let reach = 520.0 * k * page_scale / e.near.max(0.3);
         let rest = matrix(e);
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
@@ -4359,9 +4470,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.reach != reach;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, hover_button };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, hover_button, reach };
         if changed {
             ui.floor.queue_draw();
         }
