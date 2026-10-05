@@ -3041,6 +3041,7 @@ struct FloorView {
     /// the one under the pointer.
     buttons_at: (f32, f32),
     button_lift: [f32; 5],
+    button_in: [f32; 5],
     hover_button: Option<usize>,
     /// How far the squares are drawn (px) round where the eye looks:
     /// further on a larger page and as the eye draws back.
@@ -3716,7 +3717,7 @@ fn button_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
     let side = square() * fv.k;
     let (x, y) = fv.buttons_at;
     let i = ((t.0 - x) / side).floor();
-    (t.1 >= y && t.1 < y + side && i >= 0.0 && (i as usize) < FLOOR_BUTTONS.len() && FLOOR_BUTTONS[i as usize].is_some()).then_some(i as usize)
+    (t.1 >= y && t.1 < y + side && i >= 0.0 && (i as usize) < FLOOR_BUTTONS.len() && FLOOR_BUTTONS[i as usize].is_some() && fv.button_in[i as usize] > 0.5).then_some(i as usize)
 }
 
 /// The buttons: their squares (raised a little under the pointer, as low
@@ -3740,9 +3741,12 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         cr.close_path();
     };
-    let _ = cr.push_group();
     for (i, b) in FLOOR_BUTTONS.iter().enumerate() {
         let Some(b) = b else { continue };
+        if fv.button_in[i] <= 0.0 {
+            continue;
+        }
+        let _ = cr.push_group();
         let x0 = fv.buttons_at.0 + i as f32 * side;
         let h = fv.button_lift[i].max(0.0);
         let (_, faces, top) = box_shape(&p3, (x0, fv.buttons_at.1), side, fv.table, h);
@@ -3765,9 +3769,9 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         let strong = if fv.hover_button == Some(i) { 0.9 } else { 0.5 };
         draw_sign(cr, *b, top[0], top[1], top[3], strong);
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint_with_alpha((fv.word * fv.button_in[i]) as f64);
     }
-    let _ = cr.pop_group_to_source();
-    let _ = cr.paint_with_alpha(fv.word as f64);
 }
 
 /// A button's sign in the square whose top left, top right and bottom left
@@ -4557,7 +4561,10 @@ fn show_fold(ui: &Ui, angle: f64) {
             let end = on_squares(k, (x, cubes_at.1 - 0.5 * cur));
             (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
-        let button_lift: [f32; 5] = std::array::from_fn(|i| lift[i] * (1.0 - flat));
+        // Each button in a second after the eye stops: faded in, a little
+        // hop as it comes.
+        let button_in: [f32; 5] = std::array::from_fn(|i| intro.button(i));
+        let button_lift: [f32; 5] = std::array::from_fn(|i| (lift[i] + 0.25 * (button_in[i] * std::f32::consts::PI).sin()) * (1.0 - flat));
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
@@ -4606,9 +4613,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.reach != reach || fv.grid_mid != grid_mid;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
         }

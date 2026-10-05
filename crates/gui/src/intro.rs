@@ -153,6 +153,15 @@ impl Intro {
         Flip { i, from: f.from, to: f.to, turn: f.turn, strength }
     }
 
+    /// Button `i` coming: 0 not yet .. 1 there - a second after the eye
+    /// stops, one after the other.
+    pub fn button(&self, i: usize) -> f32 {
+        if !self.begun() {
+            return 0.0;
+        }
+        smooth((self.t() - EYE.1 - 1.0 - i as f32 * 0.08) / 0.4)
+    }
+
     /// The eye: 0 straight above .. 1 where the Duo is seen from.
     pub fn eye(&self) -> f32 {
         smoother((self.t() - EYE.0) / (EYE.1 - EYE.0))
@@ -271,7 +280,7 @@ impl Intro {
         if !self.begun() {
             return false;
         }
-        if !self.done() {
+        if !self.done() || self.t() < EYE.1 + 1.0 + 5.0 * 0.08 + 0.45 {
             return true;
         }
         if !self.ended {
