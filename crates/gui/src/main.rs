@@ -3974,13 +3974,15 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
                 cr.set_line_width(1.6);
                 let _ = cr.stroke();
             }
-            path(&top);
-            let l = paper(1.0);
-            cr.set_source_rgb(l, l, l * 1.01);
-            let _ = cr.fill_preserve();
-            ink(cr, 0.14);
-            let _ = cr.stroke();
         }
+        // Its top (or, lying on the table, the square itself).
+        path(&top);
+        let l = paper(1.0);
+        cr.set_source_rgb(l, l, l * 1.01);
+        let _ = cr.fill_preserve();
+        ink(cr, 0.14);
+        cr.set_line_width(1.6);
+        let _ = cr.stroke();
         let strong = if fv.hover_button == Some(i) { 0.9 } else { 0.5 };
         draw_sign(cr, *b, top[0], top[1], top[3], strong);
         let _ = cr.pop_group_to_source();
@@ -4804,19 +4806,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
-        // The word's cubes raised a little under the pointer (their fronts
-        // are buttons), pressed in a moment.
-        let (lift, hover_button) = {
-            let b = ui.buttons.borrow();
-            (b.lift, b.hover)
-        };
+        let hover_button = ui.buttons.borrow().hover;
         let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
-        // Each button growing up out of the table as the word's cubes go
-        // down, one after the other.
+        // Each button coming in on the table as the word's cubes go down,
+        // one after the other; they lie there, squares as the word's.
         let button_in: [f32; 5] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
-        // The buttons grown up as cubes half a square high (and a little more
-        // under the pointer).
-        let button_lift: [f32; 5] = std::array::from_fn(|i| (0.5 * button_in[i] + lift[i]) * (1.0 - flat));
+        let button_lift = [0.0f32; 5];
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
