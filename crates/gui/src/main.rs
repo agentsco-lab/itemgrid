@@ -1340,6 +1340,8 @@ fn build(app: &adw::Application) {
         });
         page.add_controller(wheel);
         let drag = gtk::GestureDrag::new();
+        let grid_drag = Rc::new(std::cell::Cell::new(false));
+        let grid_drag2 = grid_drag.clone();
         // Where the table was and its point under the pointer as the drag
         // began: that point kept under the pointer.
         let from = Rc::new(std::cell::Cell::new(((0.0f32, 0.0f32), None::<(f32, f32)>, (0.0f64, 0.0f64))));
@@ -1353,10 +1355,31 @@ fn build(app: &adw::Application) {
                 return;
             }
             f.set((grid_at(), table_under(&ui.floor_view.borrow(), (x, y)), (x, y)));
+            // With Ctrl the squares are dragged (for now); else, once it
+            // moves, the window is (no header at home).
+            grid_drag.set(g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK));
         });
-        let (weak, f) = (Rc::downgrade(&ui), from);
-        drag.connect_drag_update(move |_, dx, dy| {
+        let (weak, f, pg, gd) = (Rc::downgrade(&ui), from, page.clone(), grid_drag2);
+        drag.connect_drag_update(move |g, dx, dy| {
             let Some(ui) = weak.upgrade() else { return };
+            if !gd.get() {
+                if dx.hypot(dy) > 4.0 {
+                    let ((_, _), _, (x, y)) = f.get();
+                    let device = g.current_event_device();
+                    let surface = ui.window.surface().and_then(|s| s.downcast::<gdk::Toplevel>().ok());
+                    let at = pg.compute_point(&ui.window, &gtk::graphene::Point::new((x + dx) as f32, (y + dy) as f32));
+                    let shadow = ui.window.native().map_or((0.0, 0.0), |n| n.surface_transform());
+                    if let (Some(device), Some(surface), Some(at)) = (device, surface, at) {
+                        surface.begin_move(&device, g.current_button() as i32, at.x() as f64 + shadow.0, at.y() as f64 + shadow.1, g.current_event_time());
+                    }
+                    // The window manager has the button now: its release
+                    // never comes here - the gesture let go of at once (left
+                    // waiting, the next drag did nothing).
+                    g.set_state(gtk::EventSequenceState::Denied);
+                    g.reset();
+                }
+                return;
+            }
             let k = DUO_PX_PER_MM as f32;
             let ((fx, fy), began, (x, y)) = f.get();
             let now = table_under(&ui.floor_view.borrow(), (x + dx, y + dy));
