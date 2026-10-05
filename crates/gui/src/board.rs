@@ -56,6 +56,14 @@ pub struct Tile {
 pub struct Line {
     pub key: String,
     pub text: String,
+    /// Set again since (its own turning up, the board's others left).
+    pub since: Option<Instant>,
+}
+
+impl Line {
+    pub fn new(key: impl Into<String>, text: impl Into<String>) -> Line {
+        Line { key: key.into(), text: text.into(), since: None }
+    }
 }
 
 /// Seconds: a square's turning up; after the line before, after the letter
@@ -77,6 +85,14 @@ pub struct Board {
 impl Board {
     pub fn open(lines: Vec<Line>) -> Board {
         Board { lines, opened: Instant::now(), closed: None, hover: None, chosen: None }
+    }
+
+    /// Line `i` set anew: its squares turn up again to the new words.
+    pub fn set_line(&mut self, i: usize, text: impl Into<String>) {
+        if let Some(l) = self.lines.get_mut(i) {
+            l.text = text.into();
+            l.since = Some(Instant::now());
+        }
     }
 
     /// The widest line, in squares.
@@ -102,7 +118,10 @@ impl Board {
     pub fn moving(&self) -> bool {
         let longest = self.lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
         let all = self.lines.len() as f32 * LINE_AFTER + longest as f32 * LETTER_AFTER + TURN_S;
-        self.opened.elapsed().as_secs_f32() < all + 0.05 || self.closed.is_some_and(|c| c.elapsed().as_secs_f32() < FADE_S + 0.05)
+        let line = longest as f32 * LETTER_AFTER + TURN_S;
+        self.opened.elapsed().as_secs_f32() < all + 0.05
+            || self.lines.iter().any(|l| l.since.is_some_and(|s| s.elapsed().as_secs_f32() < line + 0.05))
+            || self.closed.is_some_and(|c| c.elapsed().as_secs_f32() < FADE_S + 0.05)
     }
 
     /// Its squares from `origin` (the first line's first square's far left
@@ -113,11 +132,13 @@ impl Board {
         let mut out = Vec::new();
         for (r, line) in self.lines.iter().enumerate() {
             let grey = if self.hover == Some(r) || self.chosen == Some(r) { 0.12 } else { 0.42 };
+            // Set again: from then, alone.
+            let (t, r_after) = line.since.map_or((t, r as f32 * LINE_AFTER), |s| (s.elapsed().as_secs_f32(), 0.0));
             for (c, ch) in line.text.chars().enumerate() {
                 if ch == ' ' {
                     continue;
                 }
-                let p = (t - r as f32 * LINE_AFTER - c as f32 * LETTER_AFTER) / TURN_S;
+                let p = (t - r_after - c as f32 * LETTER_AFTER) / TURN_S;
                 out.push(Tile {
                     at: (origin.0 + c as f32 * side, origin.1 + r as f32 * side),
                     flap: flap(r * 13 + c, ch, p),

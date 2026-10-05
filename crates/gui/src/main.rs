@@ -1362,34 +1362,25 @@ fn build(app: &adw::Application) {
                                 p.close();
                             }
                         } else {
-                            // Without the phone only what needs none: the
-                            // backups here, repair, the developer's.
+                            // Without the phone only Hythe's own: its
+                            // settings, about it; with it, the phone's
+                            // sections, then those.
                             let phone = ui.state.borrow().host.is_some();
-                            let lines = NAV
-                                .iter()
-                                .filter(|(key, ..)| *key != "developer" || developer_mode())
-                                .filter(|(key, ..)| phone || ["updates", "repair", "developer"].contains(key))
-                                .map(|(key, ..)| board::Line { key: key.to_string(), text: key.to_string() })
-                                .collect();
+                            let mut lines: Vec<board::Line> = if phone {
+                                NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
+                            } else {
+                                Vec::new()
+                            };
+                            lines.push(board::Line::new("settings", "settings"));
+                            if !phone {
+                                lines.push(board::Line::new("hythe", "about"));
+                            }
                             *b = Some(board::Board::open(lines));
                             drop(b);
                             ui.intro.borrow_mut().clear_note();
                         }
                     }
-                    FloorButton::Night => {
-                        let on = !night();
-                        NIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
-                        if on {
-                            let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
-                            let _ = std::fs::write(night_file(), "");
-                            win.add_css_class("night");
-                        } else {
-                            let _ = std::fs::remove_file(night_file());
-                            win.remove_css_class("night");
-                        }
-                        adw::StyleManager::default().set_color_scheme(if on { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
-                        ui.floor.queue_draw();
-                    }
+                    FloorButton::Night => toggle_night(&ui),
                     FloorButton::Replay => ui.intro.borrow_mut().replay(),
                     FloorButton::Minimize => win.minimize(),
                     FloorButton::Close => win.close(),
@@ -1401,6 +1392,26 @@ fn build(app: &adw::Application) {
             let open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
             if open {
                 g.set_state(gtk::EventSequenceState::Claimed);
+                // A line of the section's board: a setting turned.
+                let fv = ui.floor_view.borrow();
+                let side = square() * fv.k;
+                let page_line = table_under(&fv, (x, y)).and_then(|t| ui.page.borrow().as_ref().and_then(|(_, b)| b.line_at(fv.page_at, side, t)));
+                drop(fv);
+                if let Some(l) = page_line {
+                    let key = ui.page.borrow().as_ref().map(|(_, b)| b.lines[l].key.clone()).unwrap_or_default();
+                    match key.as_str() {
+                        "set:night" => toggle_night(&ui),
+                        "set:developer" => set_developer_mode(!developer_mode()),
+                        _ => return,
+                    }
+                    trace(format_args!("setting {key} turned"));
+                    if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
+                        if let Some(new) = settings_lines().into_iter().find(|n| n.key == key) {
+                            b.set_line(l, new.text);
+                        }
+                    }
+                    return;
+                }
                 let fv = ui.floor_view.borrow();
                 let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
                 drop(fv);
@@ -1409,6 +1420,24 @@ fn build(app: &adw::Application) {
                 // menu kept, its line chosen).
                 let on_table = key.as_deref().and_then(|k| ui.section_words.borrow().get(k).cloned().map(|rows| (k.to_owned(), rows)));
                 let on_table = on_table.or_else(|| key.as_deref().filter(|k| ["about", "storage", "updates"].contains(k)).map(|k| (k.to_owned(), vec![("", "no duo yet".to_owned())])));
+                // Hythe's own: its settings (lines to click), about it.
+                let own = match key.as_deref() {
+                    Some("settings") => Some(settings_lines()),
+                    Some("hythe") => Some(vec![
+                        board::Line::new("", format!("hythe  {}", env!("CARGO_PKG_VERSION"))),
+                        board::Line::new("", "by     AgentsCo"),
+                        board::Line::new("", "site   agentsco.uk"),
+                    ]),
+                    _ => None,
+                };
+                if let (Some(lines), Some(key)) = (own, key.clone()) {
+                    if let Some(b) = ui.board.borrow_mut().as_mut() {
+                        b.chosen = line;
+                    }
+                    trace(format_args!("board: {key} on the table"));
+                    *ui.page.borrow_mut() = Some((key, board::Board::open(lines)));
+                    return;
+                }
                 if let Some((key, rows)) = on_table {
                     if let Some(b) = ui.board.borrow_mut().as_mut() {
                         b.chosen = line;
@@ -1419,7 +1448,7 @@ fn build(app: &adw::Application) {
                         .map(|(k, v)| {
                             let k = k.to_lowercase();
                             let v: String = v.chars().take(36).collect();
-                            board::Line { key: k.clone(), text: if k.is_empty() { v } else { format!("{k:wide$}  {v}") } }
+                            board::Line::new(k.clone(), if k.is_empty() { v } else { format!("{k:wide$}  {v}") })
                         })
                         .collect();
                     trace(format_args!("board: {key} on the table"));
@@ -2894,6 +2923,7 @@ struct FloorView {
     /// board's; where that board begins.
     tiles: Vec<board::Tile>,
     board_at: (f32, f32),
+    page_at: (f32, f32),
     /// Across the table, where the eye's line is (boxes drawn farthest
     /// from it first: a box nearer it covers its neighbour's side).
     eye_x: f32,
@@ -3445,6 +3475,28 @@ fn draw_glyph(cr: &gtk::cairo::Context, ch: char, a: (f64, f64), b: (f64, f64), 
 
 /// The table's buttons (three squares under the word): the sections'
 /// menu, day or night, the start again.
+/// Hythe's settings as a board's lines (each clicked turns it).
+fn settings_lines() -> Vec<board::Line> {
+    let onoff = |on: bool| if on { "on" } else { "off" };
+    vec![board::Line::new("set:night", format!("night      {}", onoff(night()))), board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode())))]
+}
+
+/// Day and night turned: the table, the window, kept.
+fn toggle_night(ui: &Ui) {
+    let on = !night();
+    NIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
+    if on {
+        let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
+        let _ = std::fs::write(night_file(), "");
+        ui.window.add_css_class("night");
+    } else {
+        let _ = std::fs::remove_file(night_file());
+        ui.window.remove_css_class("night");
+    }
+    adw::StyleManager::default().set_color_scheme(if on { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
+    ui.floor.queue_draw();
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum FloorButton {
     Menu,
@@ -4286,9 +4338,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.eye_x != eye_x || fv.hover_button != hover_button;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, eye_x, hover_button };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, hover_button };
         if changed {
             ui.floor.queue_draw();
         }
