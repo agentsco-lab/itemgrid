@@ -5,9 +5,9 @@
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
 //!
-//! Then the credit turns up off to the side in the table's own squares:
-//! each turning over once, in one movement, its letter underneath, one
-//! after the other along the line - and a moment later back blank.
+//! The credit turns up in the table's own squares as the growing reaches
+//! them - each turning over once, in one movement, its letter underneath
+//! - and turns back blank as the eye comes down, gone when it stops.
 //!
 //! A cube clicked - or any of the table's squares - looks for the phone at
 //! once: the cube pressed in (a square jumps up out of the table and back),
@@ -37,13 +37,7 @@ const WORD_IN: f32 = 0.5;
 const GRID: (f32, f32) = (0.55, 1.7);
 const EYE: (f32, f32) = (1.6, 3.0);
 /// The credit set letter by letter; the eye near it and back; it goes.
-/// The credit's squares turning over (FLIP_S each, each a little after the
-/// one before), and back blank.
-const CREDIT_UP: f32 = 3.0;
-const FLIP_S: f32 = 0.55;
-const FLIP_EACH: f32 = 0.07;
-const CREDIT_BLANK: f32 = 4.9;
-const END: f32 = 6.3;
+const END: f32 = EYE.1;
 /// Seconds for the cubes to sink (or rise), the last starting a little
 /// after the first.
 const SINK_S: f32 = 1.1;
@@ -141,30 +135,21 @@ impl Intro {
         smoother(self.near_note)
     }
 
-    /// The credit's cubes now (none before or after).
-    pub fn credit(&self) -> Vec<Flip> {
-        let t = self.t();
-        if !self.begun() || t < CREDIT_UP || t >= END {
-            return Vec::new();
+    /// The credit's square `i` (its letter `ch`): turned over as the
+    /// squares' growing comes across it (`reached` 0..1), back blank as the
+    /// eye comes down - the last of them as it stops.
+    pub fn credit_flip(&self, i: usize, ch: char, reached: f32) -> Flip {
+        let on = smoother(reached);
+        let off = smoother((self.eye() - 0.45 - i as f32 * 0.025) / 0.3);
+        if !self.begun() || self.done() || off >= 1.0 || on <= 0.0 {
+            Flip { i, from: ' ', to: ' ', turn: 0.0 }
+        } else if off > 0.0 {
+            Flip { i, from: ch, to: ' ', turn: off }
+        } else if on >= 1.0 {
+            Flip { i, from: ch, to: ch, turn: 0.0 }
+        } else {
+            Flip { i, from: ' ', to: ch, turn: on }
         }
-        CREDIT
-            .chars()
-            .enumerate()
-            .filter(|(_, ch)| *ch != ' ')
-            .map(|(i, ch)| {
-                let over = |at: f32| smoother((t - at - i as f32 * FLIP_EACH) / FLIP_S);
-                let (on, off) = (over(CREDIT_UP), over(CREDIT_BLANK));
-                if off >= 1.0 {
-                    Flip { i, from: ' ', to: ' ', turn: 0.0 }
-                } else if off > 0.0 {
-                    Flip { i, from: ch, to: ' ', turn: off }
-                } else if on >= 1.0 {
-                    Flip { i, from: ch, to: ch, turn: 0.0 }
-                } else {
-                    Flip { i, from: ' ', to: ch, turn: on }
-                }
-            })
-            .collect()
     }
 
     /// The eye: 0 straight above .. 1 where the Duo is seen from.

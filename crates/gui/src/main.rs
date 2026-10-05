@@ -3777,27 +3777,14 @@ fn show_fold(ui: &Ui, angle: f64) {
             Eye { look: mid, on: to, tilt, near, far }
         };
         let block = |lines: &[&str]| (lines.iter().map(|l| l.chars().count()).max().unwrap_or(1), lines.len());
-        // The credit off to the side, in the lower right where the Duo is
-        // seen from (no more than a mark): the row ending in the table's
-        // square shown there.
+        // The credit where it is seen from straight above as the squares
+        // grow out (to the right of the word and below it): the table's
+        // square under that point of the page then.
         let credit_at = {
-            // Its end there.
-            let want = (ui.floor.width() as f32 * 0.93 - off.0 - middle.0, ui.floor.height() as f32 * 0.86 - off.1 - middle.1);
-            let mut p = want;
-            for _ in 0..20 {
-                let f = shown_at(&down, p);
-                let (fx, fy) = (shown_at(&down, (p.0 + 1.0, p.1)), shown_at(&down, (p.0, p.1 + 1.0)));
-                let j = [[fx.0 - f.0, fy.0 - f.0], [fx.1 - f.1, fy.1 - f.1]];
-                let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
-                if det.abs() < 1e-6 {
-                    break;
-                }
-                let e = (f.0 - want.0, f.1 - want.1);
-                p = (p.0 - (j[1][1] * e.0 - j[0][1] * e.1) / det, p.1 - (-j[1][0] * e.0 + j[0][0] * e.1) / det);
-            }
+            let page_at = (ui.floor.width() as f32 * 0.42 - off.0, ui.floor.height() as f32 * 0.6 - off.1);
+            let p = (cubes_at.0 + page_at.0 - word_on.0, cubes_at.1 + page_at.1 - word_on.1);
             let (sx, sy) = floor_shift(k);
-            let n = intro::CREDIT.chars().count() as f32;
-            (sx + ((p.0 - sx) / cur).floor() * cur - (n - 1.0) * cur, sy + ((p.1 - sy) / cur).floor() * cur)
+            (sx + ((p.0 - sx) / cur).floor() * cur, sy + ((p.1 - sy) / cur).floor() * cur)
         };
         let note_lines: Vec<String> = intro.note().map(|(t, _)| t.lines().map(str::to_owned).collect()).unwrap_or_default();
         let (nc, nr) = block(&note_lines.iter().map(String::as_str).collect::<Vec<_>>());
@@ -3821,7 +3808,19 @@ fn show_fold(ui: &Ui, angle: f64) {
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
-        let flips = intro.credit();
+        // Turned over as the growing of the squares (draw_floor's) comes
+        // across each.
+        let grown = grid * (520.0 * k + 3.0 * cur);
+        let flips: Vec<intro::Flip> = intro::CREDIT
+            .chars()
+            .enumerate()
+            .filter(|(_, ch)| *ch != ' ')
+            .map(|(i, ch)| {
+                let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
+                let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
+                intro.credit_flip(i, ch, ((grown - d) / (2.0 * cur)).clamp(0.0, 1.0))
+            })
+            .collect();
         if let Some((text, strength)) = intro.note() {
             let mut lines = text.lines();
             if let Some(head) = lines.next() {
