@@ -4618,44 +4618,6 @@ fn show_fold(ui: &Ui, angle: f64) {
             let shown = on_page(&matrix(e), cubes_at);
             e.on = (e.on.0 + word_on.0 - shown.0, e.on.1 + word_on.1 - shown.1);
         }
-        // The wheel's lens on top (not the saver's). Drawn back, the word
-        // comes to the page's middle, the eye rises to straight above and
-        // the perspective all but goes: the cubes go down into the table,
-        // letters in its squares again (as the start begins).
-        let lens = ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
-        e.near *= lens;
-        let up = ((1.0 - lens) / 0.6).clamp(0.0, 1.0);
-        let flat = up * up * (3.0 - 2.0 * up);
-        if flat > 0.0 {
-            let mid = (ui.floor.width() as f32 * 0.5 - off.0, ui.floor.height() as f32 * 0.5 - off.1);
-            e.look = (e.look.0 + (cubes_at.0 - e.look.0) * flat, e.look.1 + (cubes_at.1 - e.look.1) * flat);
-            e.on = (e.on.0 + (mid.0 - e.on.0) * flat, e.on.1 + (mid.1 - e.on.1) * flat);
-            e.tilt *= 1.0 - flat;
-            e.far += (40.0 - e.far) * flat;
-        }
-        // The whole view half a square to the left (the buttons as far in
-        // from the right as the word from the left: both margins alike).
-        let half = {
-            let a = on_page(&rest_m, (cubes_at.0, cubes_at.1));
-            let b = on_page(&rest_m, (cubes_at.0 + cur, cubes_at.1));
-            (b.0 - a.0).abs() / 2.0
-        };
-        e.on.0 -= half * (1.0 - flat);
-        let at = e.on;
-        let eye_x = e.look.0;
-        let reach = 520.0 * k * page_scale / e.near.max(0.3);
-        let grid_mid = e.look;
-        let rest = matrix(e);
-        let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
-        let note = intro.note().map(|(t, a)| (t.to_owned(), a));
-        let tapped = intro.tapped();
-        // The word's cubes raised a little under the pointer (their fronts
-        // are buttons), pressed in a moment.
-        let (lift, hover_button) = {
-            let b = ui.buttons.borrow();
-            (b.lift, b.hover)
-        };
-        let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
         // The buttons in the word's row, at the page's right (as the usual
         // view shows it): the last in the square seen a square or so in
         // from the edge.
@@ -4684,6 +4646,47 @@ fn show_fold(ui: &Ui, angle: f64) {
             let end = on_squares(k, (x, cubes_at.1 - 0.5 * cur));
             (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
+        // The wheel's lens on top (not the saver's). Drawn back, the row of
+        // the word and the buttons comes to the page's middle, the eye rises to straight above and
+        // the perspective all but goes: the cubes go down into the table,
+        // letters in its squares again (as the start begins).
+        let lens = ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
+        e.near *= lens;
+        let up = ((1.0 - lens) / 0.6).clamp(0.0, 1.0);
+        let flat = up * up * (3.0 - 2.0 * up);
+        if flat > 0.0 {
+            let mid = (ui.floor.width() as f32 * 0.5 - off.0, ui.floor.height() as f32 * 0.5 - off.1);
+            // The row from the word's start to the buttons' end in the
+            // middle (the word lies in the table now).
+            let row_mid = ((cubes_at.0 - WORD_HALF * cur + buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur) / 2.0, cubes_at.1);
+            e.look = (e.look.0 + (row_mid.0 - e.look.0) * flat, e.look.1 + (row_mid.1 - e.look.1) * flat);
+            e.on = (e.on.0 + (mid.0 - e.on.0) * flat, e.on.1 + (mid.1 - e.on.1) * flat);
+            e.tilt *= 1.0 - flat;
+            e.far += (40.0 - e.far) * flat;
+        }
+        // The whole view half a square to the left (the buttons as far in
+        // from the right as the word from the left: both margins alike).
+        let half = {
+            let a = on_page(&rest_m, (cubes_at.0, cubes_at.1));
+            let b = on_page(&rest_m, (cubes_at.0 + cur, cubes_at.1));
+            (b.0 - a.0).abs() / 2.0
+        };
+        e.on.0 -= half * (1.0 - flat);
+        let at = e.on;
+        let eye_x = e.look.0;
+        let reach = 520.0 * k * page_scale / e.near.max(0.3);
+        let grid_mid = e.look;
+        let rest = matrix(e);
+        let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
+        let note = intro.note().map(|(t, a)| (t.to_owned(), a));
+        let tapped = intro.tapped();
+        // The word's cubes raised a little under the pointer (their fronts
+        // are buttons), pressed in a moment.
+        let (lift, hover_button) = {
+            let b = ui.buttons.borrow();
+            (b.lift, b.hover)
+        };
+        let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
         // Each button growing up out of the table as the word's cubes go
         // down, one after the other.
         let button_in: [f32; 5] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
