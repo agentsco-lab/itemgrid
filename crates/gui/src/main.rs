@@ -3217,38 +3217,63 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         let (x0, y0) = t.at;
         let f = t.flap;
         let strength = (t.rgba.3 / 0.9).min(1.0) as f32;
-        if f.turn <= 0.0 {
-            letter(p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0, y0 + side, z0), f.from, t.rgba);
-            continue;
-        }
-        // A point of the square, `v` along it from its far edge (0..1), as
-        // turned: about its middle line, raised by half its side at most.
-        let a = f.turn * std::f32::consts::PI;
-        let (yc, za) = (y0 + side / 2.0, z0 + side / 2.0 * a.sin());
-        let at = |u: f32, v: f32| {
-            let d = (v - 0.5) * side;
-            p3(x0 + u * side, yc + d * a.cos(), za + d * a.sin())
-        };
-        let q = [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)];
-        // Its place on the table blank meanwhile; the square over it.
         let st = strength as f64;
-        path(&[p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0 + side, y0 + side, z0), p3(x0, y0 + side, z0)]);
-        let l = paper(1.0);
-        cr.set_source_rgba(l, l, l, st);
-        let _ = cr.fill();
-        path(&q);
-        // The side turned toward the eye a little darker as it stands up.
-        let light = paper(1.0 - 0.06 * a.sin() as f64);
-        cr.set_source_rgba(light, light, light * 1.005, st);
-        let _ = cr.fill_preserve();
-        ink(cr, 0.14 * st);
-        cr.set_line_width(1.6);
-        let _ = cr.stroke();
-        if f.turn < 0.5 {
-            letter(at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), f.from, t.rgba);
+        // The square on the table: a point `u` across, `v` along from its
+        // far edge (0..1).
+        let at = |u: f32, v: f32| p3(x0 + u * side, y0 + v * side, z0);
+        let whole = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0));
+        let far = [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 0.5), at(0.0, 0.5)];
+        let near = [at(0.0, 0.5), at(1.0, 0.5), at(1.0, 1.0), at(0.0, 1.0)];
+        // A letter in the square's frame `(a, b, d)`, only within `clip`.
+        let part = |clip: &Quad, (a, b, d): ((f64, f64), (f64, f64), (f64, f64)), ch: char| {
+            cr.save().ok();
+            path(clip);
+            cr.clip();
+            letter(a, b, d, ch, t.rgba);
+            cr.restore().ok();
+        };
+        if f.turn <= 0.0 {
+            letter(whole.0, whole.1, whole.2, f.from, t.rgba);
         } else {
-            // The other side: its near edge (v 1) is the far one now.
-            letter(at(0.0, 1.0), at(1.0, 1.0), at(0.0, 0.0), f.to, t.rgba);
+            // As a departures board's flap: under the falling flap the new
+            // letter's top is already there; the old one's bottom stays
+            // until the flap lies on it.
+            part(&far, whole, f.to);
+            part(&near, whole, f.from);
+            // The flap: hung on the middle line, its free edge rising from
+            // the far edge, over, down onto the near half.
+            let a = f.turn * std::f32::consts::PI;
+            let ym = y0 + side / 2.0;
+            let free = |u: f32| p3(x0 + u * side, ym - side / 2.0 * a.cos(), z0 + side / 2.0 * a.sin());
+            let (h0, h1) = (at(0.0, 0.5), at(1.0, 0.5));
+            let (f0, f1) = (free(0.0), free(1.0));
+            let flap = [f0, f1, h1, h0];
+            path(&flap);
+            let light = paper(1.0 - 0.08 * a.sin() as f64);
+            cr.set_source_rgba(light, light, light * 1.005, st);
+            let _ = cr.fill_preserve();
+            ink(cr, 0.1 * st);
+            cr.set_line_width(1.2);
+            let _ = cr.stroke();
+            let twice = |h: (f64, f64), f: (f64, f64)| (2.0 * h.0 - f.0, 2.0 * h.1 - f.1);
+            if a < std::f32::consts::FRAC_PI_2 {
+                // Its front: the old letter's top half (its frame's top at
+                // the free edge, its middle at the hinge).
+                part(&flap, (f0, f1, twice(h0, f0)), f.from);
+            } else {
+                // Its back: the new letter's bottom half (its middle at the
+                // hinge, its bottom at the free edge, now near).
+                part(&flap, (twice(h0, f0), twice(h1, f1), f0), f.to);
+            }
+        }
+        // The split between the flaps, a hairline.
+        if f.from != ' ' || f.to != ' ' {
+            let (m0, m1) = (at(0.0, 0.5), at(1.0, 0.5));
+            cr.move_to(m0.0, m0.1);
+            cr.line_to(m1.0, m1.1);
+            ink(cr, 0.08 * st);
+            cr.set_line_width(1.0);
+            let _ = cr.stroke();
         }
     }
 }
