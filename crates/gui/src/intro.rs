@@ -2,8 +2,8 @@
 //! table's squares grow out around them; the eye comes down to where the
 //! Duo is seen from - and the squares are the tops of five cubes standing
 //! on the table, the word written on them. They stand while there is no
-//! phone, and sink into the table one after the other when it comes: the
-//! Duo is where they were. Gone again, they rise.
+//! phone and when it comes (the Duo in the page's middle, they in its
+//! upper left; their fronts are the window's buttons).
 //!
 //! The credit turns up in the table's own squares as the growing reaches
 //! them - each turning over as a departures board's flap does, through a
@@ -165,7 +165,9 @@ impl Intro {
     pub fn cubes(&self) -> [(f32, f32); 5] {
         let risen = smooth(self.eye() / 0.7);
         std::array::from_fn(|i| {
-            let there = 1.0 - smooth((self.sink - i as f32 * 0.1) / 0.6);
+            // They stay when the phone comes (in the page's upper left, the
+            // Duo in its middle; their fronts are the buttons).
+            let there = 1.0;
             (there, there * risen * (1.0 + self.hop(i)))
         })
     }

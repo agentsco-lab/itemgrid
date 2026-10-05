@@ -734,6 +734,8 @@ fn build(app: &adw::Application) {
     let section_name = gtk::Label::builder().css_classes(["heading"]).visible(false).build();
     header.pack_start(&back_home);
     header.pack_start(&section_name);
+    // At home no header (the table is all); in a section, its way back.
+    header.set_visible(false);
 
     let sections = gtk::Box::new(gtk::Orientation::Vertical, 22);
     sections.set_hexpand(true);
@@ -1016,11 +1018,14 @@ fn build(app: &adw::Application) {
         }
     });
     right.connect_visible_child_name_notify({
-        let (back_home, section_name) = (back_home.clone(), section_name.clone());
+        let (back_home, section_name, header_bar) = (back_home.clone(), section_name.clone(), header.clone());
         move |r| {
             let key = r.visible_child_name().unwrap_or_default();
             let home = key == "overview";
             back_home.set_visible(!home);
+            // The header only in a section (its way back); at home the
+            // table is all, its buttons on the word's cubes.
+            header_bar.set_visible(!home);
             // The page says its name itself.
             section_name.set_visible(false);
             section_name.set_label(NAV.iter().find(|n| n.0 == key.as_str()).map_or("", |n| n.1));
@@ -1367,6 +1372,8 @@ fn build(app: &adw::Application) {
                         ui.floor.queue_draw();
                     }
                     FloorButton::Replay => ui.intro.borrow_mut().replay(),
+                    FloorButton::Minimize => win.minimize(),
+                    FloorButton::Close => win.close(),
                 }
                 return;
             }
@@ -2817,10 +2824,8 @@ struct FloorView {
     /// Across the table, where the eye's line is (boxes drawn farthest
     /// from it first: a box nearer it covers its neighbour's side).
     eye_x: f32,
-    /// The buttons' row (its far left corner), their lifts, their strength.
-    buttons_at: (f32, f32),
-    button_lift: [f32; 3],
-    buttons_strength: f32,
+    /// The word's cube whose button (on its front) is under the pointer.
+    hover_button: Option<usize>,
 }
 
 /// Words set on the table, a letter a square of `cell` (px; a square of
@@ -3008,6 +3013,8 @@ struct CubeShape {
     faces: Vec<(Quad, f64)>,
     top: Quad,
     there: f32,
+    /// Its front's top left, top right, bottom left corners, if seen.
+    front: Option<[(f64, f64); 3]>,
 }
 
 /// The start's cubes (intro.rs): five of the table's squares in a row
@@ -3039,14 +3046,17 @@ fn cube_shapes(fv: &FloorView) -> Vec<CubeShape> {
         .map(|i| {
             let (there, h) = fv.cubes[i];
             let (shadow, faces, top) = box_shape(&p3, (left(i), y0), step, z0, h);
-            CubeShape { i, shadow, faces, top, there }
+            let (x0, x1, y1, zt) = (left(i), left(i) + step, y0 + step, z0 + h * step);
+            let front = [p3(x0, y1, z0), p3(x0, y1, zt), p3(x1, y1, zt), p3(x1, y1, z0)];
+            let seen = h > 0.05 && area(&front).signum() == area(&top).signum();
+            CubeShape { i, shadow, faces, top, there, front: seen.then_some([front[1], front[2], front[0]]) }
         })
         .collect();
     // A square of the table jumping (clicked): no letter (i past the word);
     // drawn before the word's if farther than them, else after.
     if let Some(((tx, ty), h)) = fv.tapped {
         let (shadow, faces, top) = box_shape(&p3, (tx - step / 2.0, ty - step / 2.0), step, z0, h);
-        let jump = CubeShape { i: usize::MAX, shadow, faces, top, there: 1.0 };
+        let jump = CubeShape { i: usize::MAX, shadow, faces, top, there: 1.0, front: None };
         if ty < cy {
             shapes.insert(0, jump);
         } else {
@@ -3147,12 +3157,16 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         // letter laid in it.
         let ch = letter.chars().next().unwrap_or(' ');
         draw_glyph(cr, ch, c.top[0], c.top[1], c.top[3], (0.16, 0.16, 0.18, 0.88 * (c.there as f64 / 0.25).min(1.0)));
+        // Its button on its front: darker under the pointer.
+        if let (Some([a, b, d]), Some(button)) = (c.front, FLOOR_BUTTONS.get(c.i)) {
+            let strong = if fv.hover_button == Some(c.i) { 0.9 } else { 0.5 };
+            draw_sign(cr, *button, a, b, d, strong);
+        }
     }
     let _ = cr.pop_group_to_source();
     let _ = cr.paint_with_alpha(fv.word as f64);
     draw_texts(fv, cr);
     draw_flips(fv, cr);
-    draw_buttons(fv, cr);
 }
 
 /// The credit's squares: each turning over once - its near edge lifting,
@@ -3347,15 +3361,18 @@ enum FloorButton {
     Menu,
     Night,
     Replay,
+    Minimize,
+    Close,
 }
 
-const FLOOR_BUTTONS: [FloorButton; 3] = [FloorButton::Menu, FloorButton::Night, FloorButton::Replay];
+/// On the fronts of the word's cubes, h y t h e.
+const FLOOR_BUTTONS: [FloorButton; 5] = [FloorButton::Menu, FloorButton::Night, FloorButton::Replay, FloorButton::Minimize, FloorButton::Close];
 
 /// The buttons' hover and press, eased.
 #[derive(Default)]
 struct Buttons {
     hover: Option<usize>,
-    lift: [f32; 3],
+    lift: [f32; 5],
     pressed: Option<(usize, std::time::Instant)>,
 }
 
@@ -3365,9 +3382,9 @@ impl Buttons {
     fn step(&mut self, dt: f32) -> bool {
         let k = 1.0 - (-dt / 0.06).exp();
         let mut moved = false;
-        for i in 0..3 {
+        for i in 0..5 {
             let pressed = self.pressed.is_some_and(|(p, at)| p == i && at.elapsed().as_secs_f32() < 0.12);
-            let to = if pressed { 0.0 } else if self.hover == Some(i) { 0.18 } else { 0.0 };
+            let to = if pressed { -0.15 } else if self.hover == Some(i) { 0.1 } else { 0.0 };
             if (to - self.lift[i]).abs() > 0.001 {
                 self.lift[i] += (to - self.lift[i]) * k;
                 moved = true;
@@ -3380,77 +3397,26 @@ impl Buttons {
     }
 }
 
-/// The square of button `i` on the table (its far left corner).
-fn button_square(fv: &FloorView, i: usize) -> (f32, f32) {
-    (fv.buttons_at.0 + i as f32 * square() * fv.k, fv.buttons_at.1)
-}
-
-/// The button under a point of the page.
+/// The button under a point of the page: the front of one of the word's
+/// cubes.
 fn button_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
-    let t = table_under(fv, p)?;
-    let side = square() * fv.k;
-    (0..3).find(|i| {
-        let (x, y) = button_square(fv, *i);
-        t.0 >= x && t.0 < x + side && t.1 >= y && t.1 < y + side
+    if fv.word <= 0.0 {
+        return None;
+    }
+    cube_shapes(fv).into_iter().rev().find_map(|c| {
+        let [a, b, d] = c.front?;
+        let q = [a, b, (b.0 + d.0 - a.0, b.1 + d.1 - a.1), d];
+        (c.i < FLOOR_BUTTONS.len() && inside(&q, p)).then_some(c.i)
     })
-}
-
-/// The buttons: their squares (raised a little under the pointer, as low
-/// boxes), their signs on them as the letters are.
-fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
-    use gtk::graphene;
-    let Some(m) = fv.matrix else { return };
-    if fv.buttons_strength <= 0.0 {
-        return;
-    }
-    let side = square() * fv.k;
-    let p3 = |x: f32, y: f32, z: f32| {
-        let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
-        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
-    };
-    let path = |q: &[(f64, f64)]| {
-        cr.new_path();
-        cr.move_to(q[0].0, q[0].1);
-        for p in &q[1..] {
-            cr.line_to(p.0, p.1);
-        }
-        cr.close_path();
-    };
-    let _ = cr.push_group();
-    for (i, b) in FLOOR_BUTTONS.iter().enumerate() {
-        let (x0, y0) = button_square(fv, i);
-        let h = fv.button_lift[i];
-        let (_, faces, top) = box_shape(&p3, (x0, y0), side, fv.table, h);
-        if h > 0.001 {
-            for (q, light) in &faces {
-                path(q);
-                let l = paper(*light);
-                cr.set_source_rgb(l, l, l * 1.005);
-                let _ = cr.fill_preserve();
-                ink(cr, 0.14);
-                cr.set_line_width(1.6);
-                let _ = cr.stroke();
-            }
-            path(&top);
-            let l = paper(1.0);
-            cr.set_source_rgb(l, l, l * 1.01);
-            let _ = cr.fill_preserve();
-            ink(cr, 0.14);
-            let _ = cr.stroke();
-        }
-        draw_sign(cr, *b, top[0], top[1], top[3]);
-    }
-    let _ = cr.pop_group_to_source();
-    let _ = cr.paint_with_alpha(fv.buttons_strength as f64);
 }
 
 /// A button's sign in the square whose top left, top right and bottom left
 /// corners are `a`, `b`, `d` on the page (drawn in GLYPH units).
-fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f64, f64), d: (f64, f64)) {
+fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f64, f64), d: (f64, f64), strength: f64) {
     let g = GLYPH;
     cr.save().ok();
     cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / g, (b.1 - a.1) / g, (d.0 - a.0) / g, (d.1 - a.1) / g, a.0, a.1));
-    let c = letter_rgba((0.16, 0.16, 0.18, 0.88));
+    let c = letter_rgba((0.16, 0.16, 0.18, strength));
     cr.set_source_rgba(c.0, c.1, c.2, c.3);
     cr.set_line_width(4.0);
     cr.set_line_cap(gtk::cairo::LineCap::Round);
@@ -3484,6 +3450,18 @@ fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f
             cr.set_operator(gtk::cairo::Operator::Over);
             let _ = cr.pop_group_to_source();
             let _ = cr.paint();
+        }
+        FloorButton::Minimize => {
+            cr.move_to(34.0, 62.0);
+            cr.line_to(66.0, 62.0);
+            let _ = cr.stroke();
+        }
+        FloorButton::Close => {
+            cr.move_to(37.0, 37.0);
+            cr.line_to(63.0, 63.0);
+            cr.move_to(63.0, 37.0);
+            cr.line_to(37.0, 63.0);
+            let _ = cr.stroke();
         }
         FloorButton::Replay => {
             // Round and back to where it began.
@@ -4132,11 +4110,13 @@ fn show_fold(ui: &Ui, angle: f64) {
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
-        // The buttons three rows under the word, from its left; seen as the
-        // squares grow to them.
-        let buttons_at = (cubes_at.0 - 2.5 * cur, cubes_at.1 + 3.5 * cur);
-        let button_lift = ui.buttons.borrow().lift;
-        let buttons_strength = intro.word() * intro.grid().max(if intro.done() { 1.0 } else { 0.0 });
+        // The word's cubes raised a little under the pointer (their fronts
+        // are buttons), pressed in a moment.
+        let (lift, hover_button) = {
+            let b = ui.buttons.borrow();
+            (b.lift, b.hover)
+        };
+        let cubes: [(f32, f32); 5] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 + lift[i]).max(0.0)));
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
@@ -4154,9 +4134,9 @@ fn show_fold(ui: &Ui, angle: f64) {
                 board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64) }
             })
             .collect();
-        // The open board (the sections' menu) to the right of the buttons,
-        // a square apart, from their row down.
-        let board_at = (cubes_at.0 + 1.5 * cur, cubes_at.1 + 3.5 * cur);
+        // The open board (the sections' menu) to the right of the word, a
+        // square apart, from its row down.
+        let board_at = (cubes_at.0 + 3.0 * cur, cubes_at.1 - 0.5 * cur);
         if let Some(b) = ui.board.borrow().as_ref() {
             tiles.extend(b.tiles(board_at, cur));
         }
@@ -4179,9 +4159,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.eye_x != eye_x || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.buttons_strength != buttons_strength;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.eye_x != eye_x || fv.hover_button != hover_button;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, eye_x, buttons_at, button_lift, buttons_strength };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, eye_x, hover_button };
         if changed {
             ui.floor.queue_draw();
         }
