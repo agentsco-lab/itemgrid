@@ -5,10 +5,10 @@
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
 //!
-//! Then the credit comes up on cubes of its own, nearer the viewer, their
-//! lids turning over letter after letter as a departures board's flaps do
-//! until they show it; the eye comes near it (the word off in the
-//! distance) and back; the lids turn blank and the cubes go down.
+//! Then the credit turns up in the table's own squares, nearer the
+//! viewer: each square turning over letter after letter as a departures
+//! board's flaps do until it shows its own; the eye comes near it (the
+//! word off in the distance) and back; the squares turn blank again.
 //!
 //! A cube clicked - or any of the table's squares - looks for the phone at
 //! once: the cube pressed in (a square jumps up out of the table and back),
@@ -19,12 +19,12 @@ use std::time::Instant;
 
 pub const WORD: [&str; 5] = ["h", "y", "t", "h", "e"];
 
-/// The credit, a letter a cube (none for the space).
+/// The credit, a letter a square of the table (none for the space).
 pub const CREDIT: &str = "by AgentsCo";
 
-/// A credit cube now: which letter's place, its height (a part of its
-/// side), its lid turning `from` one letter `to` the next (`turn` 0..1; 0
-/// still, showing `from`).
+/// A credit square now: which letter's place, its height (a part of its
+/// side; 0: the table's own), turning `from` one letter `to` the next
+/// (`turn` 0..1; 0 still, showing `from`).
 #[derive(Clone, Copy, PartialEq)]
 pub struct Flip {
     pub i: usize,
@@ -47,7 +47,6 @@ const CREDIT_UP: f32 = 3.1;
 const FLIPS_FROM: f32 = 3.45;
 const FLIP_S: f32 = 0.11;
 const CREDIT_BLANK: f32 = 6.45;
-const CREDIT_DOWN: f32 = 6.85;
 const FOCUS_IN: (f32, f32) = (3.4, 4.9);
 const FOCUS_OUT: (f32, f32) = (6.0, 7.5);
 const END: f32 = 7.5;
@@ -166,8 +165,6 @@ impl Intro {
             .enumerate()
             .filter(|(_, ch)| *ch != ' ')
             .map(|(i, ch)| {
-                let up = smooth((t - CREDIT_UP - i as f32 * 0.03) / 0.35);
-                let down = smooth((t - CREDIT_DOWN - i as f32 * 0.03) / 0.35);
                 // The letters a lid goes through: from blank, a few on the
                 // way, its own.
                 let n = 3 + (i * 5) % 3;
@@ -188,7 +185,7 @@ impl Intro {
                     let p = (t - blank) / FLIP_S;
                     (from, to, turn) = if p < 1.0 { (ch, ' ', p) } else { (' ', ' ', 0.0) };
                 }
-                Flip { i, height: 0.6 * up * (1.0 - down), from, to, turn }
+                Flip { i, height: 0.0, from, to, turn }
             })
             .collect()
     }

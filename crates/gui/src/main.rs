@@ -3004,9 +3004,10 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     draw_flips(fv, cr);
 }
 
-/// The credit's cubes: a row of them, each lid turning over as a
-/// departures board's flap does - folding to its middle line, lifted a
-/// little, and opening with the next letter.
+/// The credit's squares (of the table's, or cubes' lids if raised): each
+/// turning over as a departures board's flap does - folding to its middle
+/// line, lifted a little, and opening with the next letter; still, the
+/// letter on the table (or the lid).
 fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     use gtk::graphene;
     let Some(m) = fv.matrix else { return };
@@ -3054,27 +3055,36 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     let x_of = |i: usize| fv.credit_at.0 + i as f32 * side;
     let off_eye = |i: usize| (x_of(i) + side / 2.0 - fv.eye_x).abs();
     flips.sort_by(|a, b| off_eye(b.i).partial_cmp(&off_eye(a.i)).unwrap());
-    for f in flips.iter().filter(|f| f.height > 0.0) {
+    for f in &flips {
         let (x0, y0) = (x_of(f.i), fv.credit_at.1);
         let (shadow, faces, top) = box_shape(&p3, (x0, y0), side, z0, f.height);
-        path(&shadow);
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * f.height as f64);
-        let _ = cr.fill();
-        for (q, light) in &faces {
-            path(q);
-            cr.set_source_rgb(*light, *light, light * 1.005);
+        if f.height > 0.0 {
+            path(&shadow);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * f.height as f64);
+            let _ = cr.fill();
+            for (q, light) in &faces {
+                path(q);
+                cr.set_source_rgb(*light, *light, light * 1.005);
+                let _ = cr.fill_preserve();
+                line(cr);
+            }
+            path(&top);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
             let _ = cr.fill_preserve();
             line(cr);
         }
-        path(&top);
-        cr.set_source_rgb(1.0, 1.0, 1.0);
-        let _ = cr.fill_preserve();
-        line(cr);
         if f.turn <= 0.0 {
             letter(&top, f.from);
             continue;
         }
-        // The lid folding to its middle and open again, lifted as it turns.
+        // The lid folding to its middle and open again, lifted as it turns
+        // (its square on the table left blank under it meanwhile).
+        if f.height <= 0.0 {
+            path(&top);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            let _ = cr.fill_preserve();
+            line(cr);
+        }
         let a = f.turn * std::f32::consts::PI;
         let half = side / 2.0 * a.cos().abs();
         let zt = z0 + f.height * side + a.sin() * side * 0.25;
