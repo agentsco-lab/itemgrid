@@ -1355,6 +1355,8 @@ fn build(app: &adw::Application) {
                                 .map(|(key, ..)| board::Line { key: key.to_string(), text: key.to_string() })
                                 .collect();
                             *b = Some(board::Board::open(lines));
+                            drop(b);
+                            ui.intro.borrow_mut().clear_note();
                         }
                     }
                     FloorButton::Night => {
@@ -1412,6 +1414,9 @@ fn build(app: &adw::Application) {
                 Some(i) => {
                     drop(fv);
                     trace(format_args!("cube {i} pressed: looking for the phone"));
+                    if let Some(b) = ui.board.borrow_mut().as_mut() {
+                        b.close();
+                    }
                     ui.intro.borrow_mut().press(i);
                 }
                 None => {
@@ -1422,6 +1427,9 @@ fn build(app: &adw::Application) {
                     let at = (sx + (((p.0 - sx) / step).floor() + 0.5) * step, sy + (((p.1 - sy) / step).floor() + 0.5) * step);
                     drop(fv);
                     trace(format_args!("square at {at:?} pressed: looking for the phone"));
+                    if let Some(b) = ui.board.borrow_mut().as_mut() {
+                        b.close();
+                    }
                     ui.intro.borrow_mut().tap(at);
                 }
             }
@@ -2780,6 +2788,14 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
 
 /// Where the floor's lines are (px from the phone's middle): a column of
 /// squares centred on the USB port, so the hole is right in front of it.
+/// The corner of the table's square nearest a point (px): where words and
+/// boards begin, so that their letters keep to the squares.
+fn on_squares(k: f32, p: (f32, f32)) -> (f32, f32) {
+    let step = square() * k;
+    let (sx, sy) = floor_shift(k);
+    (sx + ((p.0 - sx) / step).round() * step, sy + ((p.1 - sy) / step).round() * step)
+}
+
 /// Laid from the cubes once they are placed: five squares across them,
 /// one along (their middle stays where it is as the size changes).
 fn floor_shift(k: f32) -> (f32, f32) {
@@ -4065,8 +4081,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         // a square below it): the eye near enough for them to fill a good
         // part of the page's width, them toward its middle.
         let page = (ui.floor.width() as f32 * 0.42 - off.0, ui.floor.height() as f32 * 0.42 - off.1);
-        let left = cubes_at.0 - 2.5 * cur;
-        let under = cubes_at.1 + 1.5 * cur;
+        let (left, under) = on_squares(k, (cubes_at.0 - 2.5 * cur, cubes_at.1 + 1.5 * cur));
         let rest_m = matrix(rest);
         // Words from `at` (a square's far left corner): the eye on them,
         // near enough for them to fill `fill` of the page's width, them at
@@ -4134,9 +4149,9 @@ fn show_fold(ui: &Ui, angle: f64) {
                 board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64) }
             })
             .collect();
-        // The open board (the sections' menu) to the right of the word, a
-        // square apart, from its row down.
-        let board_at = (cubes_at.0 + 3.0 * cur, cubes_at.1 - 0.5 * cur);
+        // The open board (the sections' menu) under the word, a row apart
+        // (where the note goes: one or the other).
+        let board_at = on_squares(k, (left, under));
         if let Some(b) = ui.board.borrow().as_ref() {
             tiles.extend(b.tiles(board_at, cur));
         }

@@ -172,6 +172,11 @@ impl Intro {
         })
     }
 
+    /// The note (not found) taken away (a board goes where it was).
+    pub fn clear_note(&mut self) {
+        self.note = None;
+    }
+
     /// A square of the table clicked: it jumps, the phone looked for.
     pub fn tap(&mut self, at: (f32, f32)) {
         self.tapped = Some((at, Instant::now()));
