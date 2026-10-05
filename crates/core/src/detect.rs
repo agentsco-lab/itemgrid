@@ -74,7 +74,11 @@ pub fn detect() -> Seen {
         };
         return Seen { mode, via: serial.to_owned() };
     }
-    // Off the cable: on the network, where the cable showed it (link.rs).
+    // Off the cable: on the network, where the cable showed it (link.rs) -
+    // unless CRADLE_NO_WIFI=1 (a battery test: a look over Wi-Fi wakes it).
+    if std::env::var_os("CRADLE_NO_WIFI").is_some() {
+        return Seen { mode: Mode::Gone, via: String::new() };
+    }
     if let Some(host) = crate::link::wifi_hosts().into_iter().find(|h| crate::phone::answers(h)) {
         return Seen { mode: Mode::Linux, via: host };
     }
@@ -96,8 +100,14 @@ fn learn_now_and_then() {
     }
 }
 
-/// A tool's output lines, none if it is missing or fails.
+/// A tool's output lines, none if it is missing, fails or takes over 5 s
+/// (adb's server, stuck after the cable came out, held a look for 40 s).
 fn lines(tool: &str, args: &[&str]) -> Vec<String> {
-    let Ok(out) = Command::new(tool).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return Vec::new() };
+    // adb's first call starts its server, which keeps the output's pipe
+    // open: the server started on its own first, its output nowhere.
+    if tool == "adb" {
+        let _ = Command::new("timeout").args(["5", "adb", "start-server"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    let Ok(out) = Command::new("timeout").arg("5").arg(tool).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*')).map(str::to_owned).collect()
 }

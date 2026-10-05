@@ -243,6 +243,11 @@ struct Ui {
     pose: gtk::Label,
     pose_name: RefCell<String>,
     gravities: RefCell<std::collections::VecDeque<(std::time::Instant, [f64; 3])>>,
+    /// The view turned by the pointer (yaw about the table's up, pitch
+    /// added to the tilt), shown and to go to; double click: back.
+    orbit: std::cell::Cell<([f32; 2], [f32; 2])>,
+    /// No phone: the drawn one waits, opening and closing.
+    idle: std::cell::Cell<bool>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, cradle_core::posture::Stop)>>,
     /// The simple page and its parts.
@@ -377,6 +382,12 @@ fn build(app: &adw::Application) {
     let duo_sized = gtk::Overlay::builder().halign(gtk::Align::Center).build();
     duo_sized.set_child(Some(&gtk::Box::builder().width_request((bw as f64 * DUO_ROOM_W) as i32).height_request(room).build()));
     duo_sized.add_overlay(&duo);
+    // Turned by the pointer: dragged sideways about the table's up, up and
+    // down tipped more or less; a double click puts it back.
+    let drag = gtk::GestureDrag::new();
+    duo_sized.add_controller(drag.clone());
+    let turn_back = gtk::GestureClick::new();
+    duo_sized.add_controller(turn_back.clone());
     // How the phone looks when not in Linux, over its screens.
     let duo_mode = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     duo_mode.add_css_class("duo-mode");
@@ -683,6 +694,8 @@ fn build(app: &adw::Application) {
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
         following: RefCell::default(),
+        orbit: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
+        idle: std::cell::Cell::new(false),
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         pose: pose.clone(),
         pose_name: RefCell::default(),
@@ -929,18 +942,55 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
+    drag.connect_drag_update({
+        let ui = Rc::downgrade(&ui);
+        let start = Rc::new(std::cell::Cell::new([0.0f32; 2]));
+        let s2 = start.clone();
+        let ui2 = ui.clone();
+        drag.connect_drag_begin(move |_, _, _| {
+            if let Some(ui) = ui2.upgrade() {
+                s2.set(ui.orbit.get().1);
+            }
+        });
+        move |_, dx, dy| {
+            let Some(ui) = ui.upgrade() else { return };
+            let s = start.get();
+            let to = [s[0] - dx as f32 * 0.5, (s[1] + dy as f32 * 0.3).clamp(-45.0, 30.0)];
+            ui.orbit.set((ui.orbit.get().0, to));
+            let (a, b) = ui.fold.get();
+            ui.fold.set((a + 0.1, b));
+        }
+    });
+    turn_back.connect_pressed({
+        let ui = Rc::downgrade(&ui);
+        move |_, n, _, _| {
+            if n == 2 {
+                if let Some(ui) = ui.upgrade() {
+                    ui.orbit.set((ui.orbit.get().0, [0.0, 0.0]));
+                    let (a, b) = ui.fold.get();
+                    ui.fold.set((a + 0.1, b));
+                }
+            }
+        }
+    });
     // The fold, eased toward the hinge's angle each frame; the angle read
     // each second while the window is in front (each 5 s behind it).
     ui.duo.add_tick_callback({
         let ui = Rc::downgrade(&ui);
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
-            let _ = clock;
+            // Waiting for the phone: the drawn one opens and closes, slowly.
+            if ui.idle.get() {
+                let t = clock.frame_time() as f64 / 1e6;
+                ui.fold.set((ui.fold.get().0, 135.0 + 40.0 * (t * 0.6).sin()));
+            }
             let k = 1.0 - (-1.0f64 / 60.0 / 0.05).exp();
             let (shown, to) = ui.fold.get();
             let (tilt, tilt_to) = ui.tilt.get();
-            let far = (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05);
+            let (orbit, orbit_to) = ui.orbit.get();
+            let far = (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05 || (orbit[i] - orbit_to[i]).abs() > 0.05);
             if far {
+                ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
                 let now = shown + (to - shown) * k;
                 ui.fold.set((now, to));
                 ui.tilt.set(([0, 1].map(|i| tilt[i] + (tilt_to[i] - tilt[i]) * k), tilt_to));
@@ -1125,6 +1175,7 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
         return;
     };
     ui.pages.set_visible_child_name("phone");
+    ui.idle.set(false);
     let dev = developer_mode();
     ui.switcher.set_visible(dev);
     if !dev {
@@ -1184,11 +1235,26 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     ui.live_badge.set_visible(false);
     ui.banner.set_revealed(false);
     if *place == Place::Gone && !seen_lately {
-        ui.pages.set_visible_child_name("away");
+        // Not seen for a while: the drawn Duo waits, and says how to bring it.
+        ui.pages.set_visible_child_name("phone");
+        ui.tabs.set_visible_child_name("general");
         ui.switcher.set_visible(false);
+        ui.linux_only.set_visible(false);
+        ui.mode.set_visible(false);
+        ui.duo_mode.set_visible(false);
+        ui.home.set_visible(true);
+        ui.updates_row.set_visible(false);
+        for s in &ui.screens {
+            s.set_paintable(gdk::Paintable::NONE);
+        }
+        ui.name_sub.set_label("Not seen just now");
+        ui.battery.set_label("");
+        say_status(ui, "away", "Looking for your Duo", "Plug it in with the USB cable, or connect it to the same Wi-Fi as this computer.\nIf it is off, hold the power key for a few seconds.");
+        ui.idle.set(true);
         bottom_shown(ui);
         return;
     }
+    ui.idle.set(false);
     ui.pages.set_visible_child_name("phone");
     ui.tabs.set_visible_child_name("general");
     ui.switcher.set_visible(false);
@@ -1634,7 +1700,9 @@ fn show_fold(ui: &Ui, angle: f64) {
     let view = |at: (f32, f32), persp: bool| {
         let t = gsk::Transform::new().translate(&graphene::Point::new(at.0, at.1));
         let t = if persp { t.perspective(3.2 * h) } else { t };
-        t.rotate_3d(TILT, &graphene::Vec3::x_axis())
+        let [yaw, more] = ui.orbit.get().0;
+        t.rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
+            .rotate_3d(yaw, &graphene::Vec3::z_axis())
             .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
             .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
             .translate(&graphene::Point::new(-mid, -h / 2.0))

@@ -42,7 +42,7 @@ fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
 /// How ssh (and scp) check the phone's host key at `host`.
 pub fn host_key_args(host: &str) -> Vec<String> {
     let o = |v: String| ["-o".to_owned(), v];
-    if host == crate::link::CABLE {
+    if host == crate::link::CABLE && crate::link::usb_up() {
         return [o("UserKnownHostsFile=/dev/null".into()), o("StrictHostKeyChecking=no".into())].concat();
     }
     let alias = crate::link::serial_of(host).map(|s| format!("cradle-{s}")).unwrap_or_else(|| "cradle-unknown".into());
@@ -51,12 +51,18 @@ pub fn host_key_args(host: &str) -> Vec<String> {
 
 /// Whether the phone answers ssh at `host`.
 pub fn answers(host: &str) -> bool {
+    if host == crate::link::CABLE && !crate::link::usb_up() {
+        return false;
+    }
     ssh(host, 2).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// The same, over a new connection: while the phone reboots, a kept one may
 /// not know yet that it is dead.
 pub fn answers_fresh(host: &str) -> bool {
+    if host == crate::link::CABLE && !crate::link::usb_up() {
+        return false;
+    }
     ssh_with(host, 2, false).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
@@ -281,6 +287,9 @@ pub fn wake(host: &str) -> bool {
 
 /// Whether the link to `host` answers a ping (the phone is there, maybe asleep).
 pub fn pings(host: &str) -> bool {
+    if host == crate::link::CABLE && !crate::link::usb_up() {
+        return false;
+    }
     std::process::Command::new("ping").args(["-c", "1", "-W", "1", host]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 

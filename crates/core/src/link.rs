@@ -160,6 +160,18 @@ fn resolve(name: &str) -> Option<String> {
     String::from_utf8_lossy(&out.stdout).split_whitespace().next().map(str::to_owned)
 }
 
+/// Whether the phone's USB network is up on this computer: an interface
+/// holding an address in 172.16.42.0/24. Without it 172.16.42.1 is no
+/// phone - some other network can answer there (one did, 8 ms away), and
+/// the cable's ssh checks no host key.
+pub fn usb_up() -> bool {
+    std::process::Command::new("ip")
+        .args(["-4", "-o", "addr", "show"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.contains(" 172.16.42.") && !l.contains(" 172.16.42.1/")))
+        .unwrap_or(false)
+}
+
 /// `CRADLE_NO_CABLE=1`: the cable taken as not there (to try Wi-Fi with
 /// the phone still plugged in).
 pub fn cable_ignored() -> bool {
