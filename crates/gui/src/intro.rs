@@ -5,6 +5,9 @@
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
 //!
+//! Then the credit is set in the table's quarter squares under the word,
+//! the eye comes near it and back, and it goes.
+//!
 //! A cube clicked - or any of the table's squares - looks for the phone at
 //! once: the cube pressed in (a square jumps up out of the table and back),
 //! a wave along the word while it is looked for; not found, a note under
@@ -14,11 +17,21 @@ use std::time::Instant;
 
 pub const WORD: [&str; 5] = ["h", "y", "t", "h", "e"];
 
+/// Under the word, a letter a quarter square (the first line just the
+/// word's width).
+pub const CREDIT: [&str; 2] = ["designed & developed", "by agentsco."];
+
 /// Seconds from the start: the word coming, the squares growing out, the
 /// eye coming down.
 const WORD_IN: f32 = 0.5;
 const GRID: (f32, f32) = (0.55, 1.7);
 const EYE: (f32, f32) = (1.6, 3.0);
+/// The credit set letter by letter; the eye near it and back; it goes.
+const CREDIT_SET: (f32, f32) = (3.1, 4.3);
+const FOCUS_IN: (f32, f32) = (3.4, 4.9);
+const FOCUS_OUT: (f32, f32) = (6.0, 7.5);
+const CREDIT_OUT: (f32, f32) = (6.6, 7.4);
+const END: f32 = 7.5;
 /// Seconds for the cubes to sink (or rise), the last starting a little
 /// after the first.
 const SINK_S: f32 = 1.1;
@@ -38,6 +51,8 @@ pub struct Intro {
     note: Option<(String, Instant)>,
     /// A square of the table clicked (its middle, px) and when.
     tapped: Option<((f32, f32), Instant)>,
+    /// How near the eye is to the note (eased toward 1 while it shows).
+    near_note: f32,
 }
 
 /// The wave goes on at least so long (a look over the cable alone is over
@@ -52,8 +67,8 @@ impl Default for Intro {
     fn default() -> Intro {
         // HYTHE_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("HYTHE_INTRO").is_ok_and(|v| v == "0");
-        let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(EYE.1));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None }
+        let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(END));
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0 }
     }
 }
 
@@ -95,7 +110,7 @@ impl Intro {
     }
 
     pub fn done(&self) -> bool {
-        self.begun() && self.t() >= EYE.1
+        self.begun() && self.t() >= END
     }
 
     /// The word and its squares: 0 not yet .. 1 there.
@@ -107,6 +122,28 @@ impl Intro {
     /// at all .. 1 all of them.
     pub fn grid(&self) -> f32 {
         smooth((self.t() - GRID.0) / (GRID.1 - GRID.0))
+    }
+
+    /// The eye near the note (not found): 0 .. 1.
+    pub fn near_note(&self) -> f32 {
+        smoother(self.near_note)
+    }
+
+    /// The eye near the credit: 0 where the Duo is seen from .. 1 near.
+    pub fn focus(&self) -> f32 {
+        let t = self.t();
+        smoother((t - FOCUS_IN.0) / (FOCUS_IN.1 - FOCUS_IN.0)) * (1.0 - smoother((t - FOCUS_OUT.0) / (FOCUS_OUT.1 - FOCUS_OUT.0)))
+    }
+
+    /// The credit: how much of it is set (0 .. 1, letter by letter) and
+    /// its strength; none before or after.
+    pub fn credit(&self) -> Option<(f32, f32)> {
+        let t = self.t();
+        if !self.begun() || t < CREDIT_SET.0 || t >= CREDIT_OUT.1 {
+            return None;
+        }
+        let set = ((t - CREDIT_SET.0) / (CREDIT_SET.1 - CREDIT_SET.0)).clamp(0.0, 1.0);
+        Some((set, 1.0 - smooth((t - CREDIT_OUT.0) / (CREDIT_OUT.1 - CREDIT_OUT.0))))
     }
 
     /// The eye: 0 straight above .. 1 where the Duo is seen from.
@@ -232,6 +269,15 @@ impl Intro {
             || self.tapped.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAP_S + 0.05)
             || self.search.is_some_and(|(since, _)| since.elapsed().as_secs_f32() < 30.0 && (self.searching() || since.elapsed().as_secs_f32() < SEARCH_MIN_S + 0.4))
             || self.note.as_ref().is_some_and(|(_, at)| Instant::now().saturating_duration_since(*at).as_secs_f32() < 0.5);
+        // Toward the note while it shows (as it comes), away when it goes:
+        // a second each way.
+        let to = if self.note().is_some() && self.sink_to < 0.5 { 1.0 } else { 0.0 };
+        let near_moving = (to - self.near_note).abs() > 1e-4;
+        if near_moving {
+            let d = to - self.near_note;
+            self.near_note += d.signum() * dt.min(d.abs());
+        }
+        let moving = moving || near_moving;
         let d = self.sink_to - self.sink;
         if d.abs() < 1e-4 {
             self.sink = self.sink_to;

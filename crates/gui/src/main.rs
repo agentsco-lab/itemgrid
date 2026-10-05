@@ -1973,7 +1973,7 @@ fn look(ui: &Rc<Ui>) {
         ui.looking.set(false);
         let Ok((place, guest, status)) = found else { return };
         // Looked for from a cube: the wave ends; not found, a note.
-        let note = (place == Place::Gone).then(|| "No Duo found\nPlug it in with the USB cable, or turn on its Wi-Fi (the same network as this computer).\nIf it is off, hold the power key for a few seconds.".to_owned());
+        let note = (place == Place::Gone).then(|| "not found\nplug in its usb cable\nor turn on its wi-fi\noff? hold its power key".to_owned());
         if let Some(took) = ui.intro.borrow_mut().found(note) {
             trace(format_args!("looked for from a cube: {:.2} s, {}", took, if place == Place::Gone { "not found" } else { "found" }));
         }
@@ -2651,6 +2651,23 @@ struct FloorView {
     note: Option<(String, f32)>,
     /// A square of the table jumping (clicked): its middle, its height.
     tapped: Option<((f32, f32), f32)>,
+    /// Words set in the table's squares.
+    texts: Vec<TableText>,
+}
+
+/// Words set on the table, a letter a square of `cell` (px; a square of
+/// the table's, or a half or a quarter of one - the finer lines shown
+/// under them): from `at` (the first letter's square's far left corner),
+/// a line a row; so much of it set (0..1, letter by letter); its strength.
+#[derive(Clone, PartialEq)]
+struct TableText {
+    at: (f32, f32),
+    cell: f32,
+    lines: Vec<String>,
+    grey: f64,
+    bold: bool,
+    set: f32,
+    strength: f32,
 }
 
 /// The table under the Duo across the page, in 2 cm squares, in the very
@@ -2820,8 +2837,6 @@ struct CubeShape {
     top: Quad,
     there: f32,
     size: f32,
-    /// Its front edge's left end on the table (where a note goes under).
-    foot: (f64, f64),
 }
 
 /// The start's cubes (intro.rs): five of the table's squares in a row
@@ -2842,25 +2857,24 @@ fn cube_shapes(fv: &FloorView) -> Vec<CubeShape> {
     // show_fold).
     let (cx, cy) = fv.cubes_at;
     let left = |i: usize| cx + (i as f32 - 2.5) * step;
-    let (y0, y1) = (cy - step / 2.0, cy + step / 2.0);
+    let y0 = cy - step / 2.0;
     let z0 = fv.table;
     let mut order: Vec<usize> = (0..5).collect();
     order.sort_by(|a, b| (left(*b) + step / 2.0).abs().partial_cmp(&(left(*a) + step / 2.0).abs()).unwrap());
-    let foot = p3(left(0), y1, z0);
     let mut shapes: Vec<CubeShape> = order
         .into_iter()
         .filter(|i| fv.cubes[*i].0 > 0.0)
         .map(|i| {
             let (there, h) = fv.cubes[i];
             let (shadow, faces, top) = box_shape(&p3, (left(i), y0), step, z0, h);
-            CubeShape { i, shadow, faces, top, there, size: step, foot }
+            CubeShape { i, shadow, faces, top, there, size: step }
         })
         .collect();
     // A square of the table jumping (clicked): no letter (i past the word);
     // drawn before the word's if farther than them, else after.
     if let Some(((tx, ty), h)) = fv.tapped {
         let (shadow, faces, top) = box_shape(&p3, (tx - step / 2.0, ty - step / 2.0), step, z0, h);
-        let jump = CubeShape { i: usize::MAX, shadow, faces, top, there: 1.0, size: step, foot };
+        let jump = CubeShape { i: usize::MAX, shadow, faces, top, there: 1.0, size: step };
         if ty < cy {
             shapes.insert(0, jump);
         } else {
@@ -2979,32 +2993,80 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     }
     let _ = cr.pop_group_to_source();
     let _ = cr.paint_with_alpha(fv.word as f64);
-    // The note under the word (not found): its first line darker.
-    if let (Some((text, strength)), Some(c)) = (fv.note.as_ref(), shapes.first()) {
-        let layout = pangocairo::functions::create_layout(cr);
-        layout.set_font_description(Some(&gtk::pango::FontDescription::from_string("Ubuntu Sans, Ubuntu, sans-serif 10")));
-        let (head, rest) = text.split_once('\n').unwrap_or((text.as_str(), ""));
-        layout.set_markup(&format!("<span weight='600' foreground='#3a3a3e'>{}</span>\n<span foreground='#8a8a90'>{}</span>", gtk::glib::markup_escape_text(head), gtk::glib::markup_escape_text(rest)));
-        layout.set_spacing(3 * gtk::pango::SCALE);
-        cr.push_group();
-        // On the table's white, its lines kept off the words.
-        let (_, ext) = layout.pixel_extents();
-        let (x, y) = (c.foot.0, c.foot.1 + 26.0);
-        let pad = 8.0;
-        let (w, h) = (ext.width() as f64 + 2.0 * pad, ext.height() as f64 + 2.0 * pad);
-        let r = 8.0;
-        cr.new_sub_path();
-        cr.arc(x - pad + w - r, y - pad + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
-        cr.arc(x - pad + w - r, y - pad + h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
-        cr.arc(x - pad + r, y - pad + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
-        cr.arc(x - pad + r, y - pad + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
-        cr.close_path();
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.92);
-        let _ = cr.fill();
-        cr.move_to(x, y);
-        pangocairo::functions::show_layout(cr, &layout);
-        let _ = cr.pop_group_to_source();
-        let _ = cr.paint_with_alpha(*strength as f64);
+    draw_texts(fv, cr);
+}
+
+/// Words set in the table's squares (TableText): the finer squares under
+/// them, then each letter laid in its square on the table.
+fn draw_texts(fv: &FloorView, cr: &gtk::cairo::Context) {
+    use gtk::graphene;
+    let Some(m) = fv.matrix else { return };
+    let z = fv.table;
+    let p3 = |x: f32, y: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    let big = square() * fv.k;
+    for t in &fv.texts {
+        if t.strength <= 0.0 {
+            continue;
+        }
+        let cols = t.lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let rows = t.lines.len();
+        let (x1, y1) = (t.at.0 + cols as f32 * t.cell, t.at.1 + rows as f32 * t.cell);
+        // The finer lines where the words are (not on the table's own).
+        if t.cell < big - 0.5 {
+            cr.set_line_width(1.0);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.07 * t.strength as f64);
+            let fine = |v: f32, from: f32| ((v - from) / big).fract().abs() > 0.01 && ((v - from) / big).fract().abs() < 0.99;
+            for c in 1..cols {
+                let x = t.at.0 + c as f32 * t.cell;
+                if fine(x, t.at.0) {
+                    let (a, b) = (p3(x, t.at.1), p3(x, y1));
+                    cr.move_to(a.0, a.1);
+                    cr.line_to(b.0, b.1);
+                }
+            }
+            for r in 1..rows {
+                let y = t.at.1 + r as f32 * t.cell;
+                if fine(y, t.at.1) {
+                    let (a, b) = (p3(t.at.0, y), p3(x1, y));
+                    cr.move_to(a.0, a.1);
+                    cr.line_to(b.0, b.1);
+                }
+            }
+            let _ = cr.stroke();
+        }
+        let total: usize = t.lines.iter().map(|l| l.chars().count()).sum();
+        let shown = (t.set * total as f32).ceil() as usize;
+        let mut n = 0;
+        let mut font = gtk::pango::FontDescription::from_string("Ubuntu Sans, Ubuntu, sans-serif");
+        font.set_weight(if t.bold { gtk::pango::Weight::Medium } else { gtk::pango::Weight::Normal });
+        let s = t.cell as f64;
+        font.set_absolute_size(0.85 * s * gtk::pango::SCALE as f64);
+        for (r, line) in t.lines.iter().enumerate() {
+            for (c, ch) in line.chars().enumerate() {
+                n += 1;
+                if n > shown {
+                    break;
+                }
+                if ch == ' ' {
+                    continue;
+                }
+                let (x, y) = (t.at.0 + c as f32 * t.cell, t.at.1 + r as f32 * t.cell);
+                let (a, b, d) = (p3(x, y), p3(x + t.cell, y), p3(x, y + t.cell));
+                cr.save().ok();
+                cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
+                let layout = pangocairo::functions::create_layout(cr);
+                layout.set_font_description(Some(&font));
+                layout.set_text(&ch.to_string());
+                let (ink, logical) = layout.pixel_extents();
+                cr.move_to((s - ink.width() as f64) / 2.0 - ink.x() as f64, (s - logical.height() as f64) / 2.0 - logical.y() as f64);
+                cr.set_source_rgba(t.grey, t.grey, t.grey * 1.02, t.strength as f64);
+                pangocairo::functions::show_layout(cr, &layout);
+                cr.restore().ok();
+            }
+        }
     }
 }
 
@@ -3548,19 +3610,80 @@ fn show_fold(ui: &Ui, angle: f64) {
         for (i, v) in [cubes_at.0, cubes_at.1].into_iter().enumerate() {
             CUBES_AT[i].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }
-        // Where they show at the end, kept through the eye's coming down.
-        let end = shown_at(&down, cubes_at);
-        let now = shown_at(&looking(eye), cubes_at);
-        let middle = (middle.0 + end.0 - now.0, middle.1 + end.1 - now.1);
-        let at = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
-        let rest = gsk::Transform::new()
-            .translate(&graphene::Point::new(at.0, at.1))
-            .perspective(3.2 * h)
-            .rotate_3d(TILT * intro.eye(), &graphene::Vec3::x_axis())
-            .to_matrix();
+        // The camera: the table's point it looks at, where that is on the
+        // page, its tilt and how near - eased between straight above the
+        // word, where the Duo is seen from, and near the credit (under the
+        // word, a letter a quarter square).
+        #[derive(Clone, Copy)]
+        struct Eye {
+            look: (f32, f32),
+            on: (f32, f32),
+            tilt: f32,
+            near: f32,
+        }
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let mix = |a: Eye, b: Eye, t: f32| Eye {
+            look: (lerp(a.look.0, b.look.0, t), lerp(a.look.1, b.look.1, t)),
+            on: (lerp(a.on.0, b.on.0, t), lerp(a.on.1, b.on.1, t)),
+            tilt: lerp(a.tilt, b.tilt, t),
+            near: lerp(a.near, b.near, t),
+        };
+        let matrix = |e: Eye| {
+            gsk::Transform::new()
+                .translate(&graphene::Point::new(e.on.0, e.on.1))
+                .perspective(3.2 * h)
+                .rotate_3d(e.tilt, &graphene::Vec3::x_axis())
+                .scale_3d(e.near, e.near, e.near)
+                .translate_3d(&graphene::Point3D::new(-e.look.0, -e.look.1, 0.0))
+                .to_matrix()
+        };
+        let on_page = |m: &graphene::Matrix, p: (f32, f32)| {
+            let v = m.transform_vec4(&graphene::Vec4::new(p.0, p.1, -DUO_THICK, 1.0));
+            (v.x() / v.w(), v.y() / v.w())
+        };
+        let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
+        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: TILT, near: 1.0 };
+        let word_on = (want.0 + middle.0, want.1 + middle.1);
+        let above = Eye { look: cubes_at, on: word_on, tilt: 0.0, near: 1.0 };
+        let cur = square() * k;
+        // Half a square below the word, two quarter-square lines.
+        let credit_mid = (cubes_at.0, cubes_at.1 + 1.25 * cur);
+        // Near it, it comes toward the page's middle.
+        let page = (ui.floor.width() as f32 * 0.42 - off.0, ui.floor.height() as f32 * 0.42 - off.1);
+        let from = on_page(&matrix(rest), credit_mid);
+        let near_credit = Eye { look: credit_mid, on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), tilt: TILT * 0.8, near: 1.9 };
+        // The note (not found): half a square below the word, its head in
+        // half squares, three lines in quarter ones.
+        let note_mid = (cubes_at.0, cubes_at.1 + 1.75 * cur);
+        let from = on_page(&matrix(rest), note_mid);
+        let near_note = Eye { look: note_mid, on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), tilt: TILT * 0.8, near: 1.9 };
+        let mut e = mix(mix(mix(above, rest, eye), near_credit, intro.focus()), near_note, intro.near_note());
+        // Coming down, the word kept where it is on the page.
+        if eye < 1.0 {
+            let shown = on_page(&matrix(e), cubes_at);
+            e.on = (e.on.0 + word_on.0 - shown.0, e.on.1 + word_on.1 - shown.1);
+        }
+        let at = e.on;
+        let rest = matrix(e);
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
+        // The credit, a letter a quarter square, under the word; the note
+        // there after looking (not found): its head in half squares.
+        let mut texts = Vec::new();
+        let left = cubes_at.0 - 2.5 * cur;
+        let under = cubes_at.1 + cur;
+        if let Some((set, strength)) = intro.credit() {
+            texts.push(TableText { at: (left, under), cell: cur / 4.0, lines: intro::CREDIT.iter().map(|l| l.to_string()).collect(), grey: 0.38, bold: false, set, strength });
+        }
+        if let Some((text, strength)) = intro.note() {
+            let mut lines = text.lines();
+            if let Some(head) = lines.next() {
+                texts.push(TableText { at: (left, under), cell: cur / 2.0, lines: vec![head.to_owned()], grey: 0.2, bold: false, set: 1.0, strength });
+            }
+            let rest: Vec<String> = lines.map(str::to_owned).collect();
+            texts.push(TableText { at: (left, under + 0.75 * cur), cell: cur / 4.0, lines: rest, grey: 0.45, bold: false, set: 1.0, strength });
+        }
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
         ui.duo.set_opacity(intro.duo() as f64);
@@ -3572,9 +3695,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts };
         if changed {
             ui.floor.queue_draw();
         }
