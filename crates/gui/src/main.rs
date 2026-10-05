@@ -3757,8 +3757,14 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         cr.close_path();
     };
-    for (i, b) in FLOOR_BUTTONS.iter().enumerate() {
-        let Some(b) = b else { continue };
+    // Farthest from the eye's line first: a box nearer it covers its
+    // neighbour's side (drawn left to right, a box's side lay over the top
+    // of the one before).
+    let mut order: Vec<usize> = (0..FLOOR_BUTTONS.len()).collect();
+    let off_eye = |i: usize| (fv.buttons_at.0 + (i as f32 + 0.5) * side - fv.eye_x).abs();
+    order.sort_by(|a, b| off_eye(*b).partial_cmp(&off_eye(*a)).unwrap());
+    for i in order {
+        let Some(b) = &FLOOR_BUTTONS[i] else { continue };
         if fv.button_in[i] <= 0.0 {
             continue;
         }
