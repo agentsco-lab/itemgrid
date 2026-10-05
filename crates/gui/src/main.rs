@@ -1542,9 +1542,6 @@ fn build(app: &adw::Application) {
                             ui.intro.borrow_mut().clear_note();
                         }
                     }
-                    FloorButton::Replay => ui.intro.borrow_mut().replay(),
-                    FloorButton::Saver => wallpaper(&ui),
-                    FloorButton::Minimize => win.minimize(),
                     // As the wallpaper, the window back first (its place and
                     // size kept as it closes are the usual ones).
                     FloorButton::Close => {
@@ -1571,11 +1568,14 @@ fn build(app: &adw::Application) {
                     match key.as_str() {
                         "set:night" => turn_night_mode(&ui),
                         "set:developer" => set_developer_mode(!developer_mode()),
+                        // Into the wallpaper or back (the boards closed on the
+                        // way).
+                        "set:wallpaper" => wallpaper(&ui),
                         _ => return,
                     }
                     trace(format_args!("setting {key} turned"));
                     if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
-                        if let Some(new) = settings_lines().into_iter().find(|n| n.key == key) {
+                        if let Some(new) = settings_lines(&ui).into_iter().find(|n| n.key == key) {
                             b.set_line(l, new.text);
                         }
                     }
@@ -1591,7 +1591,7 @@ fn build(app: &adw::Application) {
                 let on_table = on_table.or_else(|| key.as_deref().filter(|k| ["about", "storage", "updates"].contains(k)).map(|k| (k.to_owned(), vec![("", "no duo yet".to_owned())])));
                 // item/grid's own: its settings (lines to click), about it.
                 let own = match key.as_deref() {
-                    Some("settings") => Some(settings_lines()),
+                    Some("settings") => Some(settings_lines(&ui)),
                     Some("itemgrid") => Some(vec![
                         board::Line::new("", format!("itemgrid  {}", env!("CARGO_PKG_VERSION"))),
                         board::Line::new("", "by     AgentsCo"),
@@ -3157,8 +3157,8 @@ struct FloorView {
     /// The buttons' row (its first square's far left corner), their lifts,
     /// the one under the pointer.
     buttons_at: (f32, f32),
-    button_lift: [f32; 5],
-    button_in: [f32; 5],
+    button_lift: [f32; BUTTONS],
+    button_in: [f32; BUTTONS],
     hover_button: Option<usize>,
     /// How far the squares are drawn (px) round where the eye looks:
     /// further on a larger page and as the eye draws back.
@@ -4118,14 +4118,18 @@ fn saver_off(ui: &Ui) {
 }
 
 /// item/grid's settings as a board's lines (each clicked turns it).
-fn settings_lines() -> Vec<board::Line> {
+fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     let onoff = |on: bool| if on { "on" } else { "off" };
     let night = match night_mode().as_str() {
         "night" => "on".to_owned(),
         "day" => "off".to_owned(),
         _ => "auto".to_owned(),
     };
-    vec![board::Line::new("set:night", format!("night      {night}")), board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode())))]
+    vec![
+        board::Line::new("set:night", format!("night      {night}")),
+        board::Line::new("set:wallpaper", format!("wallpaper  {}", onoff(ui.wallpaper.get().is_some()))),
+        board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode()))),
+    ]
 }
 
 /// Night or day shown as due: the table, the window.
@@ -4160,20 +4164,19 @@ fn turn_night_mode(ui: &Ui) {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum FloorButton {
     Menu,
-    Replay,
-    Saver,
-    Minimize,
     Close,
 }
 
-/// On the fronts of the word's cubes, h y t h e.
-const FLOOR_BUTTONS: [Option<FloorButton>; 5] = [Some(FloorButton::Menu), Some(FloorButton::Replay), Some(FloorButton::Saver), Some(FloorButton::Minimize), Some(FloorButton::Close)];
+/// In the word's row at the page's right (the wallpaper turned in the
+/// settings).
+const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Close)];
+const BUTTONS: usize = 2;
 
 /// The buttons' hover and press, eased.
 #[derive(Default)]
 struct Buttons {
     hover: Option<usize>,
-    lift: [f32; 5],
+    lift: [f32; BUTTONS],
     pressed: Option<(usize, std::time::Instant)>,
 }
 
@@ -4183,7 +4186,7 @@ impl Buttons {
     fn step(&mut self, dt: f32) -> bool {
         let k = 1.0 - (-dt / 0.06).exp();
         let mut moved = false;
-        for i in 0..5 {
+        for i in 0..BUTTONS {
             let pressed = self.pressed.is_some_and(|(p, at)| p == i && at.elapsed().as_secs_f32() < 0.12);
             let to = if pressed { -0.3 } else if self.hover == Some(i) { 0.12 } else { 0.0 };
             if (to - self.lift[i]).abs() > 0.001 {
@@ -4300,36 +4303,11 @@ fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f
             }
             let _ = cr.stroke();
         }
-        FloorButton::Saver => {
-            // A screen on its stand.
-            cr.rectangle(31.0, 32.0, 38.0, 26.0);
-            cr.move_to(50.0, 58.0);
-            cr.line_to(50.0, 66.0);
-            cr.move_to(42.0, 67.0);
-            cr.line_to(58.0, 67.0);
-            let _ = cr.stroke();
-        }
-        FloorButton::Minimize => {
-            cr.move_to(34.0, 62.0);
-            cr.line_to(66.0, 62.0);
-            let _ = cr.stroke();
-        }
         FloorButton::Close => {
             cr.move_to(37.0, 37.0);
             cr.line_to(63.0, 63.0);
             cr.move_to(63.0, 37.0);
             cr.line_to(37.0, 63.0);
-            let _ = cr.stroke();
-        }
-        FloorButton::Replay => {
-            // Round and back to where it began.
-            let (r, from, to) = (17.0, -1.2, 4.3);
-            cr.arc(50.0, 50.0, r, from, to);
-            let _ = cr.stroke();
-            let (ex, ey) = (50.0 + r * to.cos(), 50.0 + r * to.sin());
-            cr.move_to(ex + 8.0, ey - 1.0);
-            cr.line_to(ex, ey);
-            cr.line_to(ex - 1.0, ey - 9.0);
             let _ = cr.stroke();
         }
     }
@@ -5120,8 +5098,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
         // Each button coming in on the table as the word's cubes go down,
         // one after the other; they lie there, squares as the word's.
-        let button_in: [f32; 5] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
-        let button_lift = [0.0f32; 5];
+        let button_in: [f32; BUTTONS] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
+        let button_lift = [0.0f32; BUTTONS];
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
