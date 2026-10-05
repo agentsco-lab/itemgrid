@@ -432,6 +432,9 @@ struct Ui {
     /// The window as the second monitor's wallpaper: where it was before
     /// (its X frame) and its size as GTK had it.
     wallpaper: std::cell::Cell<Option<((i32, i32, i32, i32), (i32, i32))>>,
+    /// The window on its way into the wallpaper or back: since when, from
+    /// and to (its frame on the screen), into it.
+    wall_move: std::cell::Cell<Option<(std::time::Instant, (i32, i32, i32, i32), (i32, i32, i32, i32), bool)>>,
     /// How far the eye has gone over to the wallpaper's (eased).
     wallpaper_mix: std::cell::Cell<f32>,
     /// The wheel's lens: how near now, and where it goes.
@@ -1191,6 +1194,7 @@ fn build(app: &adw::Application) {
         cubes_rest: std::cell::Cell::new((0.0, 0.0)),
         saver_pointer: std::cell::Cell::new(None),
         wallpaper: std::cell::Cell::new(None),
+        wall_move: std::cell::Cell::new(None),
         wallpaper_mix: std::cell::Cell::new(0.0),
         zoom: std::cell::Cell::new((1.0, 1.0)),
         section_words: RefCell::default(),
@@ -1291,6 +1295,10 @@ fn build(app: &adw::Application) {
                 Some("renderer") => serde_json::json!({ "renderer": ui.window.native().and_then(|n| n.renderer()).map(|r| r.type_().name().to_string()) }),
                 Some("replay") => {
                     ui.intro.borrow_mut().replay();
+                    serde_json::json!({ "ok": true })
+                }
+                Some("wallpaper") => {
+                    wallpaper(&ui);
                     serde_json::json!({ "ok": true })
                 }
                 Some("state") => {
@@ -2175,13 +2183,15 @@ fn build(app: &adw::Application) {
                     false
                 }
             };
-            // The wallpaper's view eased to (half a second) and back.
+            // The wallpaper's view eased to and back, as the window grows
+            // to the monitor or comes back.
             let walling = {
                 let (now, to) = (ui.wallpaper_mix.get(), if ui.wallpaper.get().is_some() { 1.0 } else { 0.0 });
-                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 0.5).min((to - now).abs());
+                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / WALL_S).min((to - now).abs());
                 ui.wallpaper_mix.set(now + step);
                 step != 0.0
             };
+            let walling = wall_step(&ui) || walling;
             let pressing = pressing || boarding || paging || saving || zooming || walling;
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
@@ -3781,19 +3791,46 @@ fn saver_on(ui: &Ui) {
 /// The window as the second monitor's wallpaper (under every window, the
 /// whole monitor, worked with as ever), or back where it was.
 fn wallpaper(ui: &Ui) {
+    // Midway: turned back from where it is.
+    if let Some((_, _, _, into)) = ui.wall_move.get() {
+        let Some(now) = place::frame(&ui.window) else { return };
+        match (into, ui.wallpaper.take()) {
+            (true, Some((was, size))) => {
+                trace(format_args!("wallpaper: back midway"));
+                ui.wallpaper.set(None);
+                ui.wall_move.set(Some((std::time::Instant::now(), now, was, false)));
+                WALL_SIZE.with(|s| s.set(Some(size)));
+            }
+            _ => {
+                if let Some((_, _, to, _)) = ui.wall_move.get() {
+                    let size = WALL_SIZE.with(|s| s.get()).unwrap_or(ui.window.default_size());
+                    if let Some(m) = saver::second_monitor(&WidgetExt::display(&ui.window)) {
+                        let g = m.geometry();
+                        ui.wallpaper.set(Some((to, size)));
+                        ui.wall_move.set(Some((std::time::Instant::now(), now, (g.x(), g.y(), g.width(), g.height()), true)));
+                    }
+                }
+            }
+        }
+        return;
+    }
     if let Some((was, size)) = ui.wallpaper.take() {
         trace(format_args!("wallpaper: off, back to {was:?}"));
-        ui.window.remove_css_class("wallpaper");
-        ui.window.set_decorated(true);
-        ui.window.set_default_size(size.0, size.1);
-        place::desktop(&ui.window, false, Some(was));
+        // A window again first, then drawn back to where it was.
+        place::desktop(&ui.window, false, None);
+        let Some(now) = place::frame(&ui.window) else { return };
+        WALL_SIZE.with(|s| s.set(Some(size)));
+        ui.wall_move.set(Some((std::time::Instant::now(), now, was, false)));
         return;
     }
     let display = WidgetExt::display(&ui.window);
     let Some(m) = saver::second_monitor(&display) else { return };
     let g = m.geometry();
-    let Some(was) = place::frame(&ui.window) else { return };
-    let size = ui.window.default_size();
+    // Where its content is (the window's shadow aside): where it comes
+    // back to.
+    let Some((cx, cy)) = place::content_origin(&ui.window) else { return };
+    let size = (ui.window.width(), ui.window.height());
+    let was = (cx.round() as i32, cy.round() as i32, size.0, size.1);
     if let Some(b) = ui.board.borrow_mut().as_mut() {
         b.close();
     }
@@ -3805,14 +3842,69 @@ fn wallpaper(ui: &Ui) {
     // No decoration of its own: no shadow round it (it filled the monitor
     // less its shadow).
     ui.window.set_decorated(false);
-    // GTK's own size the monitor's too (else it took its usual one back).
-    ui.window.set_default_size(g.width(), g.height());
-    if place::desktop(&ui.window, true, Some((g.x(), g.y(), g.width(), g.height()))) {
-        ui.wallpaper.set(Some((was, size)));
+    ui.wallpaper.set(Some((was, size)));
+    // Grown to the monitor (the view going over with it), then the
+    // desktop's: wall_step.
+    ui.wall_move.set(Some((std::time::Instant::now(), was, (g.x(), g.y(), g.width(), g.height()), true)));
+}
+
+/// The window's content brought to `at` on the screen, once GTK has
+/// framed it again (a few looks, a moment apart).
+fn wall_settle(window: &adw::ApplicationWindow, at: (i32, i32), looks: u32) {
+    let window = window.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || {
+        if let (Some(c), Some(f)) = (place::content_origin(&window), place::frame(&window)) {
+            let (dx, dy) = (at.0 - c.0.round() as i32, at.1 - c.1.round() as i32);
+            if dx != 0 || dy != 0 {
+                place::move_to(&window, f.0 + dx, f.1 + dy);
+            }
+        }
+        if looks > 1 {
+            wall_settle(&window, at, looks - 1);
+        }
+    });
+}
+
+/// Seconds the window takes into the wallpaper, or back.
+const WALL_S: f32 = 0.8;
+
+thread_local! {
+    /// GTK's own size of the window to come back to.
+    static WALL_SIZE: std::cell::Cell<Option<(i32, i32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// A frame of the window's way into the wallpaper or back (true while on
+/// it): its frame eased from where it was to where it goes; there, the
+/// desktop's (or a window again, as it was).
+fn wall_step(ui: &Ui) -> bool {
+    let Some((since, from, to, into)) = ui.wall_move.get() else { return false };
+    let t = (since.elapsed().as_secs_f32() / WALL_S).min(1.0);
+    let e = t * t * t * (t * (6.0 * t - 15.0) + 10.0);
+    let at = |a: i32, b: i32| (a as f32 + (b - a) as f32 * e).round() as i32;
+    let r = (at(from.0, to.0), at(from.1, to.1), at(from.2, to.2), at(from.3, to.3));
+    place::move_resize(&ui.window, r);
+    if t < 1.0 {
+        return true;
+    }
+    ui.wall_move.set(None);
+    if into {
+        // GTK's own size the monitor's too (else it took its usual one back).
+        ui.window.set_default_size(to.2, to.3);
+        if !place::desktop(&ui.window, true, Some(to)) {
+            ui.window.remove_css_class("wallpaper");
+            ui.window.set_decorated(true);
+            ui.wallpaper.set(None);
+        }
     } else {
         ui.window.remove_css_class("wallpaper");
+        if let Some((w, h)) = WALL_SIZE.with(|s| s.take()) {
+            ui.window.set_default_size(w, h);
+        }
         ui.window.set_decorated(true);
+        // Its shadow back round it: the content kept where it came to.
+        wall_settle(&ui.window, (to.0, to.1), 3);
     }
+    false
 }
 
 /// The saver off: the window back where it was.

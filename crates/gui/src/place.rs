@@ -22,8 +22,6 @@ struct X11 {
     intern_atom: unsafe extern "C" fn(Display, *const std::ffi::c_char, i32) -> std::ffi::c_ulong,
     change_property: unsafe extern "C" fn(Display, Window, std::ffi::c_ulong, std::ffi::c_ulong, i32, i32, *const u8, i32) -> i32,
     move_resize: unsafe extern "C" fn(Display, Window, i32, i32, u32, u32) -> i32,
-    unmap: unsafe extern "C" fn(Display, Window) -> i32,
-    map: unsafe extern "C" fn(Display, Window) -> i32,
 }
 
 /// GTK's X11 functions and Xlib's, from the process (both are loaded when
@@ -44,8 +42,6 @@ fn x11() -> Option<&'static X11> {
             intern_atom: std::mem::transmute(get(b"XInternAtom\0")?),
             change_property: std::mem::transmute(get(b"XChangeProperty\0")?),
             move_resize: std::mem::transmute(get(b"XMoveResizeWindow\0")?),
-            unmap: std::mem::transmute(get(b"XUnmapWindow\0")?),
-            map: std::mem::transmute(get(b"XMapWindow\0")?),
         })
     })
     .as_ref()
@@ -98,6 +94,24 @@ pub fn restore(window: &adw::ApplicationWindow) {
             window.maximize();
         }
     });
+}
+
+/// The window moved on the screen (its X window's top left).
+pub fn move_to(window: &adw::ApplicationWindow, x: i32, y: i32) {
+    let Some((x11, dpy, id)) = handle(window) else { return };
+    unsafe {
+        (x11.moved)(dpy, id, x, y);
+        (x11.flush)(dpy);
+    }
+}
+
+/// The window's frame moved and sized on the screen.
+pub fn move_resize(window: &adw::ApplicationWindow, (x, y, w, h): (i32, i32, i32, i32)) {
+    let Some((x11, dpy, id)) = handle(window) else { return };
+    unsafe {
+        (x11.move_resize)(dpy, id, x, y, w.max(1) as u32, h.max(1) as u32);
+        (x11.flush)(dpy);
+    }
 }
 
 /// Kept as it closes.
@@ -155,11 +169,9 @@ pub fn desktop(window: &adw::ApplicationWindow, on: bool, rect: Option<(i32, i32
         };
         let kind = atom("_NET_WM_WINDOW_TYPE");
         let value = atom(if on { "_NET_WM_WINDOW_TYPE_DESKTOP" } else { "_NET_WM_WINDOW_TYPE_NORMAL" });
-        (x11.unmap)(dpy, id);
-        (x11.flush)(dpy);
-        // XA_ATOM (4), 32-bit, replace (0).
+        // XA_ATOM (4), 32-bit, replace (0): Mutter takes the new kind on
+        // the window as it is (no unmapping: it blinked out and back).
         (x11.change_property)(dpy, id, kind, 4, 32, 0, &value as *const std::ffi::c_ulong as *const u8, 1);
-        (x11.map)(dpy, id);
         if let Some((x, y, w, h)) = rect {
             (x11.move_resize)(dpy, id, x, y, w.max(1) as u32, h.max(1) as u32);
         }
