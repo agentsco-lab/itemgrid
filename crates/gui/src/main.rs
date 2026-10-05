@@ -3754,7 +3754,10 @@ fn show_fold(ui: &Ui, angle: f64) {
         };
         let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
         let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: TILT, near: 1.0, far: 3.2 };
-        let word_on = (want.0 + middle.0, want.1 + middle.1);
+        // Where the word is once the eye is down (its cubes in the
+        // table's squares, a little off the page's point): kept there all
+        // the way, so that nothing moves as the eye stops.
+        let word_on = on_page(&matrix(rest), cubes_at);
         let above = Eye { look: cubes_at, on: word_on, tilt: 0.0, near: 1.0, far: 3.2 };
         let cur = square() * k;
         // Words on the table (a letter a square, from the word's left,
