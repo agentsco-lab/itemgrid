@@ -3021,13 +3021,13 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     // The letter in a square whose corners (its top left, top right,
     // bottom left) are these on the page.
     // A mark, not a word to read first: lighter than the word's.
-    let letter = |a: (f64, f64), b: (f64, f64), d: (f64, f64), ch: char| draw_glyph(cr, ch, a, b, d, (0.5, 0.5, 0.52, 0.8));
+    let letter = |a: (f64, f64), b: (f64, f64), d: (f64, f64), ch: char, strength: f32| draw_glyph(cr, ch, a, b, d, (0.5, 0.5, 0.52, 0.8 * strength as f64));
     let x_of = |i: usize| fv.credit_at.0 + i as f32 * side;
     let y0 = fv.credit_at.1;
     for f in &fv.flips {
         let x0 = x_of(f.i);
         if f.turn <= 0.0 {
-            letter(p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0, y0 + side, z0), f.from);
+            letter(p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0, y0 + side, z0), f.from, f.strength);
             continue;
         }
         // A point of the square, `v` along it from its far edge (0..1), as
@@ -3040,22 +3040,23 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         };
         let q = [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)];
         // Its place on the table blank meanwhile; the square over it.
+        let st = f.strength as f64;
         path(&[p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0 + side, y0 + side, z0), p3(x0, y0 + side, z0)]);
-        cr.set_source_rgb(1.0, 1.0, 1.0);
+        cr.set_source_rgba(1.0, 1.0, 1.0, st);
         let _ = cr.fill();
         path(&q);
         // The side turned toward the eye a little darker as it stands up.
         let light = 1.0 - 0.06 * a.sin() as f64;
-        cr.set_source_rgb(light, light, light * 1.005);
+        cr.set_source_rgba(light, light, light * 1.005, st);
         let _ = cr.fill_preserve();
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14 * st);
         cr.set_line_width(1.6);
         let _ = cr.stroke();
         if f.turn < 0.5 {
-            letter(at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), f.from);
+            letter(at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), f.from, f.strength);
         } else {
             // The other side: its near edge (v 1) is the far one now.
-            letter(at(0.0, 1.0), at(1.0, 1.0), at(0.0, 0.0), f.to);
+            letter(at(0.0, 1.0), at(1.0, 1.0), at(0.0, 0.0), f.to, f.strength);
         }
     }
 }
@@ -3818,7 +3819,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             .map(|(i, ch)| {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
-                intro.credit_flip(i, ch, ((grown - d) / (4.0 * cur)).clamp(0.0, 1.0))
+                intro.credit_flip(i, ch, ((grown - d) / (8.0 * cur)).clamp(0.0, 1.0))
             })
             .collect();
         if let Some((text, strength)) = intro.note() {

@@ -6,8 +6,9 @@
 //! Duo is where they were. Gone again, they rise.
 //!
 //! The credit turns up in the table's own squares as the growing reaches
-//! them - each turning over once, in one movement, its letter underneath
-//! - and turns back blank as the eye comes down, gone when it stops.
+//! them - each turning over as a departures board's flap does, through a
+//! few letters to its own, slowing as it comes to it - and fades as the
+//! eye comes down, gone when it stops.
 //!
 //! A cube clicked - or any of the table's squares - looks for the phone at
 //! once: the cube pressed in (a square jumps up out of the table and back),
@@ -22,13 +23,15 @@ pub const WORD: [&str; 5] = ["h", "y", "t", "h", "e"];
 pub const CREDIT: &str = "by AgentsCo";
 
 /// A credit square now: which letter's place; turning over from showing
-/// `from` to showing `to` (`turn` 0..1; 0 still, showing `from`).
+/// `from` to showing `to` (`turn` 0..1; 0 still, showing `from`); its
+/// strength.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Flip {
     pub i: usize,
     pub from: char,
     pub to: char,
     pub turn: f32,
+    pub strength: f32,
 }
 
 /// Seconds from the start: the word coming, the squares growing out, the
@@ -135,21 +138,32 @@ impl Intro {
         smoother(self.near_note)
     }
 
-    /// The credit's square `i` (its letter `ch`): turned over as the
-    /// squares' growing comes across it (`reached` 0..1), back blank as the
-    /// eye comes down - the last of them as it stops.
+    /// The credit's square `i` (its letter `ch`) as the squares' growing
+    /// comes across it (`reached` 0..1): turning over as a board's flap,
+    /// through a few letters to its own, each turn slower than the one
+    /// before; fading as the eye comes down, gone as it stops.
     pub fn credit_flip(&self, i: usize, ch: char, reached: f32) -> Flip {
-        let on = smoother(reached);
-        let off = smoother((self.eye() - 0.25 - i as f32 * 0.02) / 0.5);
-        if !self.begun() || self.done() || off >= 1.0 || on <= 0.0 {
-            Flip { i, from: ' ', to: ' ', turn: 0.0 }
-        } else if off > 0.0 {
-            Flip { i, from: ch, to: ' ', turn: off }
-        } else if on >= 1.0 {
-            Flip { i, from: ch, to: ch, turn: 0.0 }
-        } else {
-            Flip { i, from: ' ', to: ch, turn: on }
+        let strength = 1.0 - smoother((self.eye() - 0.15) / 0.75);
+        let blank = Flip { i, from: ' ', to: ' ', turn: 0.0, strength };
+        if !self.begun() || self.done() || reached <= 0.0 || strength <= 0.0 {
+            return blank;
         }
+        // The letters on the way: from blank, a few, its own.
+        let letters = b"abcdefghijklmnopqrstuvwxyz";
+        let n = 4 + (i * 5) % 3;
+        let at = |k: usize| match k {
+            0 => ' ',
+            k if k >= n => ch,
+            k => letters[(i * 31 + k * 17 + 7) % 26] as char,
+        };
+        // Quick at first, slowing to the last (eased out).
+        let p = 1.0 - (1.0 - reached.clamp(0.0, 1.0)).powi(3);
+        let turns = p * n as f32;
+        let k = turns.floor() as usize;
+        if k >= n {
+            return Flip { i, from: ch, to: ch, turn: 0.0, strength };
+        }
+        Flip { i, from: at(k), to: at(k + 1), turn: smoother(turns - k as f32), strength }
     }
 
     /// The eye: 0 straight above .. 1 where the Duo is seen from.
