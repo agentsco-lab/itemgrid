@@ -56,6 +56,8 @@ const CABLE_PLUG_T: f32 = 5.0;
 const CABLE_PLUG_LAYERS: usize = 7;
 const CABLE_ROOM: (f64, f64) = (90.0, 80.0);
 const CABLE_PAD: f64 = 4.0;
+/// How far the plug's housing goes into the edge (mm).
+const CABLE_IN: f64 = 0.7;
 const DUO_FLOOR_PAD: f32 = 30.0;
 /// The drawn Duo's room, in its body's heights and widths: the raised half
 /// above it, its near edge wider in perspective.
@@ -1971,7 +1973,7 @@ fn duo_cable() -> gdk::Paintable {
     };
     cr.set_line_cap(gtk::cairo::LineCap::Round);
     // The shadow: the same, a little down and right, soft (three widths).
-    for (grow, a) in [(3.0, 0.04), (1.8, 0.06), (0.8, 0.08)] {
+    for (grow, a) in [(3.0, 0.05), (1.8, 0.08), (0.8, 0.11)] {
         cr.save().ok();
         cr.translate(1.2, 1.8);
         cord(&cr);
@@ -1985,7 +1987,7 @@ fn duo_cable() -> gdk::Paintable {
     }
     // The cord, a tube: dark at its sides, lighter toward the middle, a thin
     // highlight a little to the light's side (up and left).
-    for (wd, c, dx, dy) in [(3.4, 0.16, 0.0, 0.0), (2.6, 0.24, -0.15, -0.15), (1.7, 0.31, -0.3, -0.3)] {
+    for (wd, c, dx, dy) in [(3.4, 0.74, 0.0, 0.0), (2.6, 0.86, -0.15, -0.15), (1.7, 0.94, -0.3, -0.3)] {
         cr.save().ok();
         cr.translate(dx, dy);
         cord(&cr);
@@ -1997,7 +1999,7 @@ fn duo_cable() -> gdk::Paintable {
     cr.save().ok();
     cr.translate(-0.55, -0.55);
     cord(&cr);
-    fade(&cr, (1.0, 1.0, 1.0), 0.28);
+    fade(&cr, (1.0, 1.0, 1.0), 0.9);
     cr.set_line_width(0.6);
     let _ = cr.stroke();
     cr.restore().ok();
@@ -2005,9 +2007,9 @@ fn duo_cable() -> gdk::Paintable {
     // duo_cable_plug).
     let rw = 5.0;
     let g = gtk::cairo::LinearGradient::new(cx - rw / 2.0, 0.0, cx + rw / 2.0, 0.0);
-    g.add_color_stop_rgb(0.0, 0.17, 0.175, 0.19);
-    g.add_color_stop_rgb(0.35, 0.36, 0.365, 0.38);
-    g.add_color_stop_rgb(1.0, 0.15, 0.155, 0.17);
+    g.add_color_stop_rgb(0.0, 0.76, 0.765, 0.77);
+    g.add_color_stop_rgb(0.35, 0.96, 0.96, 0.955);
+    g.add_color_stop_rgb(1.0, 0.72, 0.725, 0.73);
     let _ = cr.set_source(&g);
     cr.rectangle(cx - rw / 2.0, y0 + pl - 0.5, rw, relief);
     let _ = cr.fill();
@@ -2039,20 +2041,41 @@ fn duo_cable_plug(t: f64, top: bool) -> gdk::Paintable {
     shape(&cr, 0.0);
     if top {
         let g = gtk::cairo::LinearGradient::new(x, y, x + pw, y + pl * 0.4);
-        g.add_color_stop_rgb(0.0, 0.25, 0.255, 0.27);
-        g.add_color_stop_rgb(0.4, 0.42, 0.425, 0.44);
-        g.add_color_stop_rgb(1.0, 0.22, 0.225, 0.24);
+        g.add_color_stop_rgb(0.0, 0.86, 0.865, 0.87);
+        g.add_color_stop_rgb(0.4, 0.99, 0.99, 0.985);
+        g.add_color_stop_rgb(1.0, 0.84, 0.845, 0.85);
         let _ = cr.set_source(&g);
         let _ = cr.fill();
-        // The bevel: a lighter rim inside the edge.
+        // The bevel: a soft grey rim inside the edge.
         shape(&cr, 0.6);
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.08);
         cr.set_line_width(0.5);
         let _ = cr.stroke();
-    } else {
-        let c = 0.10 + 0.10 * t;
-        cr.set_source_rgb(c, c + 0.004, c + 0.015);
+        // Where it goes into the port: the opening's shadow across its end.
+        cr.save().ok();
+        shape(&cr, 0.0);
+        cr.clip();
+        let g = gtk::cairo::LinearGradient::new(0.0, y, 0.0, y + 2.2);
+        g.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.55);
+        g.add_color_stop_rgba(0.35, 0.0, 0.0, 0.0, 0.25);
+        g.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
+        let _ = cr.set_source(&g);
+        cr.rectangle(x, y, pw, 2.2);
         let _ = cr.fill();
+        cr.restore().ok();
+    } else {
+        // The sides: white plastic in its own shade, darker toward the table.
+        let c = 0.66 + 0.18 * t;
+        cr.set_source_rgb(c, c + 0.003, c + 0.008);
+        let _ = cr.fill();
+        // The opening's shadow at the end, on the sides as well.
+        cr.save().ok();
+        shape(&cr, 0.0);
+        cr.clip();
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
+        cr.rectangle(x, y, pw, 1.0);
+        let _ = cr.fill();
+        cr.restore().ok();
     }
     drop(cr);
     flatten(&snap, w as f32, h as f32)
@@ -2300,14 +2323,18 @@ fn show_fold(ui: &Ui, angle: f64) {
     let cable_at = |z: f32| {
         local(view(at, true).translate(&graphene::Point::new(mid, 0.0)), 1, rock, raise).translate_3d(&graphene::Point3D::new(
             ((CABLE_PORT_X - CABLE_PLUG.0 / 2.0 - CABLE_PAD) as f32) * k,
-            h - (CABLE_PAD as f32) * k,
+            // Its end a little inside the edge: in the port.
+            h - ((CABLE_PAD + CABLE_IN) as f32) * k,
             -DUO_THICK / 2.0 + z,
         ))
     };
     let shown = rock.to_radians().cos().powi(4).max(0.0) as f64;
     ui.duo.set_child_transform(&ui.cable, Some(&cable_at(0.0)));
     ui.cable.set_opacity(shown);
-    ui.cable.insert_after(&ui.duo, Some(&ui.halves[0].floor));
+    // Over the right half's layers - its bottom edge's face too: the plug
+    // goes into it - and under a half nearer than that one.
+    let right_last: Option<gtk::Widget> = ui.halves[1].order.borrow().last().map(|w| w.clone().upcast());
+    ui.cable.insert_after(&ui.duo, right_last.as_ref());
     // The plug's layers, bottom to top, over the cord.
     let mut after: gtk::Widget = ui.cable.clone().upcast();
     let n = ui.cable_plug.len().max(2) as f32 - 1.0;
