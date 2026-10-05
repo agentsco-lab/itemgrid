@@ -182,7 +182,8 @@ impl Intro {
             // Duo in its middle; their fronts are the buttons).
             let there = 1.0;
             // grid: on the table itself.
-            let height = if i < ON_CUBES { there * risen * (1.0 + self.hop(i)) } else { 0.0 };
+            // Half a square high.
+            let height = if i < ON_CUBES { 0.5 * there * risen * (1.0 + self.hop(i)) } else { 0.0 };
             (there, height)
         })
     }
