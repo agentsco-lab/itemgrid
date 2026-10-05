@@ -300,8 +300,8 @@ struct Ui {
     yaw_ref: std::cell::Cell<Option<f64>>,
     /// Where the reference goes (after a look): eased there.
     yaw_ref_to: std::cell::Cell<Option<f64>>,
-    /// duo-motion's world is north's (its protocol 2; 1 started its yaw
-    /// anywhere).
+    /// duo-motion's world is north's (it heeds the field: --north); else
+    /// its yaw starts anywhere and only looks set the reference.
     absolute: std::cell::Cell<bool>,
     user_heading: std::cell::Cell<Option<f64>>,
     motion_on: std::cell::Cell<bool>,
@@ -2110,16 +2110,20 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     }
                     fold_to(&ui, shut(&ui, a));
                 }
-                cradle_core::posture::Reading::Version(v) => {
-                    ui.absolute.set(v >= 2);
-                    // North's world: the one at the computer where they were
-                    // last seen, at once.
-                    if let Some(h) = ui.user_heading.get().filter(|_| v >= 2) {
-                        ui.yaw_ref.set(Some(h + std::f64::consts::FRAC_PI_2));
-                        ui.yaw_ref_to.set(Some(h + std::f64::consts::FRAC_PI_2));
+                cradle_core::posture::Reading::Version(v) => trace(format_args!("duo-motion protocol {v}")),
+                cradle_core::posture::Reading::North(n) => {
+                    // The field heeded: the world is north's - the one at the
+                    // computer where they were last seen, at once.
+                    if n && !ui.absolute.get() {
+                        ui.absolute.set(true);
+                        if let Some(h) = ui.user_heading.get() {
+                            ui.yaw_ref_to.set(Some(h + std::f64::consts::FRAC_PI_2));
+                            if ui.yaw_ref.get().is_none() {
+                                ui.yaw_ref.set(Some(h + std::f64::consts::FRAC_PI_2));
+                            }
+                        }
                     }
                 }
-                cradle_core::posture::Reading::North(_) => {}
                 cradle_core::posture::Reading::Look(l) => {
                     // Looked at: the one at the computer is where its screen
                     // faced. The reference so that that way is toward the

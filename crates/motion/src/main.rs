@@ -96,6 +96,14 @@ impl Looking {
 
 fn main() {
     let awake = std::env::args().any(|a| a == "--awake");
+    // --raw: the gyroscope and the field as read, too (rg, rm lines).
+    let raw_out = std::env::args().any(|a| a == "--raw");
+    // --north: the field heeded for the turn about the vertical. Not by
+    // default: as sensorfw gives it, it is mostly the phone's own magnets
+    // (about 270 uT, uncalibrated), and its axes do not match the
+    // gyroscope's (turned flat on the table, its z swings by 40 uT) - it
+    // pulled the turn the wrong way.
+    let north = std::env::args().any(|a| a == "--north");
     let lock = format!("duo-motion-{}", std::process::id());
     let hold = || {
         if awake {
@@ -166,12 +174,19 @@ fn main() {
         if let Some(g) = sensors[1].as_mut() {
             for r in g.take() {
                 rate = [0, 1, 2].map(|i| (f32_at(&r, 8 + 4 * i) as f64 / 1000.0).to_radians());
+                if raw_out {
+                    alive &= say(format!("rg {} {:.4} {:.4} {:.4}", u64_at(&r, 0), rate[0], rate[1], rate[2]));
+                }
             }
         }
         // The field: nT, calibrated by the sensor hub.
         if let Some(m) = sensors[2].as_mut() {
             for r in m.take() {
                 let v = [0, 1, 2].map(|i| i32_at(&r, 8 + 4 * i) as f64);
+                if raw_out {
+                    let raw = [0, 1, 2].map(|i| i32_at(&r, 20 + 4 * i));
+                    alive &= say(format!("rm {} {} {} {} {} {} {} {}", u64_at(&r, 0), v[0], v[1], v[2], raw[0], raw[1], raw[2], i32_at(&r, 32)));
+                }
                 field = Some(match field {
                     Some(f) => [0, 1, 2].map(|i| f[i] + (v[i] - f[i]) * 0.3),
                     None => v,
@@ -196,8 +211,8 @@ fn main() {
                 if !ahrs.started {
                     // Started once the field is there (north at once), or
                     // without it after a second.
-                    if field.is_some() || sensors[2].is_none() || began.elapsed() >= Duration::from_secs(1) {
-                        ahrs.start(raw, field);
+                    if !north || field.is_some() || sensors[2].is_none() || began.elapsed() >= Duration::from_secs(1) {
+                        ahrs.start(raw, field.filter(|_| north));
                     }
                     last_t = Some(t);
                     continue;
@@ -206,7 +221,7 @@ fn main() {
                 last_t = Some(t);
                 let spin = (rate[0] * rate[0] + rate[1] * rate[1] + rate[2] * rate[2]).sqrt();
                 let still = spin < 0.06 && steady_since.is_some_and(|s| s.elapsed() >= Duration::from_millis(500));
-                ahrs.step(rate, raw, field.filter(|_| std::mem::take(&mut fresh_field)), dt, still);
+                ahrs.step(rate, raw, field.filter(|_| std::mem::take(&mut fresh_field) && north), dt, still);
             }
         }
         if let Some(h) = sensors[3].as_mut() {
