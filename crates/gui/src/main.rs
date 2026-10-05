@@ -194,6 +194,7 @@ const CSS: &str = "
    says something (the status dot, the accent on the chosen section). */
 window, window.background { background: #ffffff; font-size: 9.5pt; }
 window.night, window.night.background { background: #242427; color: #e6e6ea; }
+window.wallpaper, window.wallpaper.csd { border-radius: 0; box-shadow: none; outline: none; margin: 0; }
 window.night headerbar { background: #242427; color: #e6e6ea; }
 headerbar { background: #ffffff; box-shadow: none; border-bottom: none; }
 .navigation-sidebar { background: transparent; }
@@ -424,6 +425,11 @@ struct Ui {
     cubes_rest: std::cell::Cell<(f32, f32)>,
     /// Where the pointer was as the saver came.
     saver_pointer: std::cell::Cell<Option<(i32, i32)>>,
+    /// The window as the second monitor's wallpaper: where it was before
+    /// (its X frame) and its size as GTK had it.
+    wallpaper: std::cell::Cell<Option<((i32, i32, i32, i32), (i32, i32))>>,
+    /// How far the eye has gone over to the wallpaper's (eased).
+    wallpaper_mix: std::cell::Cell<f32>,
     /// The wheel's lens: how near now, and where it goes.
     zoom: std::cell::Cell<(f32, f32)>,
     /// The sections' facts as words, from the last look (for their boards).
@@ -1174,6 +1180,8 @@ fn build(app: &adw::Application) {
         saver_mix: std::cell::Cell::new(0.0),
         cubes_rest: std::cell::Cell::new((0.0, 0.0)),
         saver_pointer: std::cell::Cell::new(None),
+        wallpaper: std::cell::Cell::new(None),
+        wallpaper_mix: std::cell::Cell::new(0.0),
         zoom: std::cell::Cell::new((1.0, 1.0)),
         section_words: RefCell::default(),
         cable_plug: cable_plug.clone(),
@@ -1489,9 +1497,16 @@ fn build(app: &adw::Application) {
                         }
                     }
                     FloorButton::Replay => ui.intro.borrow_mut().replay(),
-                    FloorButton::Saver => saver_on(&ui),
+                    FloorButton::Saver => wallpaper(&ui),
                     FloorButton::Minimize => win.minimize(),
-                    FloorButton::Close => win.close(),
+                    // As the wallpaper, the window back first (its place and
+                    // size kept as it closes are the usual ones).
+                    FloorButton::Close => {
+                        if ui.wallpaper.get().is_some() {
+                            wallpaper(&ui);
+                        }
+                        win.close();
+                    }
                 }
                 return;
             }
@@ -2125,7 +2140,14 @@ fn build(app: &adw::Application) {
                     false
                 }
             };
-            let pressing = pressing || boarding || paging || saving || zooming;
+            // The wallpaper's view eased to (half a second) and back.
+            let walling = {
+                let (now, to) = (ui.wallpaper_mix.get(), if ui.wallpaper.get().is_some() { 1.0 } else { 0.0 });
+                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 0.5).min((to - now).abs());
+                ui.wallpaper_mix.set(now + step);
+                step != 0.0
+            };
+            let pressing = pressing || boarding || paging || saving || zooming || walling;
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
@@ -3640,6 +3662,43 @@ fn saver_on(ui: &Ui) {
     }
 }
 
+/// The window as the second monitor's wallpaper (under every window, the
+/// whole monitor, worked with as ever), or back where it was.
+fn wallpaper(ui: &Ui) {
+    if let Some((was, size)) = ui.wallpaper.take() {
+        trace(format_args!("wallpaper: off, back to {was:?}"));
+        ui.window.remove_css_class("wallpaper");
+        ui.window.set_decorated(true);
+        ui.window.set_default_size(size.0, size.1);
+        place::desktop(&ui.window, false, Some(was));
+        return;
+    }
+    let display = WidgetExt::display(&ui.window);
+    let Some(m) = saver::second_monitor(&display) else { return };
+    let g = m.geometry();
+    let Some(was) = place::frame(&ui.window) else { return };
+    let size = ui.window.default_size();
+    if let Some(b) = ui.board.borrow_mut().as_mut() {
+        b.close();
+    }
+    if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
+        b.close();
+    }
+    trace(format_args!("wallpaper: on {}x{}+{}+{}", g.width(), g.height(), g.x(), g.y()));
+    ui.window.add_css_class("wallpaper");
+    // No decoration of its own: no shadow round it (it filled the monitor
+    // less its shadow).
+    ui.window.set_decorated(false);
+    // GTK's own size the monitor's too (else it took its usual one back).
+    ui.window.set_default_size(g.width(), g.height());
+    if place::desktop(&ui.window, true, Some((g.x(), g.y(), g.width(), g.height()))) {
+        ui.wallpaper.set(Some((was, size)));
+    } else {
+        ui.window.remove_css_class("wallpaper");
+        ui.window.set_decorated(true);
+    }
+}
+
 /// The saver off: the window back where it was.
 fn saver_off(ui: &Ui) {
     if ui.saver.take().is_none() {
@@ -4377,7 +4436,11 @@ fn show_fold(ui: &Ui, angle: f64) {
         let off = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
         let intro = ui.intro.borrow();
         let (seen, eye) = (intro.duo(), intro.eye());
-        let looking = |e: f32| gsk::Transform::new().perspective(3.2 * h).rotate_3d(TILT * e, &graphene::Vec3::x_axis()).to_matrix();
+        // As the wallpaper the eye nearly straight above (the word and the
+        // buttons laid for that view).
+        let w_mix = ui.wallpaper_mix.get();
+        let tilt_rest = TILT * (1.0 - 0.8 * w_mix * w_mix * (3.0 - 2.0 * w_mix));
+        let looking = |e: f32| gsk::Transform::new().perspective(3.2 * h).rotate_3d(tilt_rest * e, &graphene::Vec3::x_axis()).to_matrix();
         let shown_at = |m: &graphene::Matrix, p: (f32, f32)| {
             let v = m.transform_vec4(&graphene::Vec4::new(p.0, p.1, -DUO_THICK, 1.0));
             (v.x() / v.w(), v.y() / v.w())
@@ -4451,7 +4514,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             (v.x() / v.w(), v.y() / v.w())
         };
         let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
-        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: TILT, near: 1.0, far: 3.2 };
+        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: tilt_rest, near: 1.0, far: 3.2 };
         // Where the word is once the eye is down (its cubes in the
         // table's squares, a little off the page's point): kept there all
         // the way, so that nothing moves as the eye stops.

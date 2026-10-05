@@ -19,6 +19,11 @@ struct X11 {
     moved: unsafe extern "C" fn(Display, Window, i32, i32) -> i32,
     query_pointer: unsafe extern "C" fn(Display, Window, *mut Window, *mut Window, *mut i32, *mut i32, *mut i32, *mut i32, *mut u32) -> i32,
     flush: unsafe extern "C" fn(Display) -> i32,
+    intern_atom: unsafe extern "C" fn(Display, *const std::ffi::c_char, i32) -> std::ffi::c_ulong,
+    change_property: unsafe extern "C" fn(Display, Window, std::ffi::c_ulong, std::ffi::c_ulong, i32, i32, *const u8, i32) -> i32,
+    move_resize: unsafe extern "C" fn(Display, Window, i32, i32, u32, u32) -> i32,
+    unmap: unsafe extern "C" fn(Display, Window) -> i32,
+    map: unsafe extern "C" fn(Display, Window) -> i32,
 }
 
 /// GTK's X11 functions and Xlib's, from the process (both are loaded when
@@ -36,6 +41,11 @@ fn x11() -> Option<&'static X11> {
             moved: std::mem::transmute(get(b"XMoveWindow\0")?),
             query_pointer: std::mem::transmute(get(b"XQueryPointer\0")?),
             flush: std::mem::transmute(get(b"XFlush\0")?),
+            intern_atom: std::mem::transmute(get(b"XInternAtom\0")?),
+            change_property: std::mem::transmute(get(b"XChangeProperty\0")?),
+            move_resize: std::mem::transmute(get(b"XMoveResizeWindow\0")?),
+            unmap: std::mem::transmute(get(b"XUnmapWindow\0")?),
+            map: std::mem::transmute(get(b"XMapWindow\0")?),
         })
     })
     .as_ref()
@@ -126,4 +136,42 @@ pub fn pointer(window: &adw::ApplicationWindow) -> Option<(i32, i32)> {
     let (mut rx, mut ry, mut wx, mut wy, mut mask) = (0, 0, 0, 0, 0u32);
     let ok = unsafe { (x11.query_pointer)(dpy, (x11.root)(dpy), &mut root_ret, &mut child, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask) };
     (ok != 0).then_some((rx, ry))
+}
+
+/// The window as a desktop's (`on`: under every window, the wallpaper of
+/// the monitor at `rect`, x y width height) or an ordinary one again (at
+/// `rect` if given). The window manager reads a window's type as it is
+/// mapped: unmapped, typed, mapped again. X11 only: whether it was done.
+pub fn desktop(window: &adw::ApplicationWindow, on: bool, rect: Option<(i32, i32, i32, i32)>) -> bool {
+    let Some((x11, dpy, id)) = handle(window) else { return false };
+    unsafe {
+        let atom = |name: &str| {
+            let c = std::ffi::CString::new(name).unwrap();
+            (x11.intern_atom)(dpy, c.as_ptr(), 0)
+        };
+        let kind = atom("_NET_WM_WINDOW_TYPE");
+        let value = atom(if on { "_NET_WM_WINDOW_TYPE_DESKTOP" } else { "_NET_WM_WINDOW_TYPE_NORMAL" });
+        (x11.unmap)(dpy, id);
+        (x11.flush)(dpy);
+        // XA_ATOM (4), 32-bit, replace (0).
+        (x11.change_property)(dpy, id, kind, 4, 32, 0, &value as *const std::ffi::c_ulong as *const u8, 1);
+        (x11.map)(dpy, id);
+        if let Some((x, y, w, h)) = rect {
+            (x11.move_resize)(dpy, id, x, y, w.max(1) as u32, h.max(1) as u32);
+        }
+        (x11.flush)(dpy);
+    }
+    true
+}
+
+/// The window's X place and size now (its content's, with the shadow round
+/// it), to give back later.
+pub fn frame(window: &adw::ApplicationWindow) -> Option<(i32, i32, i32, i32)> {
+    let (x11, dpy, id) = handle(window)?;
+    let (mut x, mut y, mut child) = (0, 0, 0);
+    if unsafe { (x11.translate)(dpy, id, (x11.root)(dpy), 0, 0, &mut x, &mut y, &mut child) } == 0 {
+        return None;
+    }
+    let surface = window.surface()?;
+    Some((x, y, surface.width(), surface.height()))
 }

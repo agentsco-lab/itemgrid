@@ -7,8 +7,9 @@
 use gtk::prelude::*;
 use gtk::{gdk, gio};
 
-/// Idle this long, the saver comes.
-pub const AFTER_MS: u64 = 5 * 60 * 1000;
+/// Idle this long, the saver comes - off for now (the window as the second
+/// monitor's wallpaper instead: place::desktop).
+pub const AFTER_MS: u64 = u64::MAX;
 
 /// How long nothing has been pressed or moved (ms), as GNOME counts it.
 pub fn idle_ms() -> Option<u64> {
