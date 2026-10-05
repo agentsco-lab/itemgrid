@@ -311,6 +311,37 @@ fn bar(m: &mut Mesh, long: f32, thick: f32, cx: f32, cz: f32, y0: f32, y1: f32, 
     }
 }
 
+/// A box (mm), flat-shaded: for small parts.
+fn boxm(m: &mut Mesh, lo: [f32; 3], hi: [f32; 3], mat: f32, k: f32) {
+    let c = |x: f32, y: f32, z: f32| [x * k, y * k, z * k];
+    let (x0, y0, z0, x1, y1, z1) = (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    let faces = [
+        ([c(x0, y0, z1), c(x1, y0, z1), c(x1, y1, z1), c(x0, y1, z1)], [0.0, 0.0, 1.0]),
+        ([c(x0, y0, z0), c(x1, y0, z0), c(x1, y1, z0), c(x0, y1, z0)], [0.0, 0.0, -1.0]),
+        ([c(x0, y0, z0), c(x1, y0, z0), c(x1, y0, z1), c(x0, y0, z1)], [0.0, -1.0, 0.0]),
+        ([c(x0, y1, z0), c(x1, y1, z0), c(x1, y1, z1), c(x0, y1, z1)], [0.0, 1.0, 0.0]),
+        ([c(x0, y0, z0), c(x0, y1, z0), c(x0, y1, z1), c(x0, y0, z1)], [-1.0, 0.0, 0.0]),
+        ([c(x1, y0, z0), c(x1, y1, z0), c(x1, y1, z1), c(x1, y0, z1)], [1.0, 0.0, 0.0]),
+    ];
+    for (q, n) in faces {
+        m.quad((q[0], n), (q[1], n), (q[2], n), (q[3], n), mat);
+    }
+}
+
+/// At each end of a half, the chassis' ledge across its notch, nearly to
+/// the spine (a slit between the halves' two): it covers the end of the
+/// hinge's block, as photographed. For the left half; the right one's the
+/// same mirrored.
+fn ledges(m: &mut Mesh, mirror: bool, k: f32) {
+    const LEDGE: f32 = 1.2;
+    const SLIT: f32 = 0.4;
+    let (x0, x1) = (HALF_W - NOTCH_W - 0.4, MID - SLIT / 2.0);
+    let (x0, x1) = if mirror { (MID - x1, MID - x0) } else { (x0, x1) };
+    for (y0, y1) in [(0.05, LEDGE), (BODY_H - LEDGE, BODY_H - 0.05)] {
+        boxm(m, [x0, y0, -THICK + 0.35], [x1, y1, -0.35], CHASSIS, k);
+    }
+}
+
 /// The hinge, one assembly (the Duo's: its halves come off a central
 /// spine; as photographed open flat): a dark core along the spine, two
 /// polished rods on it the whole length, just under the glass, and at each
@@ -356,6 +387,7 @@ fn half(i: usize, k: f32) -> Mesh {
     // spine).
     let outline: Vec<P2> = if i == 0 { left } else { left.iter().map(|p| [MID - p[0], p[1]]).collect() };
     body(&mut m, &outline, k);
+    ledges(&mut m, i == 1, k);
     if i == 0 {
         logo(&mut m, k);
     }
