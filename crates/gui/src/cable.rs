@@ -54,6 +54,8 @@ pub struct Rope {
     pub hole: Option<([f32; 4], f32)>,
     /// How far before the duo's drawing the cord's and the 3D area begin.
     pub gl_past: f32,
+    /// And how far above it the 3D area begins.
+    pub gl_past_top: f32,
     /// Where the drawing's origin is in the duo's (it reaches past it).
     pub offset: (f32, f32),
     /// Steps since anything moved: at rest, not worked out again.

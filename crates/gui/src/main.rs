@@ -474,8 +474,11 @@ fn build(app: &adw::Application) {
     duo.put(&cable, -past as f64, -past as f64);
     // The Duo itself, in 3D, over the same room as the cord.
     let scene3d: Rc<RefCell<duo3d::Scene>> = Rc::default();
-    let gl3d = duo3d::area(scene3d.clone(), (bw as f64 * DUO_ROOM_W) as i32 + 2 * past, room + 2 * past, DUO_PX_PER_MM as f32);
-    duo.put(&gl3d, -past as f64, -past as f64);
+    // More room above: held up and tipped, the phone's top went past it.
+    let past_top = 700;
+    let gl3d = duo3d::area(scene3d.clone(), (bw as f64 * DUO_ROOM_W) as i32 + 2 * past, room + past + past_top, DUO_PX_PER_MM as f32);
+    duo.put(&gl3d, -past as f64, -past_top as f64);
+    rope.borrow_mut().gl_past_top = past_top as f32;
     // The phone's screens on the 3D halves.
     for i in 0..2 {
         let (scene3d, gl3d) = (scene3d.clone(), gl3d.clone());
@@ -754,6 +757,18 @@ fn build(app: &adw::Application) {
     let home_page = gtk::Overlay::new();
     home_page.set_child(Some(&floor));
     home_page.add_overlay(scroll);
+    // Nothing on the way to the page cuts the drawn Duo off: held up and
+    // tipped it reaches far past its room (an overlay clipped it there).
+    {
+        let mut w: Option<gtk::Widget> = Some(duo.clone().upcast());
+        while let Some(x) = w {
+            x.set_overflow(gtk::Overflow::Visible);
+            if x == *home_page.upcast_ref::<gtk::Widget>() {
+                break;
+            }
+            w = x.parent();
+        }
+    }
     // Developer: what Developer Mode shows - software, slots, backups,
     // Android, the screen, the system.
     let developer = gtk::Box::new(gtk::Orientation::Vertical, 16);
@@ -2655,8 +2670,10 @@ fn show_fold(ui: &Ui, angle: f64) {
         let (w, hh) = (ui.gl3d.width_request() as f32, ui.gl3d.height_request() as f32);
         let ndc = gsk::Transform::new()
             .translate_3d(&graphene::Point3D::new(-1.0, 1.0, 0.0))
-            .scale_3d(2.0 / w, -2.0 / hh, -1.0 / 1500.0)
-            .translate(&graphene::Point::new(past, past));
+            // Depth over a wide range: near the eye (the phone held up and
+            // tipped toward the viewer) it went past the near plane, cut off.
+            .scale_3d(2.0 / w, -2.0 / hh, -1.0 / 6000.0)
+            .translate(&graphene::Point::new(past, ui.rope.borrow().gl_past_top));
         let persp = gsk::Transform::new()
             .translate(&graphene::Point::new(at.0, at.1))
             .perspective(3.2 * h)
