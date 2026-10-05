@@ -299,6 +299,10 @@ struct Ui {
     orbit: std::cell::Cell<([f32; 2], [f32; 2])>,
     /// No phone: the drawn one waits, opening and closing.
     idle: std::cell::Cell<bool>,
+    /// The phone was closed and went (asleep): drawn shut, lying on the
+    /// table, not waiting open; and the hinge's last angle read.
+    shut_away: std::cell::Cell<bool>,
+    last_angle: std::cell::Cell<Option<f64>>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, cradle_core::posture::Stop)>>,
     /// The simple page and its parts.
@@ -926,6 +930,8 @@ fn build(app: &adw::Application) {
         following: RefCell::default(),
         orbit: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         idle: std::cell::Cell::new(false),
+        shut_away: std::cell::Cell::new(false),
+        last_angle: std::cell::Cell::new(None),
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         pose: pose.clone(),
         pose_name: RefCell::default(),
@@ -1353,11 +1359,13 @@ fn build(app: &adw::Application) {
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
             // Waiting for the phone: the drawn one opens and closes, slowly.
-            if ui.idle.get() {
+            if ui.idle.get() && !ui.shut_away.get() {
                 let t = clock.frame_time() as f64 / 1e6;
                 ui.fold.set((ui.fold.get().0, 135.0 + 40.0 * (t * 0.6).sin()));
             }
-            let k = 1.0 - (-1.0f64 / 60.0 / 0.05).exp();
+            // Laid down slowly when it was closed and went; else quick, as
+            // it follows the phone.
+            let k = 1.0 - (-1.0f64 / 60.0 / if ui.shut_away.get() { 0.18 } else { 0.05 }).exp();
             let (shown, to) = ui.fold.get();
             let (tilt, tilt_to) = ui.tilt.get();
             let (orbit, orbit_to) = ui.orbit.get();
@@ -1565,6 +1573,7 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
     };
     ui.pages.set_visible_child_name("phone");
     ui.idle.set(false);
+    ui.shut_away.set(false);
     let dev = developer_mode();
     ui.switcher.set_visible(dev);
     if !dev {
@@ -1645,7 +1654,11 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         }
         ui.name_sub.set_label("Not seen just now");
         ui.battery.set_label("");
-        say_status(ui, "away", "Looking for your Duo", "Plug it in with the USB cable, or connect it to the same Wi-Fi as this computer.\nIf it is off, hold the power key for a few seconds.");
+        if ui.shut_away.get() {
+            say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Cradle finds it again.");
+        } else {
+            say_status(ui, "away", "Looking for your Duo", "Plug it in with the USB cable, or connect it to the same Wi-Fi as this computer.\nIf it is off, hold the power key for a few seconds.");
+        }
         ui.idle.set(true);
         bottom_shown(ui);
         return;
@@ -1882,6 +1895,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
             match r {
                 cradle_core::posture::Reading::Angle(a) => {
                     raw = Some(a);
+                    ui.last_angle.set(Some(a));
                     fold_to(&ui, shut(&ui, a));
                 }
                 cradle_core::posture::Reading::Gravity(g) => {
@@ -1902,6 +1916,15 @@ fn follow_hinge(ui: &Rc<Ui>) {
             say_pose(&ui);
         }
         // It ended (the phone went, or was stopped): started again next second.
+        // Gone just as it was being closed - it went to sleep: drawn closing
+        // the rest of the way and lying down on the table, gently (it froze
+        // in the air at the last angle read).
+        let closing = ui.pose_name.borrow().as_str() == "closed" || ui.last_angle.get().is_some_and(|a| a < 60.0);
+        if closing {
+            ui.shut_away.set(true);
+            fold_to(&ui, 0.0);
+            tilt_to(&ui, [0.0, 0.0, 1.0]);
+        }
         let mine = ui.following.borrow().as_ref().is_some_and(|(_, s)| s.same(&stop));
         if mine {
             ui.following.borrow_mut().take();
