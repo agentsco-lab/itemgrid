@@ -2653,6 +2653,12 @@ struct FloorView {
     tapped: Option<((f32, f32), f32)>,
     /// Words set in the table's squares.
     texts: Vec<TableText>,
+    /// The credit's cubes (intro.rs) and where their row begins.
+    flips: Vec<intro::Flip>,
+    credit_at: (f32, f32),
+    /// Across the table, where the eye's line is (boxes drawn farthest
+    /// from it first: a box nearer it covers its neighbour's side).
+    eye_x: f32,
 }
 
 /// Words set on the table, a letter a square of `cell` (px; a square of
@@ -2860,7 +2866,8 @@ fn cube_shapes(fv: &FloorView) -> Vec<CubeShape> {
     let y0 = cy - step / 2.0;
     let z0 = fv.table;
     let mut order: Vec<usize> = (0..5).collect();
-    order.sort_by(|a, b| (left(*b) + step / 2.0).abs().partial_cmp(&(left(*a) + step / 2.0).abs()).unwrap());
+    let off_eye = |i: usize| (left(i) + step / 2.0 - fv.eye_x).abs();
+    order.sort_by(|a, b| off_eye(*b).partial_cmp(&off_eye(*a)).unwrap());
     let mut shapes: Vec<CubeShape> = order
         .into_iter()
         .filter(|i| fv.cubes[*i].0 > 0.0)
@@ -2994,6 +3001,114 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     let _ = cr.pop_group_to_source();
     let _ = cr.paint_with_alpha(fv.word as f64);
     draw_texts(fv, cr);
+    draw_flips(fv, cr);
+}
+
+/// The credit's cubes: a row of them, each lid turning over as a
+/// departures board's flap does - folding to its middle line, lifted a
+/// little, and opening with the next letter.
+fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
+    use gtk::graphene;
+    let Some(m) = fv.matrix else { return };
+    let side = square() * fv.k;
+    let z0 = fv.table;
+    let p3 = |x: f32, y: f32, z: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    let path = |q: &[(f64, f64)]| {
+        cr.new_path();
+        cr.move_to(q[0].0, q[0].1);
+        for p in &q[1..] {
+            cr.line_to(p.0, p.1);
+        }
+        cr.close_path();
+    };
+    let line = |cr: &gtk::cairo::Context| {
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
+        cr.set_line_width(1.6);
+        let _ = cr.stroke();
+    };
+    let letter = |q: &Quad, ch: char| {
+        if ch == ' ' {
+            return;
+        }
+        let (a, b, d) = (q[0], q[1], q[3]);
+        let s = side as f64;
+        cr.save().ok();
+        cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
+        let layout = pangocairo::functions::create_layout(cr);
+        let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
+        font.set_weight(gtk::pango::Weight::Light);
+        font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
+        layout.set_font_description(Some(&font));
+        layout.set_text(&ch.to_string());
+        let (ink, logical) = layout.pixel_extents();
+        cr.move_to((s - ink.width() as f64) / 2.0 - ink.x() as f64, (s - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * s);
+        cr.set_source_rgba(0.16, 0.16, 0.18, 0.88);
+        pangocairo::functions::show_layout(cr, &layout);
+        cr.restore().ok();
+    };
+    // Farthest from the eye's line first.
+    let mut flips = fv.flips.clone();
+    let x_of = |i: usize| fv.credit_at.0 + i as f32 * side;
+    let off_eye = |i: usize| (x_of(i) + side / 2.0 - fv.eye_x).abs();
+    flips.sort_by(|a, b| off_eye(b.i).partial_cmp(&off_eye(a.i)).unwrap());
+    for f in flips.iter().filter(|f| f.height > 0.0) {
+        let (x0, y0) = (x_of(f.i), fv.credit_at.1);
+        let (shadow, faces, top) = box_shape(&p3, (x0, y0), side, z0, f.height);
+        path(&shadow);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * f.height as f64);
+        let _ = cr.fill();
+        for (q, light) in &faces {
+            path(q);
+            cr.set_source_rgb(*light, *light, light * 1.005);
+            let _ = cr.fill_preserve();
+            line(cr);
+        }
+        path(&top);
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        let _ = cr.fill_preserve();
+        line(cr);
+        if f.turn <= 0.0 {
+            letter(&top, f.from);
+            continue;
+        }
+        // The lid folding to its middle and open again, lifted as it turns.
+        let a = f.turn * std::f32::consts::PI;
+        let half = side / 2.0 * a.cos().abs();
+        let zt = z0 + f.height * side + a.sin() * side * 0.25;
+        let yc = y0 + side / 2.0;
+        let lid = [p3(x0, yc - half, zt), p3(x0 + side, yc - half, zt), p3(x0 + side, yc + half, zt), p3(x0, yc + half, zt)];
+        path(&lid);
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        let _ = cr.fill_preserve();
+        line(cr);
+        if half > 0.5 {
+            // The letter squeezed with it (its frame the lid's).
+            let ch = if f.turn < 0.5 { f.from } else { f.to };
+            // Drawn in the lid's own frame: squeezed with it.
+            let (a, b, d) = (lid[0], lid[1], lid[3]);
+            let s = side as f64;
+            cr.save().ok();
+            path(&lid);
+            cr.clip();
+            cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
+            let layout = pangocairo::functions::create_layout(cr);
+            let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
+            font.set_weight(gtk::pango::Weight::Light);
+            font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
+            layout.set_font_description(Some(&font));
+            if ch != ' ' {
+                layout.set_text(&ch.to_string());
+                let (ink, logical) = layout.pixel_extents();
+                cr.move_to((s - ink.width() as f64) / 2.0 - ink.x() as f64, (s - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * s);
+                cr.set_source_rgba(0.16, 0.16, 0.18, 0.88);
+                pangocairo::functions::show_layout(cr, &layout);
+            }
+            cr.restore().ok();
+        }
+    }
 }
 
 /// Words set in the table's squares (TableText): the finer squares under
@@ -3621,6 +3736,9 @@ fn show_fold(ui: &Ui, angle: f64) {
             on: (f32, f32),
             tilt: f32,
             near: f32,
+            /// How far the eye is (in the Duo's heights): nearer, the far
+            /// smaller against the near.
+            far: f32,
         }
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
         let mix = |a: Eye, b: Eye, t: f32| Eye {
@@ -3628,11 +3746,12 @@ fn show_fold(ui: &Ui, angle: f64) {
             on: (lerp(a.on.0, b.on.0, t), lerp(a.on.1, b.on.1, t)),
             tilt: lerp(a.tilt, b.tilt, t),
             near: lerp(a.near, b.near, t),
+            far: lerp(a.far, b.far, t),
         };
         let matrix = |e: Eye| {
             gsk::Transform::new()
                 .translate(&graphene::Point::new(e.on.0, e.on.1))
-                .perspective(3.2 * h)
+                .perspective(e.far * h)
                 .rotate_3d(e.tilt, &graphene::Vec3::x_axis())
                 .scale_3d(e.near, e.near, e.near)
                 .translate_3d(&graphene::Point3D::new(-e.look.0, -e.look.1, 0.0))
@@ -3643,9 +3762,9 @@ fn show_fold(ui: &Ui, angle: f64) {
             (v.x() / v.w(), v.y() / v.w())
         };
         let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
-        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: TILT, near: 1.0 };
+        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: TILT, near: 1.0, far: 3.2 };
         let word_on = (want.0 + middle.0, want.1 + middle.1);
-        let above = Eye { look: cubes_at, on: word_on, tilt: 0.0, near: 1.0 };
+        let above = Eye { look: cubes_at, on: word_on, tilt: 0.0, near: 1.0, far: 3.2 };
         let cur = square() * k;
         // Words on the table (a letter a square, from the word's left,
         // a square below it): the eye near enough for them to fill a good
@@ -3654,20 +3773,31 @@ fn show_fold(ui: &Ui, angle: f64) {
         let left = cubes_at.0 - 2.5 * cur;
         let under = cubes_at.1 + 1.5 * cur;
         let rest_m = matrix(rest);
-        let framing = |cols: usize, rows: usize| {
+        // Words from `at` (a square's far left corner): the eye on them,
+        // near enough for them to fill `fill` of the page's width, them at
+        // `place` on the page (parts of its width and height), at `tilt`.
+        let framing = |at: (f32, f32), cols: usize, rows: usize, fill: f32, place: (f32, f32), tilt: f32, far: f32| {
             let (w, h) = (cols as f32 * cur, rows as f32 * cur);
-            let mid = (left + w / 2.0, under + h / 2.0);
-            let (a, b) = (on_page(&rest_m, (left, mid.1)), on_page(&rest_m, (left + w, mid.1)));
-            let near = (ui.floor.width() as f32 * 0.5 / (b.0 - a.0).abs().max(1.0)).clamp(0.6, 2.4);
-            let from = on_page(&rest_m, mid);
-            Eye { look: mid, on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), tilt: TILT * 0.8, near }
+            let mid = (at.0 + w / 2.0, at.1 + h / 2.0);
+            let to = (ui.floor.width() as f32 * place.0 - off.0, ui.floor.height() as f32 * place.1 - off.1);
+            // Their width as this eye sees them unscaled, then scaled to fill.
+            let m = matrix(Eye { look: mid, on: to, tilt, near: 1.0, far });
+            let (a, b) = (on_page(&m, (at.0, mid.1)), on_page(&m, (at.0 + w, mid.1)));
+            let near = (ui.floor.width() as f32 * fill / (b.0 - a.0).abs().max(1.0)).clamp(0.6, 3.0);
+            Eye { look: mid, on: to, tilt, near, far }
         };
         let block = |lines: &[&str]| (lines.iter().map(|l| l.chars().count()).max().unwrap_or(1), lines.len());
-        let (cc, cr) = block(&intro::CREDIT);
-        let near_credit = framing(cc, cr);
+        // The credit apart from the word, nearer the viewer: near it, the
+        // word goes off into the distance behind it.
+        let credit_at = (left, cubes_at.1 + 6.0 * cur);
+        let near_credit = framing(credit_at, intro::CREDIT.chars().count(), 1, 0.7, (0.5, 0.64), 58.0, 1.7);
         let note_lines: Vec<String> = intro.note().map(|(t, _)| t.lines().map(str::to_owned).collect()).unwrap_or_default();
         let (nc, nr) = block(&note_lines.iter().map(String::as_str).collect::<Vec<_>>());
-        let near_note = framing(nc.max(1), nr.max(1));
+        let near_note = {
+            let e = framing((left, under), nc.max(1), nr.max(1), 0.5, (0.42, 0.42), TILT * 0.8, 3.2);
+            let from = on_page(&rest_m, e.look);
+            Eye { on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), ..e }
+        };
         let mut e = mix(mix(mix(above, rest, eye), near_credit, intro.focus()), near_note, intro.near_note());
         // Coming down, the word kept where it is on the page.
         if eye < 1.0 {
@@ -3675,6 +3805,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             e.on = (e.on.0 + word_on.0 - shown.0, e.on.1 + word_on.1 - shown.1);
         }
         let at = e.on;
+        let eye_x = e.look.0;
         let rest = matrix(e);
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
@@ -3682,9 +3813,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
-        if let Some((set, strength)) = intro.credit() {
-            texts.push(TableText { at: (left, under), cell: cur, lines: intro::CREDIT.iter().map(|l| l.to_string()).collect(), grey: 0.38, bold: false, set, strength });
-        }
+        let flips = intro.credit();
         if let Some((text, strength)) = intro.note() {
             let mut lines = text.lines();
             if let Some(head) = lines.next() {
@@ -3704,9 +3833,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.flips != flips || fv.credit_at != credit_at || fv.eye_x != eye_x;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, flips, credit_at, eye_x };
         if changed {
             ui.floor.queue_draw();
         }

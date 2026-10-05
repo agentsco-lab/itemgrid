@@ -5,8 +5,10 @@
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
 //!
-//! Then the credit is set in the table's squares under the word,
-//! the eye comes near it and back, and it goes.
+//! Then the credit comes up on cubes of its own, nearer the viewer, their
+//! lids turning over letter after letter as a departures board's flaps do
+//! until they show it; the eye comes near it (the word off in the
+//! distance) and back; the lids turn blank and the cubes go down.
 //!
 //! A cube clicked - or any of the table's squares - looks for the phone at
 //! once: the cube pressed in (a square jumps up out of the table and back),
@@ -17,8 +19,20 @@ use std::time::Instant;
 
 pub const WORD: [&str; 5] = ["h", "y", "t", "h", "e"];
 
-/// Under the word, a letter a square.
-pub const CREDIT: [&str; 3] = ["designed &", "developed", "by agentsco"];
+/// The credit, a letter a cube (none for the space).
+pub const CREDIT: &str = "by AgentsCo";
+
+/// A credit cube now: which letter's place, its height (a part of its
+/// side), its lid turning `from` one letter `to` the next (`turn` 0..1; 0
+/// still, showing `from`).
+#[derive(Clone, Copy, PartialEq)]
+pub struct Flip {
+    pub i: usize,
+    pub height: f32,
+    pub from: char,
+    pub to: char,
+    pub turn: f32,
+}
 
 /// Seconds from the start: the word coming, the squares growing out, the
 /// eye coming down.
@@ -26,10 +40,16 @@ const WORD_IN: f32 = 0.5;
 const GRID: (f32, f32) = (0.55, 1.7);
 const EYE: (f32, f32) = (1.6, 3.0);
 /// The credit set letter by letter; the eye near it and back; it goes.
-const CREDIT_SET: (f32, f32) = (3.1, 4.3);
+/// The credit's cubes up (one after the other), their lids turning (a
+/// flap's turn FLIP_S; each lid starting a little after the one before);
+/// blank again and down.
+const CREDIT_UP: f32 = 3.1;
+const FLIPS_FROM: f32 = 3.45;
+const FLIP_S: f32 = 0.11;
+const CREDIT_BLANK: f32 = 6.45;
+const CREDIT_DOWN: f32 = 6.85;
 const FOCUS_IN: (f32, f32) = (3.4, 4.9);
 const FOCUS_OUT: (f32, f32) = (6.0, 7.5);
-const CREDIT_OUT: (f32, f32) = (6.6, 7.4);
 const END: f32 = 7.5;
 /// Seconds for the cubes to sink (or rise), the last starting a little
 /// after the first.
@@ -134,15 +154,43 @@ impl Intro {
         smoother((t - FOCUS_IN.0) / (FOCUS_IN.1 - FOCUS_IN.0)) * (1.0 - smoother((t - FOCUS_OUT.0) / (FOCUS_OUT.1 - FOCUS_OUT.0)))
     }
 
-    /// The credit: how much of it is set (0 .. 1, letter by letter) and
-    /// its strength; none before or after.
-    pub fn credit(&self) -> Option<(f32, f32)> {
+    /// The credit's cubes now (none before or after).
+    pub fn credit(&self) -> Vec<Flip> {
         let t = self.t();
-        if !self.begun() || t < CREDIT_SET.0 || t >= CREDIT_OUT.1 {
-            return None;
+        if !self.begun() || t < CREDIT_UP || t >= END {
+            return Vec::new();
         }
-        let set = ((t - CREDIT_SET.0) / (CREDIT_SET.1 - CREDIT_SET.0)).clamp(0.0, 1.0);
-        Some((set, 1.0 - smooth((t - CREDIT_OUT.0) / (CREDIT_OUT.1 - CREDIT_OUT.0))))
+        let letters = b"abcdefghijklmnopqrstuvwxyz";
+        CREDIT
+            .chars()
+            .enumerate()
+            .filter(|(_, ch)| *ch != ' ')
+            .map(|(i, ch)| {
+                let up = smooth((t - CREDIT_UP - i as f32 * 0.03) / 0.35);
+                let down = smooth((t - CREDIT_DOWN - i as f32 * 0.03) / 0.35);
+                // The letters a lid goes through: from blank, a few on the
+                // way, its own.
+                let n = 3 + (i * 5) % 3;
+                let mut seq = vec![' '];
+                seq.extend((0..n - 1).map(|k| letters[(i * 31 + k * 17 + 7) % 26] as char));
+                seq.push(ch);
+                let start = FLIPS_FROM + i as f32 * 0.06;
+                let k = ((t - start) / FLIP_S).floor();
+                let (mut from, mut to, mut turn) = if t < start {
+                    (' ', ' ', 0.0)
+                } else if k as usize >= n {
+                    (ch, ch, 0.0)
+                } else {
+                    (seq[k as usize], seq[k as usize + 1], (t - start) / FLIP_S - k)
+                };
+                let blank = CREDIT_BLANK + i as f32 * 0.03;
+                if t >= blank {
+                    let p = (t - blank) / FLIP_S;
+                    (from, to, turn) = if p < 1.0 { (ch, ' ', p) } else { (' ', ' ', 0.0) };
+                }
+                Flip { i, height: 0.6 * up * (1.0 - down), from, to, turn }
+            })
+            .collect()
     }
 
     /// The eye: 0 straight above .. 1 where the Duo is seen from.
