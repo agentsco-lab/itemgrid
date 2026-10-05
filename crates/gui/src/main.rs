@@ -3870,6 +3870,7 @@ fn wallpaper(ui: &Ui) {
     trace(format_args!("wallpaper: on {}x{}+{}+{} (from {was:?}, shadow {shadow:?})", g.width(), g.height(), g.x(), g.y()));
     WALL_BACK.with(|b| b.set(Some(WallBack { was, size, shadow })));
     ui.wallpaper.set(Some((was, size)));
+    place::keep_composited(&ui.window);
     wall_cover(ui, was);
     ui.wall_move.set(Some(WallMove { phase: WallPhase::Cover(std::time::Instant::now()), from: was, to: monitor, now: was, into: true, monitor }));
 }
@@ -3884,12 +3885,15 @@ struct WallBack {
 }
 
 /// Where the way into the wallpaper (or back) is: the cover being shown;
-/// the window being made over under it; the window shown again, the cover
+/// the window made unseen (that drawn and shown before it is moved: else
+/// its last picture showed where it was moved to); the window being made
+/// over under it (how many frames in a row it has been right); the window shown again, the cover
 /// still up a moment; the card moving (since when).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum WallPhase {
     Cover(std::time::Instant),
-    Over(std::time::Instant),
+    Hidden(std::time::Instant),
+    Over(std::time::Instant, u32),
     Shown(std::time::Instant),
     Move(std::time::Instant),
 }
@@ -3928,6 +3932,7 @@ fn wall_cover(ui: &Ui, r: (i32, i32, i32, i32)) {
     }
     cover.set_child(Some(&picture));
     WidgetExt::realize(&cover);
+    place::keep_composited(&cover);
     if !place::own_over(&cover, r) {
         return;
     }
@@ -3994,14 +3999,23 @@ fn wall_step(ui: &Ui) -> bool {
     let now = std::time::Instant::now();
     let after = |since: std::time::Instant, ms: u64| now.duration_since(since) >= std::time::Duration::from_millis(ms);
     match w.phase {
-        // The cover up (drawn a couple of frames): the window unseen and
-        // made over under it.
+        // The cover up (drawn a couple of frames): the window unseen.
         WallPhase::Cover(since) => {
             if !after(since, 50) {
                 ui.wall_move.set(Some(w));
                 return true;
             }
-            ui.stage.set_opacity(0.0);
+            // Unseen by the compositor itself: GTK's own (0) drew nothing,
+            // its last picture left to be shown where the window was moved.
+            place::seen(&ui.window, false);
+            w.phase = WallPhase::Hidden(now);
+        }
+        // Unseen on the screen (a few frames): made over.
+        WallPhase::Hidden(since) => {
+            if !after(since, 50) {
+                ui.wall_move.set(Some(w));
+                return true;
+            }
             if w.into {
                 ui.window.add_css_class("wall-move");
                 ui.window.add_css_class("wallpaper");
@@ -4015,22 +4029,34 @@ fn wall_step(ui: &Ui) -> bool {
                 ui.window.set_default_size(back.size.0, back.size.1);
                 ui.window.set_decorated(true);
                 let s = back.shadow;
-                place::move_resize(&ui.window, (back.was.0 - s.0, back.was.1 - s.1, back.was.2 + s.0 + s.2, back.was.3 + s.1 + s.3));
+                // Mutter takes the place asked for a framed window as its
+                // content's (the shadow round it its own to add).
+                place::move_resize(&ui.window, (back.was.0, back.was.1, back.was.2 + s.0 + s.2, back.was.3 + s.1 + s.3));
             }
-            w.phase = WallPhase::Over(now);
+            w.phase = WallPhase::Over(now, 0);
         }
-        // Made over once it is where and as big as meant (or after a
-        // while, nudged there): shown again under the cover.
-        WallPhase::Over(since) => {
+        // Made over once it is where and as big as meant, a few frames in a
+        // row (or after a while, nudged there): shown again under the
+        // cover.
+        WallPhase::Over(since, right) => {
             let target = if w.into { w.monitor } else { back.was };
             let size_ok = (ui.window.width(), ui.window.height()) == (target.2, target.3);
             let at = place::content_origin(&ui.window).map(|(x, y)| (x.round() as i32, y.round() as i32));
             let place_ok = at == Some((target.0, target.1));
+            if !w.into && std::env::var_os("ITEMGRID_FRAMES").is_some() {
+                trace(format_args!("wall: back {:?} at {at:?} size {}x{} frame {:?} want {target:?}", w.phase, ui.window.width(), ui.window.height(), place::frame(&ui.window)));
+            }
             if w.into {
                 wall_card(ui, &w, w.from);
             }
+            if size_ok && place_ok && right < 4 {
+                w.phase = WallPhase::Over(since, right + 1);
+                ui.wall_move.set(Some(w));
+                return true;
+            }
             if !(size_ok && place_ok) {
-                if size_ok && after(since, 120) {
+                w.phase = WallPhase::Over(since, 0);
+                if size_ok && after(since, 40) {
                     // Framed but a little off (its shadow's widths not as
                     // they were): put right.
                     if let (Some(a), Some(f)) = (at, place::frame(&ui.window)) {
@@ -4042,7 +4068,7 @@ fn wall_step(ui: &Ui) -> bool {
                     return true;
                 }
             }
-            ui.stage.set_opacity(1.0);
+            place::seen(&ui.window, true);
             w.phase = WallPhase::Shown(now);
         }
         // Drawn again (a few frames): the cover gone, the card on its way
@@ -4051,7 +4077,7 @@ fn wall_step(ui: &Ui) -> bool {
             if w.into {
                 wall_card(ui, &w, w.from);
             }
-            if !after(since, 60) {
+            if !after(since, 100) {
                 ui.wall_move.set(Some(w));
                 return true;
             }

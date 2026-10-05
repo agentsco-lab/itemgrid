@@ -23,6 +23,7 @@ struct X11 {
     change_property: unsafe extern "C" fn(Display, Window, std::ffi::c_ulong, std::ffi::c_ulong, i32, i32, *const u8, i32) -> i32,
     move_resize: unsafe extern "C" fn(Display, Window, i32, i32, u32, u32) -> i32,
     change_attributes: unsafe extern "C" fn(Display, Window, std::ffi::c_ulong, *const u8) -> i32,
+    delete_property: unsafe extern "C" fn(Display, Window, std::ffi::c_ulong) -> i32,
 }
 
 /// GTK's X11 functions and Xlib's, from the process (both are loaded when
@@ -44,6 +45,7 @@ fn x11() -> Option<&'static X11> {
             change_property: std::mem::transmute(get(b"XChangeProperty\0")?),
             move_resize: std::mem::transmute(get(b"XMoveResizeWindow\0")?),
             change_attributes: std::mem::transmute(get(b"XChangeWindowAttributes\0")?),
+            delete_property: std::mem::transmute(get(b"XDeleteProperty\0")?),
         })
     })
     .as_ref()
@@ -103,6 +105,40 @@ pub fn move_to(window: &adw::ApplicationWindow, x: i32, y: i32) {
     let Some((x11, dpy, id)) = handle(window) else { return };
     unsafe {
         (x11.moved)(dpy, id, x, y);
+        (x11.flush)(dpy);
+    }
+}
+
+/// Always through the compositor (_NET_WM_BYPASS_COMPOSITOR 2): a window
+/// covering a whole monitor is otherwise taken out of it on X11, and the
+/// change in and out blinked (going into the wallpaper, coming back).
+pub fn keep_composited(window: &impl IsA<gtk::Window>) {
+    let Some((x11, dpy, id)) = handle(window) else { return };
+    unsafe {
+        let name = std::ffi::CString::new("_NET_WM_BYPASS_COMPOSITOR").unwrap();
+        let atom = (x11.intern_atom)(dpy, name.as_ptr(), 0);
+        let value: std::ffi::c_ulong = 2;
+        // XA_CARDINAL (6), 32-bit, replace (0).
+        (x11.change_property)(dpy, id, atom, 6, 32, 0, &value as *const std::ffi::c_ulong as *const u8, 1);
+        (x11.flush)(dpy);
+    }
+}
+
+/// The window seen (1) or not (0) as the compositor shows it
+/// (_NET_WM_WINDOW_OPACITY): whatever picture of it the compositor still
+/// has, old or half made over, unseen.
+pub fn seen(window: &impl IsA<gtk::Window>, on: bool) {
+    let Some((x11, dpy, id)) = handle(window) else { return };
+    unsafe {
+        let name = std::ffi::CString::new("_NET_WM_WINDOW_OPACITY").unwrap();
+        let atom = (x11.intern_atom)(dpy, name.as_ptr(), 0);
+        if on {
+            (x11.delete_property)(dpy, id, atom);
+        } else {
+            let value: std::ffi::c_ulong = 0;
+            // XA_CARDINAL (6), 32-bit, replace (0).
+            (x11.change_property)(dpy, id, atom, 6, 32, 0, &value as *const std::ffi::c_ulong as *const u8, 1);
+        }
         (x11.flush)(dpy);
     }
 }
