@@ -17,6 +17,7 @@ struct X11 {
     root: unsafe extern "C" fn(Display) -> Window,
     translate: unsafe extern "C" fn(Display, Window, Window, i32, i32, *mut i32, *mut i32, *mut Window) -> i32,
     moved: unsafe extern "C" fn(Display, Window, i32, i32) -> i32,
+    query_pointer: unsafe extern "C" fn(Display, Window, *mut Window, *mut Window, *mut i32, *mut i32, *mut i32, *mut i32, *mut u32) -> i32,
     flush: unsafe extern "C" fn(Display) -> i32,
 }
 
@@ -33,6 +34,7 @@ fn x11() -> Option<&'static X11> {
             root: std::mem::transmute(get(b"XDefaultRootWindow\0")?),
             translate: std::mem::transmute(get(b"XTranslateCoordinates\0")?),
             moved: std::mem::transmute(get(b"XMoveWindow\0")?),
+            query_pointer: std::mem::transmute(get(b"XQueryPointer\0")?),
             flush: std::mem::transmute(get(b"XFlush\0")?),
         })
     })
@@ -115,4 +117,13 @@ pub fn content_origin(window: &adw::ApplicationWindow) -> Option<(f64, f64)> {
     }
     let (sx, sy) = window.native()?.surface_transform();
     Some((x as f64 + sx, y as f64 + sy))
+}
+
+/// Where the pointer is on the screen (X11 only).
+pub fn pointer(window: &adw::ApplicationWindow) -> Option<(i32, i32)> {
+    let (x11, dpy, _) = handle(window)?;
+    let (mut root_ret, mut child) = (0, 0);
+    let (mut rx, mut ry, mut wx, mut wy, mut mask) = (0, 0, 0, 0, 0u32);
+    let ok = unsafe { (x11.query_pointer)(dpy, (x11.root)(dpy), &mut root_ret, &mut child, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask) };
+    (ok != 0).then_some((rx, ry))
 }

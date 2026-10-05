@@ -422,6 +422,8 @@ struct Ui {
     saver_mix: std::cell::Cell<f32>,
     /// Where the word stood on the table before the saver came.
     cubes_rest: std::cell::Cell<(f32, f32)>,
+    /// Where the pointer was as the saver came.
+    saver_pointer: std::cell::Cell<Option<(i32, i32)>>,
     /// The wheel's lens: how near now, and where it goes.
     zoom: std::cell::Cell<(f32, f32)>,
     /// The sections' facts as words, from the last look (for their boards).
@@ -1171,6 +1173,7 @@ fn build(app: &adw::Application) {
         saver: std::cell::Cell::new(None),
         saver_mix: std::cell::Cell::new(0.0),
         cubes_rest: std::cell::Cell::new((0.0, 0.0)),
+        saver_pointer: std::cell::Cell::new(None),
         zoom: std::cell::Cell::new((1.0, 1.0)),
         section_words: RefCell::default(),
         cable_plug: cable_plug.clone(),
@@ -1232,8 +1235,20 @@ fn build(app: &adw::Application) {
             let Some(idle) = saver::idle_ms() else { return glib::ControlFlow::Continue };
             match ui.saver.get() {
                 None if idle >= saver::AFTER_MS => saver_on(&ui),
-                // Idle less than it has been on: something was done since.
-                Some(since) if idle + 700 < since.elapsed().as_millis() as u64 => saver_off(&ui),
+                // Something done since it came (idle less than it has been
+                // on), after its first second: the pointer moved well away
+                // (a hand resting on the mouse stirs it a little), or not at
+                // all (a key).
+                Some(since) if since.elapsed().as_millis() > 1000 && idle + 700 < since.elapsed().as_millis() as u64 => {
+                    let now = place::pointer(&ui.window);
+                    let moved = match (ui.saver_pointer.get(), now) {
+                        (Some(a), Some(b)) => ((a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)) as f64,
+                        _ => f64::MAX,
+                    };
+                    if moved == 0.0 || moved > 40.0 * 40.0 {
+                        saver_off(&ui);
+                    }
+                }
                 _ => {}
             }
             glib::ControlFlow::Continue
@@ -2089,7 +2104,10 @@ fn build(app: &adw::Application) {
             // frames going on while it drifts.
             let saving = {
                 let (now, to) = (ui.saver_mix.get(), if ui.saver.get().is_some() { 1.0 } else { 0.0 });
-                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 2.0).min((to - now).abs());
+                // In over two seconds; back in half of one (the window is
+                // its usual size again at once).
+                let span = if to > now { 2.0 } else { 0.5 };
+                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / span).min((to - now).abs());
                 ui.saver_mix.set(now + step);
                 ui.saver.get().is_some() || step != 0.0
             };
@@ -3610,6 +3628,7 @@ fn saver_on(ui: &Ui) {
         b.close();
     }
     ui.saver.set(Some(std::time::Instant::now()));
+    ui.saver_pointer.set(place::pointer(&ui.window));
     let display = WidgetExt::display(&ui.window);
     match saver::second_monitor(&display) {
         Some(m) => ui.window.fullscreen_on_monitor(&m),
@@ -4514,6 +4533,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         // The page's size against the usual window's: the saver's scene as
         // large as its screen.
         let page_scale = (ui.floor.width() as f32 / 1000.0).max(ui.floor.height() as f32 / 800.0).max(1.0);
+        // The saver's nearness by the page's smaller side (by the larger the
+        // word went past a tall screen's edges).
+        let page_fit = (ui.floor.width() as f32 / 1000.0).min(ui.floor.height() as f32 / 800.0).max(1.0);
         if drift > 0.0 {
             let t = ui.saver.get().map_or(0.0, |s| s.elapsed().as_secs_f32()) + 40.0;
             // Round the word, in the page's middle.
@@ -4522,7 +4544,7 @@ fn show_fold(ui: &Ui, angle: f64) {
                 look: (cubes_at.0 + 1.5 * cur * (t * 0.031).sin(), cubes_at.1 + 1.0 * cur + 1.5 * cur * (t * 0.023).cos()),
                 on: page_mid,
                 tilt: TILT + 8.0 * (t * 0.041).sin(),
-                near: page_scale * (0.9 + 0.12 * (t * 0.027).sin()),
+                near: page_fit * 1.5 * (0.9 + 0.12 * (t * 0.027).sin()),
                 far: 3.2,
             };
             let d = drift * drift * (3.0 - 2.0 * drift);
@@ -4601,7 +4623,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         };
         // Each button growing up out of the table as the word's cubes go
         // down, one after the other.
-        let button_in: [f32; 5] = std::array::from_fn(|i| intro.button(i));
+        let button_in: [f32; 5] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
         // The buttons grown up as cubes half a square high (and a little more
         // under the pointer).
         let button_lift: [f32; 5] = std::array::from_fn(|i| (0.5 * button_in[i] + lift[i]) * (1.0 - flat));
