@@ -23,8 +23,11 @@ use gtk::{gdk, gio, glib};
 
 mod cable;
 mod duo3d;
+mod intro;
 mod card;
+mod control;
 mod journey;
+mod place;
 mod sections;
 
 const APP_ID: &str = "lab.agentsco.Hythe";
@@ -60,6 +63,50 @@ const CABLE_ROOM: (f64, f64) = (90.0, 80.0);
 const CABLE_PAD: f64 = 4.0;
 /// The floor's squares (mm), and the depth of the hole the cord goes down.
 const FLOOR_SQUARE: f64 = 20.0;
+
+/// For now, to find the floor's look: its squares' size (mm) set with the
+/// scroll wheel, and where they lie (mm) by dragging the table - kept
+/// while the window runs (f32 bits).
+static SQUARE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Where the wheel has sent the size: eased there each frame.
+static SQUARE_TO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static GRID_AT: [std::sync::atomic::AtomicU32; 2] = [std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0)];
+
+fn square() -> f32 {
+    match SQUARE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => FLOOR_SQUARE as f32,
+        b => f32::from_bits(b),
+    }
+}
+
+/// A frame's step of the squares' size toward where the wheel sent it;
+/// whether it moved.
+fn ease_square() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let to = match SQUARE_TO.load(Relaxed) {
+        0 => return false,
+        b => f32::from_bits(b),
+    };
+    let now = square();
+    if (to - now).abs() < 0.01 {
+        if now != to {
+            SQUARE.store(to.to_bits(), Relaxed);
+            return true;
+        }
+        return false;
+    }
+    SQUARE.store((now + (to - now) * 0.18).to_bits(), Relaxed);
+    true
+}
+
+/// The cubes' middle on the table (px, f32 bits; 0 0 not yet): the
+/// squares are laid from it (show_fold sets it).
+static CUBES_AT: [std::sync::atomic::AtomicU32; 2] = [std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0)];
+
+fn grid_at() -> (f32, f32) {
+    let g = |i: usize| f32::from_bits(GRID_AT[i].load(std::sync::atomic::Ordering::Relaxed));
+    (g(0), g(1))
+}
 const HOLE_DEPTH: f64 = 30.0;
 /// How far the plug's housing goes into the edge (mm).
 const CABLE_IN: f64 = 0.7;
@@ -139,7 +186,6 @@ headerbar { background: #ffffff; box-shadow: none; border-bottom: none; }
 .status-dot.away { background: #77767b; }
 .status-title { font-weight: 600; font-size: 1.45em; }
 .repair-row-title { font-weight: 700; }
-.wordmark { font-family: Lato, Ubuntu, sans-serif; font-weight: 300; font-size: 54px; letter-spacing: 0.32em; opacity: 0.88; }
 .free-label { opacity: 0.6; font-size: 0.9em; }
 ";
 
@@ -155,12 +201,17 @@ fn main() -> glib::ExitCode {
         std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
     }
     let app = adw::Application::builder().application_id(APP_ID).build();
+    // A picture taken (HYTHE_SHOT) by an instance of its own, beside a
+    // running window.
+    if std::env::var_os("HYTHE_SHOT").is_some() {
+        app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
+    }
     app.connect_activate(build);
     app.run()
 }
 
 /// Where the phone is, as Hythe sees it.
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 enum Place {
     /// Linux up, over ssh at this host.
     Linux(String),
@@ -282,6 +333,9 @@ struct Ui {
     /// at rest (not turned by the pointer, nor as it is held).
     floor: gtk::DrawingArea,
     floor_view: Rc<RefCell<FloorView>>,
+    /// The start, and the cubes with the word standing while there is no
+    /// phone (intro.rs).
+    intro: RefCell<intro::Intro>,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -409,6 +463,9 @@ fn build(app: &adw::Application) {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
     let window = adw::ApplicationWindow::builder().application(app).title("Hythe").default_width(1000).default_height(800).build();
+    // Where it was last (place.rs).
+    place::restore(&window);
+    place::keep(&window);
 
     // The tabs, in the header as Finder has them.
     let stack = adw::ViewStack::new();
@@ -944,10 +1001,9 @@ fn build(app: &adw::Application) {
     let pages = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(400).build();
     pages.add_named(&stack, Some("phone"));
     pages.add_named(&away, Some("away"));
-    // The start: the word, while the phone is first looked for.
-    let splash = gtk::Label::builder().label("hythe").css_classes(["wordmark"]).halign(gtk::Align::Center).valign(gtk::Align::Center).build();
-    pages.add_named(&splash, Some("splash"));
-    pages.set_visible_child_name("splash");
+    // The start is the page's own (intro.rs): the word on its cubes, while
+    // the phone is first looked for.
+    pages.set_visible_child_name("phone");
 
     let banner = adw::Banner::new("");
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1000,6 +1056,7 @@ fn build(app: &adw::Application) {
         scene3d: scene3d.clone(),
         floor: floor.clone(),
         floor_view: floor_view.clone(),
+        intro: RefCell::default(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1047,6 +1104,145 @@ fn build(app: &adw::Application) {
         state: RefCell::default(),
         sections: section_ui.clone(),
     });
+    // For now: the start again, to look at it (a button in the header).
+    {
+        let replay = gtk::Button::builder().icon_name("media-playlist-repeat-symbolic").tooltip_text("Play the start again").css_classes(["flat"]).build();
+        let weak = Rc::downgrade(&ui);
+        replay.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.intro.borrow_mut().replay();
+            }
+        });
+        header.pack_start(&replay);
+    }
+    // Looked at from outside (HYTHE_CONTROL=1, control.rs; hythe-mcp).
+    {
+        let weak = Rc::downgrade(&ui);
+        control::start(move |request| {
+            let Some(ui) = weak.upgrade() else { return serde_json::json!({ "error": "gone" }) };
+            match request["cmd"].as_str() {
+                Some("shot") => control::shot(&ui.window),
+                Some("replay") => {
+                    ui.intro.borrow_mut().replay();
+                    serde_json::json!({ "ok": true })
+                }
+                Some("state") => {
+                    let intro = ui.intro.borrow();
+                    let st = ui.state.borrow();
+                    serde_json::json!({
+                        "window": {
+                            "content_on_screen": place::content_origin(&ui.window),
+                            "width": ui.window.width(),
+                            "height": ui.window.height(),
+                            "maximized": ui.window.is_maximized(),
+                            "active": ui.window.is_active(),
+                        },
+                        "intro": {
+                            "seconds": intro.seconds(),
+                            "done": intro.done(),
+                            "eye": intro.eye(),
+                            "grid": intro.grid(),
+                            "sink": intro.sink,
+                            "sink_to": intro.sink_to,
+                            "duo_shown": intro.duo(),
+                        },
+                        "floor": {
+                            "square_mm": square(),
+                            "square_to_mm": f32::from_bits(SQUARE_TO.load(std::sync::atomic::Ordering::Relaxed)),
+                            "grid_at_mm": grid_at(),
+                            "cubes_at_px": ui.floor_view.borrow().cubes_at,
+                        },
+                        "duo": {
+                            "fold": ui.fold.get(),
+                            "orbit": ui.orbit.get(),
+                            "tilt": ui.tilt.get(),
+                            "motion": ui.motion_on.get(),
+                        },
+                        "phone": {
+                            "place": format!("{:?}", st.place),
+                            "host": st.host,
+                            "seen_s_ago": st.last_seen.map(|t| t.elapsed().as_secs_f32()),
+                        },
+                        "page": ui.pages.visible_child_name().map(|s| s.to_string()),
+                    })
+                }
+                _ => serde_json::json!({ "error": "cmd: shot, state or replay" }),
+            }
+        });
+    }
+    // For now: the squares' size with the scroll wheel, where they lie by
+    // dragging the table (not the Duo: dragging it turns it).
+    {
+        let page = ui.floor.parent().expect("the home page");
+        fn redraw(ui: &Ui) {
+            show_fold(ui, ui.fold.get().0);
+            ui.floor.queue_draw();
+            ui.cable.queue_draw();
+        }
+        let said: Rc<RefCell<Option<adw::Toast>>> = Rc::default();
+        // One note, its words changed as the wheel turns (a new one each step
+        // queued up); a new one once it has gone.
+        let say = move |ui: &Ui, text: String| {
+            if let Some(t) = said.borrow().as_ref() {
+                t.set_title(&text);
+                return;
+            }
+            let t = adw::Toast::builder().title(&text).timeout(2).build();
+            let s = said.clone();
+            t.connect_dismissed(move |_| *s.borrow_mut() = None);
+            ui.toasts.add_toast(t.clone());
+            *said.borrow_mut() = Some(t);
+        };
+        let say = Rc::new(say);
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let (weak, s) = (Rc::downgrade(&ui), say.clone());
+        wheel.connect_scroll(move |_, _, dy| {
+            let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
+            // A notch a millimetre (a touchpad's flow as it comes), eased
+            // there frame by frame.
+            let from = match SQUARE_TO.load(std::sync::atomic::Ordering::Relaxed) {
+                0 => square(),
+                b => f32::from_bits(b),
+            };
+            let size = (from - dy as f32).clamp(8.0, 50.0);
+            SQUARE_TO.store(size.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            s(&ui, format!("Squares {size:.0} mm"));
+            glib::Propagation::Stop
+        });
+        page.add_controller(wheel);
+        let drag = gtk::GestureDrag::new();
+        // Where the table was and its point under the pointer as the drag
+        // began: that point kept under the pointer.
+        let from = Rc::new(std::cell::Cell::new(((0.0f32, 0.0f32), None::<(f32, f32)>, (0.0f64, 0.0f64))));
+        let (weak, f, pg) = (Rc::downgrade(&ui), from.clone(), page.clone());
+        drag.connect_drag_begin(move |g, x, y| {
+            let Some(ui) = weak.upgrade() else { return };
+            let holder = ui.duo.parent().filter(|_| ui.intro.borrow().duo() > 0.5);
+            let on_duo = pg.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| holder.as_ref().is_some_and(|h| w == *h || w.is_ancestor(h)));
+            if on_duo {
+                g.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            f.set((grid_at(), table_under(&ui.floor_view.borrow(), (x, y)), (x, y)));
+        });
+        let (weak, f) = (Rc::downgrade(&ui), from);
+        drag.connect_drag_update(move |_, dx, dy| {
+            let Some(ui) = weak.upgrade() else { return };
+            let k = DUO_PX_PER_MM as f32;
+            let ((fx, fy), began, (x, y)) = f.get();
+            let now = table_under(&ui.floor_view.borrow(), (x + dx, y + dy));
+            let at = match (began, now) {
+                (Some(a), Some(b)) => (fx + (b.0 - a.0) / k, fy + (b.1 - a.1) / k),
+                // Past the horizon: as near as the view allows.
+                _ => (fx + dx as f32 / k, fy + dy as f32 / k / 50f32.to_radians().cos()),
+            };
+            GRID_AT[0].store(at.0.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            GRID_AT[1].store(at.1.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            redraw(&ui);
+            say(&ui, format!("Squares moved {:.0}, {:.0} mm", at.0, at.1));
+        });
+        page.add_controller(drag);
+    }
     *owner.borrow_mut() = Some(ui.clone());
 
     storage.set_draw_func({
@@ -1412,8 +1608,14 @@ fn build(app: &adw::Application) {
         let start = Rc::new(std::cell::Cell::new([0.0f32; 2]));
         let s2 = start.clone();
         let ui2 = ui.clone();
-        drag.connect_drag_begin(move |_, _, _| {
+        drag.connect_drag_begin(move |g, _, _| {
             if let Some(ui) = ui2.upgrade() {
+                // Not drawn (the cubes stand): nothing to turn - the drag is
+                // the table's.
+                if ui.intro.borrow().duo() < 0.5 {
+                    g.set_state(gtk::EventSequenceState::Denied);
+                    return;
+                }
                 s2.set(ui.orbit.get().1);
             }
         });
@@ -1445,6 +1647,9 @@ fn build(app: &adw::Application) {
         let drawn_at = std::cell::Cell::new(-1);
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
+            if ui.duo.width() > 1 && !ui.intro.borrow().begun() {
+                ui.intro.borrow_mut().begin();
+            }
             // Waiting for the phone: the drawn one opens and closes, slowly.
             if ui.idle.get() && !ui.shut_away.get() && std::env::var_os("HYTHE_FOLD").is_none() {
                 let t = clock.frame_time() as f64 / 1e6;
@@ -1483,6 +1688,14 @@ fn build(app: &adw::Application) {
                 }
             }
             let far = rfar || qfar || (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05 || (orbit[i] - orbit_to[i]).abs() > 0.05);
+            // The start, and the cubes rising or sinking; the squares' size
+            // eased toward the wheel's.
+            let resized = ease_square();
+            if resized {
+                ui.floor.queue_draw();
+                ui.cable.queue_draw();
+            }
+            let far = ui.intro.borrow_mut().step() || resized || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
                 let now = shown + (to - shown) * k;
@@ -1584,7 +1797,7 @@ fn build(app: &adw::Application) {
     // (to see it without a screen grab).
     if let Some(path) = std::env::var_os("HYTHE_SHOT") {
         let window = ui.window.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_secs(std::env::var("HYTHE_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(4)), move || {
+        glib::timeout_add_local_once(std::time::Duration::from_secs_f64(std::env::var("HYTHE_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0)), move || {
             let paintable = gtk::WidgetPaintable::new(Some(&window));
             let (w, h) = (window.width() as f64, window.height() as f64);
             let snap = gtk::Snapshot::new();
@@ -1750,6 +1963,7 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
         return;
     };
     ui.pages.set_visible_child_name("phone");
+    ui.intro.borrow_mut().sink_to = 1.0;
     ui.idle.set(false);
     ui.shut_away.set(false);
     let dev = developer_mode();
@@ -1832,6 +2046,8 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         ui.name_sub.set_label("Asleep");
         ui.battery.set_label("");
         say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Hythe finds it again.");
+        // Known to lie there shut: drawn so, not the cubes.
+        ui.intro.borrow_mut().sink_to = 1.0;
         ui.idle.set(true);
         bottom_shown(ui);
         return;
@@ -1844,12 +2060,16 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         ui.linux_only.set_visible(false);
         ui.mode.set_visible(false);
         ui.duo_mode.set_visible(false);
-        ui.home.set_visible(true);
+        // The status along the bottom only when the Duo is drawn (asleep);
+        // looked for, the table and the word only.
+        ui.home.set_visible(ui.shut_away.get());
         ui.updates_row.set_visible(false);
         for s in &ui.screens {
             s.set_paintable(gdk::Paintable::NONE);
         }
         ui.name_sub.set_label("Not seen just now");
+        // No phone: the cubes with the word stand where it would be.
+        ui.intro.borrow_mut().sink_to = if ui.shut_away.get() { 1.0 } else { 0.0 };
         ui.battery.set_label("");
         if ui.shut_away.get() {
             say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Hythe finds it again.");
@@ -1861,6 +2081,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         return;
     }
     ui.idle.set(false);
+    ui.intro.borrow_mut().sink_to = 1.0;
     ui.pages.set_visible_child_name("phone");
     ui.tabs.set_visible_child_name("general");
     ui.switcher.set_visible(false);
@@ -2350,10 +2571,15 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
 
 /// Where the floor's lines are (px from the phone's middle): a column of
 /// squares centred on the USB port, so the hole is right in front of it.
+/// Laid from the cubes once they are placed: five squares across them,
+/// one along (their middle stays where it is as the size changes).
 fn floor_shift(k: f32) -> (f32, f32) {
-    let step = FLOOR_SQUARE as f32;
-    let x = (CABLE_PORT_X as f32 - step / 2.0).rem_euclid(step);
-    (x * k, 0.0)
+    let step = square() * k;
+    let c = [0, 1].map(|i| f32::from_bits(CUBES_AT[i].load(std::sync::atomic::Ordering::Relaxed)));
+    if c != [0.0, 0.0] {
+        return ((c[0] - 2.5 * step).rem_euclid(step), (c[1] - 0.5 * step).rem_euclid(step));
+    }
+    ((CABLE_PORT_X as f32 * k - step / 2.0).rem_euclid(step), 0.0)
 }
 
 /// The page's floor, as the phone's table at rest is seen.
@@ -2367,6 +2593,15 @@ struct FloorView {
     table: f32,
     /// The hole the cord goes down (its square on the table, its depth).
     hole: Option<([f32; 4], f32)>,
+    /// The start (intro.rs): how far the squares have grown out round the
+    /// cubes, the word's strength, each cube's being there and height.
+    grid: f32,
+    word: f32,
+    cubes: [(f32, f32); 5],
+    /// How far the eye has come down (0 straight above .. 1).
+    eye: f32,
+    /// The cubes' middle on the table (px, in the table's squares).
+    cubes_at: (f32, f32),
 }
 
 /// The table under the Duo across the page, in 2 cm squares, in the very
@@ -2376,7 +2611,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     use gtk::graphene;
     let Some(m) = fv.matrix else { return };
     let k = fv.k;
-    let step = FLOOR_SQUARE as f32 * k;
+    let step = square() * k;
     let reach = 520.0 * k;
     let z = fv.table;
     let project = |x: f32, y: f32| -> Option<(f64, f64)> {
@@ -2386,13 +2621,20 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
         }
         Some(((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64))
     };
+    // At the start the squares grow out from the cubes' middle: a line
+    // there when the growing has reached it.
+    let grown = fv.grid * (reach + 3.0 * step);
     let alpha = |x: f32, y: f32| {
         let d = (x * x + y * y).sqrt() / reach;
-        0.15 * (1.0 - d).max(0.0).powf(1.3) as f64
+        let (cx, cy) = fv.cubes_at;
+        let from_cubes = ((x - cx) * (x - cx) + (y - cy) * (y - cy)).sqrt();
+        let reached = ((grown - from_cubes) / (2.0 * step)).clamp(0.0, 1.0);
+        0.15 * (1.0 - d).max(0.0).powf(1.3) as f64 * reached as f64
     };
     let n = (reach / step).ceil() as i32 + 1;
     let shift = floor_shift(k);
-    let pieces = 40;
+    // Finer while the squares grow out (their edge in coarse pieces stepped).
+    let pieces = if fv.grid < 1.0 { 160 } else { 40 };
     cr.set_line_width(1.6);
     for i in -n..=n {
         for along_x in [true, false] {
@@ -2414,6 +2656,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
             }
         }
     }
+    draw_cubes(fv, cr);
     // The hole: seen through its opening - its floor dark, the walls that
     // face the viewer shaded darker downward, its rim.
     let Some(([x0, y0, x1, y1], depth)) = fv.hole else { return };
@@ -2475,6 +2718,137 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.3);
     cr.set_line_width(1.0);
     let _ = cr.stroke();
+}
+
+/// The table's point (px) under a point of the page (the floor's own
+/// coordinates), found by Newton's way through the floor's view.
+fn table_under(fv: &FloorView, at: (f64, f64)) -> Option<(f32, f32)> {
+    use gtk::graphene;
+    let m = fv.matrix?;
+    let shown = |p: (f32, f32)| {
+        let v = m.transform_vec4(&graphene::Vec4::new(p.0, p.1, fv.table, 1.0));
+        (v.x() / v.w() + fv.off.0, v.y() / v.w() + fv.off.1)
+    };
+    let want = (at.0 as f32, at.1 as f32);
+    let mut p = (want.0 - fv.off.0 - fv.at.0, want.1 - fv.off.1 - fv.at.1);
+    for _ in 0..30 {
+        let f = shown(p);
+        let (fx, fy) = (shown((p.0 + 1.0, p.1)), shown((p.0, p.1 + 1.0)));
+        let j = [[fx.0 - f.0, fy.0 - f.0], [fx.1 - f.1, fy.1 - f.1]];
+        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        if det.abs() < 1e-6 {
+            return None;
+        }
+        let e = (f.0 - want.0, f.1 - want.1);
+        p = (p.0 - (j[1][1] * e.0 - j[0][1] * e.1) / det, p.1 - (-j[1][0] * e.0 + j[0][0] * e.1) / det);
+    }
+    let f = shown(p);
+    ((f.0 - want.0).abs() < 1.0 && (f.1 - want.1).abs() < 1.0).then_some(p)
+}
+
+/// The start's cubes (intro.rs): five of the table's squares in a row
+/// where the Duo lies, risen out of it as cubes - their edges the squares'
+/// own lines, their faces the table's white - the word's letters on their
+/// tops; seen from above at first, five of the squares.
+fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
+    use gtk::graphene;
+    let Some(m) = fv.matrix else { return };
+    if fv.word <= 0.0 {
+        return;
+    }
+    let k = fv.k;
+    let step = square() * k;
+    let inset = 0.0;
+    let size = step - 2.0 * inset;
+    let p3 = |x: f32, y: f32, z: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    let area = |q: &[(f64, f64)]| (0..q.len()).map(|i| q[i].0 * q[(i + 1) % q.len()].1 - q[(i + 1) % q.len()].0 * q[i].1).sum::<f64>();
+    let path = |q: &[(f64, f64)]| {
+        cr.new_path();
+        cr.move_to(q[0].0, q[0].1);
+        for p in &q[1..] {
+            cr.line_to(p.0, p.1);
+        }
+        cr.close_path();
+    };
+    // Five squares in a row about their middle (laid in the squares by
+    // show_fold).
+    let (cx, cy) = fv.cubes_at;
+    let left = |i: usize| cx + (i as f32 - 2.5) * step;
+    let (y0, y1) = (cy - step / 2.0 + inset, cy + step / 2.0 - inset);
+    let z0 = fv.table;
+    // Farthest from the eye's line first: a cube nearer it covers its
+    // neighbour's side.
+    let mut order: Vec<usize> = (0..5).collect();
+    order.sort_by(|a, b| (left(*b) + step / 2.0).abs().partial_cmp(&(left(*a) + step / 2.0).abs()).unwrap());
+    let _ = cr.push_group();
+    for i in order {
+        let (there, h) = fv.cubes[i];
+        if there <= 0.0 {
+            continue;
+        }
+        let x0 = left(i) + inset;
+        let x1 = x0 + size;
+        let zt = z0 + h * size;
+        // Its shadow on the table, toward the viewer.
+        let reach = 0.45 * h * size;
+        path(&[p3(x0, y0, z0), p3(x1, y0, z0), p3(x1 + reach * 0.3, y1 + reach, z0), p3(x0 + reach * 0.3, y1 + reach, z0)]);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h * fv.eye) as f64);
+        let _ = cr.fill();
+        // Its faces, each wound so that seen from outside it turns as the
+        // top does seen from above: drawn only so turned.
+        let top = [p3(x0, y0, zt), p3(x1, y0, zt), p3(x1, y1, zt), p3(x0, y1, zt)];
+        let facing = area(&top).signum();
+        let faces = [
+            ([p3(x0, y1, z0), p3(x0, y1, zt), p3(x1, y1, zt), p3(x1, y1, z0)], 0.93),
+            ([p3(x1, y0, z0), p3(x1, y0, zt), p3(x0, y0, zt), p3(x0, y0, z0)], 0.99),
+            ([p3(x1, y1, z0), p3(x1, y1, zt), p3(x1, y0, zt), p3(x1, y0, z0)], 0.965),
+            ([p3(x0, y0, z0), p3(x0, y0, zt), p3(x0, y1, zt), p3(x0, y1, z0)], 0.965),
+        ];
+        let line = |cr: &gtk::cairo::Context| {
+            // As the table's lines are drawn near the middle.
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
+            cr.set_line_width(1.6);
+            let _ = cr.stroke();
+        };
+        for (q, light) in faces {
+            if area(&q).signum() == facing {
+                path(&q);
+                cr.set_source_rgb(light, light, light * 1.005);
+                let _ = cr.fill_preserve();
+                line(cr);
+            }
+        }
+        path(&top);
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        let _ = cr.fill_preserve();
+        line(cr);
+        // The letter on the top: the face's own frame (its corners), the
+        // letter laid in it.
+        let (a, b, c) = (top[0], top[1], top[3]);
+        let s = size as f64;
+        cr.save().ok();
+        cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (c.0 - a.0) / s, (c.1 - a.1) / s, a.0, a.1));
+        let layout = pangocairo::functions::create_layout(cr);
+        let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
+        font.set_weight(gtk::pango::Weight::Light);
+        font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
+        layout.set_font_description(Some(&font));
+        layout.set_text(intro::WORD[i]);
+        // Across: the letter's ink centred; up and down: the line's, so the
+        // letters keep one baseline.
+        let (ink, logical) = layout.pixel_extents();
+        let x = (s - ink.width() as f64) / 2.0 - ink.x() as f64;
+        let y = (s - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * s;
+        cr.move_to(x, y);
+        cr.set_source_rgba(0.16, 0.16, 0.18, 0.88 * (there as f64 / 0.25).min(1.0));
+        pangocairo::functions::show_layout(cr, &layout);
+        cr.restore().ok();
+    }
+    let _ = cr.pop_group_to_source();
+    let _ = cr.paint_with_alpha(fv.word as f64);
 }
 
 /// One layer of the plug's housing (as the halves' edges are drawn: its
@@ -2776,9 +3150,13 @@ fn show_fold(ui: &Ui, angle: f64) {
         let t = view(at, persp).translate(&graphene::Point::new(mid, 0.0));
         local(t, i, rock, raise).translate_3d(&graphene::Point3D::new(-DUO_PAD, -DUO_PAD, z))
     };
-    // In the middle of the room: where the phone is seen now, centred.
+    // In the middle of the room: where the phone is seen now, centred. The
+    // room's middle is its holder's: in a narrower window the holder is
+    // narrower than the room, which keeps to its left edge (the Duo was
+    // drawn off to the right).
     let quad = graphene::Rect::new(0.0, 0.0, mid + 2.0 * DUO_PAD, h + 2.0 * DUO_PAD);
-    let first = (width / 2.0, room / 2.0);
+    let holder = ui.duo.parent().map_or(width, |p| p.width().max(1) as f32);
+    let first = (holder.min(width) / 2.0, room / 2.0);
     let mut seen: Option<graphene::Rect> = None;
     for i in 0..2 {
         for z in [0.0, -DUO_THICK] {
@@ -2895,14 +3273,16 @@ fn show_fold(ui: &Ui, angle: f64) {
     let table = -DUO_THICK;
     // The hole the cord goes down: one of the floor's squares, ahead and to
     // the right of the phone.
-    let step = FLOOR_SQUARE as f32 * k;
+    let step = square() * k;
     // Right in front of the plug, a few centimetres toward the viewer: the
     // squares are laid so that one is centred on the port (FloorView's
     // shift).
     let shift = floor_shift(k);
     let hj = ((h / 2.0 + 48.0 * k - shift.1) / step).floor();
     let hx = CABLE_PORT_X as f32 * k;
-    let hole = [hx - step / 2.0, shift.1 + hj * step, hx + step / 2.0, shift.1 + (hj + 1.0) * step];
+    // The square the port's line goes through.
+    let hx0 = shift.0 + ((hx - shift.0) / step).floor() * step;
+    let hole = [hx0, shift.1 + hj * step, hx0 + step, shift.1 + (hj + 1.0) * step];
     let depth = HOLE_DEPTH as f32 * k;
     let at_mm = |x: f64, y: f64| {
         let p = pm.transform_point3d(&graphene::Point3D::new(x as f32 * k, y as f32 * k, 0.0));
@@ -2967,16 +3347,72 @@ fn show_fold(ui: &Ui, angle: f64) {
     // The floor: the table as the phone at rest sees it (no turn by the
     // pointer, no tilt in the hand), where the duo's drawing is on the page.
     {
+        // At the start the eye comes down from straight above. While the
+        // cubes stand the room's middle is the view's (where the Duo would
+        // be centred is its own pose's - unseen then); toward the Duo's as
+        // it is seen.
+        // The word stays in the page's upper left (START_AT, a part of its
+        // width and height): the cubes stand on the table where the view,
+        // once the eye is down, shows that place - and as it comes down the
+        // view moves so that they stay there. The Duo is in the middle.
+        const START_AT: (f32, f32) = (0.25, 0.25);
+        let off = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
+        let intro = ui.intro.borrow();
+        let (seen, eye) = (intro.duo(), intro.eye());
+        let looking = |e: f32| gsk::Transform::new().perspective(3.2 * h).rotate_3d(TILT * e, &graphene::Vec3::x_axis()).to_matrix();
+        let shown_at = |m: &graphene::Matrix, p: (f32, f32)| {
+            let v = m.transform_vec4(&graphene::Vec4::new(p.0, p.1, -DUO_THICK, 1.0));
+            (v.x() / v.w(), v.y() / v.w())
+        };
+        let middle = (holder.min(width) / 2.0, room / 2.0);
+        let want = (ui.floor.width() as f32 * START_AT.0 - off.0 - middle.0, ui.floor.height() as f32 * START_AT.1 - off.1 - middle.1);
+        // The table's point shown there (Newton's way, a few steps).
+        let down = looking(1.0);
+        let mut p = want;
+        for _ in 0..20 {
+            let f = shown_at(&down, p);
+            let (fx, fy) = (shown_at(&down, (p.0 + 1.0, p.1)), shown_at(&down, (p.0, p.1 + 1.0)));
+            let j = [[fx.0 - f.0, fy.0 - f.0], [fx.1 - f.1, fy.1 - f.1]];
+            let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+            if det.abs() < 1e-6 {
+                break;
+            }
+            let e = (f.0 - want.0, f.1 - want.1);
+            p = (p.0 - (j[1][1] * e.0 - j[0][1] * e.1) / det, p.1 - (-j[1][0] * e.0 + j[0][0] * e.1) / det);
+        }
+        // In the squares as they first lie (2 cm, a column centred on the
+        // USB port): five across about it, its row; then where the table
+        // was dragged.
+        let step = FLOOR_SQUARE as f32 * k;
+        let sx = ((CABLE_PORT_X as f32 - FLOOR_SQUARE as f32 / 2.0) * k).rem_euclid(step);
+        let first = ((p.0 - sx) / step - 2.5).round();
+        let moved = grid_at();
+        let cubes_at = (sx + (first + 2.5) * step + moved.0 * k, ((p.1 / step).floor() + 0.5) * step + moved.1 * k);
+        for (i, v) in [cubes_at.0, cubes_at.1].into_iter().enumerate() {
+            CUBES_AT[i].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+        // Where they show at the end, kept through the eye's coming down.
+        let end = shown_at(&down, cubes_at);
+        let now = shown_at(&looking(eye), cubes_at);
+        let middle = (middle.0 + end.0 - now.0, middle.1 + end.1 - now.1);
+        let at = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
         let rest = gsk::Transform::new()
             .translate(&graphene::Point::new(at.0, at.1))
             .perspective(3.2 * h)
-            .rotate_3d(TILT, &graphene::Vec3::x_axis())
+            .rotate_3d(TILT * intro.eye(), &graphene::Vec3::x_axis())
             .to_matrix();
-        let off = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
+        let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
+        // The Duo seen as the cubes go down, its name under it with it (no
+        // phone: the table and the word only).
+        ui.duo.set_opacity(intro.duo() as f64);
+        for l in [&ui.name, &ui.name_sub, &ui.battery] {
+            l.set_opacity(intro.duo() as f64);
+        }
+        drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix.is_none() || fv.hole.is_some() != ui.cable.is_visible();
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at);
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)) };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at };
         if changed {
             ui.floor.queue_draw();
         }

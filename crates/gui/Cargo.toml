@@ -13,7 +13,10 @@ hythe-core = { path = "../core" }
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
 adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
 async-channel = "2"
+serde_json = "1"
 webkit = { package = "webkit6", version = "0.5" }
 # The drawn Duo in 3D (duo3d.rs): GL through GTK's GLArea.
 glow = "0.16"
+# The word on the start's cubes (intro.rs), in a light weight.
+pangocairo = "0.21"
 libloading = "0.8"
