@@ -3507,12 +3507,6 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         cr.close_path();
     };
-    let line = |cr: &gtk::cairo::Context| {
-        // As the table's lines are drawn near the middle.
-        ink(cr, 0.14);
-        cr.set_line_width(1.6);
-        let _ = cr.stroke();
-    };
     let shapes = cube_shapes(fv);
     let _ = cr.push_group();
     for c in &shapes {
@@ -3520,18 +3514,27 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         path(&c.shadow);
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h.min(1.0) * fv.eye) as f64 * if night() { 3.0 } else { 1.0 });
         let _ = cr.fill();
-        for (q, light) in &c.faces {
-            path(q);
-            let l = paper(*light);
-            cr.set_source_rgb(l, l, l * 1.005);
+        // Gone down into the table, its sides and top fade into the
+        // table's square (the letter alone lying there).
+        let up = (h / 0.1).clamp(0.0, 1.0) as f64;
+        if up > 0.0 {
+            for (q, light) in &c.faces {
+                path(q);
+                let l = paper(*light);
+                cr.set_source_rgba(l, l, l * 1.005, up);
+                let _ = cr.fill_preserve();
+                ink(cr, 0.14 * up);
+                cr.set_line_width(1.6);
+                let _ = cr.stroke();
+            }
+            path(&c.top);
+            let l = paper(1.0);
+            cr.set_source_rgba(l, l, l * 1.01, up);
             let _ = cr.fill_preserve();
-            line(cr);
+            ink(cr, 0.14 * up);
+            cr.set_line_width(1.6);
+            let _ = cr.stroke();
         }
-        path(&c.top);
-        let l = paper(1.0);
-        cr.set_source_rgb(l, l, l * 1.01);
-        let _ = cr.fill_preserve();
-        line(cr);
         let Some(letter) = intro::WORD.get(c.i) else { continue };
         // The letter on the top: the face's own frame (its corners), the
         // letter laid in it.
