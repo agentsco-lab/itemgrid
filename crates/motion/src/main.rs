@@ -14,6 +14,12 @@
 //!   g X Y Z      which way is down in g, smoothed, ten a second
 //!   h DEG        the hinge, as the sensor says it (whole degrees)
 //!   l 0|1        the lid shut
+//!   c RAD        the compass: where magnetic north is in that world, about
+//!                its z (tilt-compensated), smoothed, twice a second
+//!   look RAD     the phone looked at: held up still, its top raised, its
+//!                screen to the side - the way its screen faces about the
+//!                world's z, which is where the one looking at it is
+//!                (again each 2 s while it lasts)
 //!   .            alive, each second
 //!
 //! The orientation is fused here (Mahony's filter): the gyroscope (about 20
@@ -59,6 +65,9 @@ struct Sensor {
     buf: Vec<u8>,
     /// Bytes a reading takes on the socket.
     size: usize,
+    /// Its socket closed (sensorfw let the session go): dropped - polled, a
+    /// closed socket is always readable and the loop spun a core.
+    dead: bool,
 }
 
 impl Sensor {
@@ -78,7 +87,7 @@ impl Sensor {
             let _ = gdbus(&path, &format!("{iface}.setInterval"), &[&id.to_string(), &ms.to_string()]);
         }
         gdbus(&path, &format!("{iface}.start"), &[&id.to_string()])?;
-        Some(Sensor { name, iface, id, sock, buf: Vec::new(), size })
+        Some(Sensor { name, iface, id, sock, buf: Vec::new(), size, dead: false })
     }
 
     /// The readings that came, each its bytes (the frames' counts taken
@@ -87,9 +96,16 @@ impl Sensor {
         let mut chunk = [0u8; 65536];
         loop {
             match self.sock.read(&mut chunk) {
-                Ok(0) => break,
+                Ok(0) => {
+                    self.dead = true;
+                    break;
+                }
                 Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
-                Err(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted => break,
+                Err(_) => {
+                    self.dead = true;
+                    break;
+                }
             }
         }
         let mut out = Vec::new();
@@ -215,6 +231,9 @@ fn main() {
     let mut accel = Sensor::open("accelerometersensor", "local.AccelerometerSensor", 24, Some(10));
     let mut gyro = Sensor::open("gyroscopesensor", "local.GyroscopeSensor", 24, Some(10));
     let mut hinge = Sensor::open("hingesensor", "local.HingeSensor", 16, None);
+    // The magnetometer: a timestamp, x, y, z calibrated (nT), the raw three,
+    // a level, padding.
+    let mut mag = Sensor::open("magnetometersensor", "local.MagnetometerSensor", 40, Some(50));
     let mut lid = lid_device();
     if accel.is_none() {
         eprintln!("duo-motion: no accelerometer");
@@ -239,10 +258,16 @@ fn main() {
     let mut sent_g = [9.0f64; 3];
     let mut sent_g_at = Instant::now() - Duration::from_secs(1);
     let mut alive_at = Instant::now();
+    let mut field = [0.0f64; 3];
+    let mut north = (0.0f64, 0.0f64);
+    let mut north_at = Instant::now();
+    let mut still_since: Option<Instant> = None;
+    let mut looked_at = Instant::now() - Duration::from_secs(10);
+    let mut reopen_at: Option<Instant> = None;
     let mut alive = true;
     while alive {
         let mut fds: Vec<PollFd> = Vec::new();
-        for s in [&accel, &gyro, &hinge].into_iter().flatten() {
+        for s in [&accel, &gyro, &hinge, &mag].into_iter().flatten() {
             fds.push(PollFd { fd: s.sock.as_raw_fd(), events: POLLIN, revents: 0 });
         }
         let lid_at = fds.len();
@@ -275,6 +300,49 @@ fn main() {
                 fusion.step(rate, raw, dt);
             }
         }
+        if let Some(m) = mag.as_mut() {
+            for r in m.take() {
+                let v = [0, 1, 2].map(|i| i32::from_le_bytes(r[8 + 4 * i..12 + 4 * i].try_into().unwrap()) as f64);
+                field = [0, 1, 2].map(|i| field[i] + (v[i] - field[i]) * 0.3);
+            }
+        }
+        // The phone's axes in the world: its x, y (to its top), z (out of its
+        // screen) - the rotation's columns.
+        let axes = |q: [f64; 4]| {
+            let [w, x, y, z] = q;
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + w * z), 2.0 * (x * z - w * y)],
+                [2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + w * x)],
+                [2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y)],
+            ]
+        };
+        if fusion.started {
+            let [ax, ay, az] = axes(fusion.q);
+            // The compass: the field in the world, its bearing about z.
+            if field.iter().any(|v| *v != 0.0) {
+                let fw = [0, 1, 2].map(|i| ax[i] * field[0] + ay[i] * field[1] + az[i] * field[2]);
+                let b = fw[1].atan2(fw[0]);
+                north = (north.0 + (b.cos() - north.0) * 0.1, north.1 + (b.sin() - north.1) * 0.1);
+                if north_at.elapsed() >= Duration::from_millis(500) {
+                    alive &= say(format!("c {:.4}", north.1.atan2(north.0)));
+                    north_at = Instant::now();
+                }
+            }
+            // Looked at: still (turning under 0.4 rad/s) for 0.4 s, its top
+            // up 30 to 82 degrees, its screen facing to the side.
+            let turning = (rate[0] * rate[0] + rate[1] * rate[1] + rate[2] * rate[2]).sqrt();
+            let side = (az[0] * az[0] + az[1] * az[1]).sqrt();
+            let held_up = (0.5..0.99).contains(&ay[2]) && side > 0.4 && az[2] > -0.3;
+            if turning < 0.4 && held_up {
+                let since = *still_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(400) && looked_at.elapsed() >= Duration::from_secs(2) {
+                    alive &= say(format!("look {:.4}", az[1].atan2(az[0])));
+                    looked_at = Instant::now();
+                }
+            } else {
+                still_since = None;
+            }
+        }
         if let Some(h) = hinge.as_mut() {
             for r in h.take() {
                 let deg = u32::from_le_bytes(r[8..12].try_into().unwrap());
@@ -290,6 +358,30 @@ fn main() {
                         alive &= say(format!("l {}", (value != 0) as u8));
                     }
                 }
+            }
+        }
+        // Closed sockets let go of, and their sensors asked for again a
+        // little later (sensorfw drops a session now and then).
+        for s in [&mut accel, &mut gyro, &mut hinge, &mut mag] {
+            if s.as_ref().is_some_and(|x| x.dead) {
+                eprintln!("duo-motion: {} gone", s.as_ref().unwrap().name);
+                *s = None;
+                reopen_at = Some(Instant::now() + Duration::from_secs(3));
+            }
+        }
+        if reopen_at.is_some_and(|t| Instant::now() >= t) {
+            reopen_at = None;
+            if accel.is_none() {
+                accel = Sensor::open("accelerometersensor", "local.AccelerometerSensor", 24, Some(10));
+            }
+            if gyro.is_none() {
+                gyro = Sensor::open("gyroscopesensor", "local.GyroscopeSensor", 24, Some(10));
+            }
+            if hinge.is_none() {
+                hinge = Sensor::open("hingesensor", "local.HingeSensor", 16, None);
+            }
+            if mag.is_none() {
+                mag = Sensor::open("magnetometersensor", "local.MagnetometerSensor", 40, Some(50));
             }
         }
         let now = Instant::now();
@@ -312,7 +404,7 @@ fn main() {
             alive_at = now;
         }
     }
-    for s in [&accel, &gyro, &hinge].into_iter().flatten() {
+    for s in [&accel, &gyro, &hinge, &mag].into_iter().flatten() {
         s.close();
     }
     if awake {

@@ -38,6 +38,11 @@ pub enum Reading {
     /// The phone's orientation from duo-motion: a quaternion (w, x, y, z),
     /// the right half's frame to the world's (z up), yaw from its start.
     Quat([f64; 4]),
+    /// Where magnetic north is in duo-motion's world, about its z (rad).
+    Compass(f64),
+    /// The phone looked at: the way its screen faces in that world (rad) -
+    /// where the one looking at it is.
+    Look(f64),
 }
 
 /// Where duo-motion is kept on the phone.
@@ -147,6 +152,12 @@ fn readings(line: &str) -> Vec<Reading> {
     if let Some(rest) = line.strip_prefix("g ") {
         let v = nums(rest);
         return if v.len() == 3 { vec![Reading::Gravity([v[0], v[1], v[2]])] } else { vec![] };
+    }
+    if let Some(rest) = line.strip_prefix("c ") {
+        return nums(rest).first().map(|a| Reading::Compass(*a)).into_iter().collect();
+    }
+    if let Some(rest) = line.strip_prefix("look ") {
+        return nums(rest).first().map(|a| Reading::Look(*a)).into_iter().collect();
     }
     if let Some(rest) = line.strip_prefix("h ") {
         return nums(rest).first().map(|a| Reading::Angle(*a)).into_iter().collect();

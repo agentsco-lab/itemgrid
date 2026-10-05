@@ -293,7 +293,13 @@ struct Ui {
     /// the yaw it started at (taken off: drawn from its usual side); and
     /// whether the window follows the phone through duo-motion.
     orient: std::cell::Cell<([f64; 4], [f64; 4], bool)>,
-    yaw0: std::cell::Cell<Option<f64>>,
+    /// The turn about the vertical taken off duo-motion's world so the
+    /// viewer is in front of the drawing (rad); where the compass's north is
+    /// in that world; and the one at the computer's bearing from north, as
+    /// the last look told it (kept: ~/.config/cradle/user-heading).
+    yaw_ref: std::cell::Cell<Option<f64>>,
+    north: std::cell::Cell<Option<f64>>,
+    user_heading: std::cell::Cell<Option<f64>>,
     motion_on: std::cell::Cell<bool>,
     /// The posture in words under the Duo; what it is made from: the
     /// hinge's posture by name, the gravities lately (in a hand: they move).
@@ -352,6 +358,16 @@ struct Ui {
 
 /// A phone not seen for this long is away; before that, restarting.
 const GONE_AFTER_S: u64 = 90;
+
+/// An angle brought to -pi..pi.
+fn wrap(a: f64) -> f64 {
+    (a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+}
+
+/// Where the one at this computer was, from north, as the phone last saw.
+fn user_heading_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("cradle/user-heading")
+}
 
 /// CRADLE_TRACE=1: what the window hears and does, with the time (to see
 /// where the drawn Duo lags the phone).
@@ -990,7 +1006,9 @@ fn build(app: &adw::Application) {
         last_angle: std::cell::Cell::new(None),
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         orient: std::cell::Cell::new(([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], false)),
-        yaw0: std::cell::Cell::new(None),
+        yaw_ref: std::cell::Cell::new(None),
+        north: std::cell::Cell::new(None),
+        user_heading: std::cell::Cell::new(std::fs::read_to_string(user_heading_file()).ok().and_then(|s| s.trim().parse().ok())),
         motion_on: std::cell::Cell::new(false),
         pose: pose.clone(),
         pose_name: RefCell::default(),
@@ -2033,7 +2051,8 @@ fn follow_hinge(ui: &Rc<Ui>) {
         None => (cradle_core::posture::follow(&host, cable), false),
     };
     ui.motion_on.set(motion);
-    ui.yaw0.set(None);
+    ui.yaw_ref.set(None);
+    ui.north.set(None);
     trace(format_args!("follow: through {}", if motion { "duo-motion" } else { "sfduo-posture" }));
     let Ok((mut follow, stop)) = follow else { return };
     *ui.following.borrow_mut() = Some((host, stop.clone()));
@@ -2074,11 +2093,45 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     }
                     fold_to(&ui, shut(&ui, a));
                 }
+                cradle_core::posture::Reading::Compass(n) => {
+                    ui.north.set(Some(n));
+                    // Between looks the compass holds the reference (the
+                    // gyroscope's yaw drifts): gently toward where the user's
+                    // bearing puts it.
+                    if let Some(h) = ui.user_heading.get() {
+                        let want = h + n + std::f64::consts::FRAC_PI_2;
+                        let now = ui.yaw_ref.get().unwrap_or(want);
+                        ui.yaw_ref.set(Some(now + wrap(want - now) * if ui.yaw_ref.get().is_some() { 0.05 } else { 1.0 }));
+                    }
+                }
+                cradle_core::posture::Reading::Look(l) => {
+                    // Looked at: the one at the computer is where its screen
+                    // faced. The reference so that that way is toward the
+                    // viewer (-y in that world: the drawing's +y), and their
+                    // bearing from north kept for the next time.
+                    trace(format_args!("look {l:.3} (north {:?})", ui.north.get()));
+                    ui.yaw_ref.set(Some(l + std::f64::consts::FRAC_PI_2));
+                    if let Some(n) = ui.north.get() {
+                        let h = wrap(l - n);
+                        ui.user_heading.set(Some(h));
+                        let _ = std::fs::create_dir_all(user_heading_file().parent().unwrap_or(std::path::Path::new(".")));
+                        let _ = std::fs::write(user_heading_file(), format!("{h}\n"));
+                    }
+                }
                 cradle_core::posture::Reading::Quat(q) => {
-                    // The yaw it came with taken off: turned from there on.
+                    // The reference taken off: the compass's, else where it
+                    // was at the start.
                     let yaw = |q: [f64; 4]| (2.0 * (q[0] * q[3] + q[1] * q[2])).atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
-                    let y0 = *ui.yaw0.get().get_or_insert(yaw(q));
-                    ui.yaw0.set(Some(y0));
+                    let y0 = match ui.yaw_ref.get() {
+                        Some(y) => y,
+                        None => {
+                            // The top away from the viewer, as it lay: its y
+                            // (to its top) at +90 degrees.
+                            let y = yaw(q);
+                            ui.yaw_ref.set(Some(y));
+                            y
+                        }
+                    };
                     let (c, s) = ((-y0 / 2.0).cos(), (-y0 / 2.0).sin());
                     // (c, 0, 0, s) * q
                     let q = [c * q[0] - s * q[3], c * q[1] - s * q[2], c * q[2] + s * q[1], c * q[3] + s * q[0]];
