@@ -5,8 +5,10 @@
 //! phone, and sink into the table one after the other when it comes: the
 //! Duo is where they were. Gone again, they rise.
 //!
-//! A cube clicked looks for the phone at once: the cube pressed in, a wave
-//! along the word while it is looked for; not found, a note under it.
+//! A cube clicked - or any of the table's squares - looks for the phone at
+//! once: the cube pressed in (a square jumps up out of the table and back),
+//! a wave along the word while it is looked for; not found, a note under
+//! it.
 
 use std::time::Instant;
 
@@ -34,6 +36,8 @@ pub struct Intro {
     pressed: Option<(usize, Instant)>,
     search: Option<(Instant, Option<Instant>)>,
     note: Option<(String, Instant)>,
+    /// A square of the table clicked (its middle, px) and when.
+    tapped: Option<((f32, f32), Instant)>,
 }
 
 /// The wave goes on at least so long (a look over the cable alone is over
@@ -41,13 +45,15 @@ pub struct Intro {
 const SEARCH_MIN_S: f32 = 1.2;
 /// A press: in and back.
 const PRESS_S: f32 = 0.35;
+/// A square of the table: up out of it and back.
+const TAP_S: f32 = 0.6;
 
 impl Default for Intro {
     fn default() -> Intro {
         // HYTHE_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("HYTHE_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(EYE.1));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None }
     }
 }
 
@@ -120,10 +126,28 @@ impl Intro {
         })
     }
 
+    /// A square of the table clicked: it jumps, the phone looked for.
+    pub fn tap(&mut self, at: (f32, f32)) {
+        self.tapped = Some((at, Instant::now()));
+        self.look();
+    }
+
+    /// The square jumping: its middle and its height now (a part of its
+    /// side).
+    pub fn tapped(&self) -> Option<((f32, f32), f32)> {
+        let (at, when) = self.tapped?;
+        let t = when.elapsed().as_secs_f32() / TAP_S;
+        (t < 1.0).then(|| (at, 0.6 * (t * std::f32::consts::PI).sin().powf(0.7)))
+    }
+
     /// A cube pressed: the phone looked for from now.
     pub fn press(&mut self, i: usize) {
+        self.pressed = Some((i, Instant::now()));
+        self.look();
+    }
+
+    fn look(&mut self) {
         let now = Instant::now();
-        self.pressed = Some((i, now));
         if !self.searching() {
             self.search = Some((now, None));
         }
@@ -205,6 +229,7 @@ impl Intro {
         }
         // Pressed, looking, the note coming.
         let moving = self.pressed.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < PRESS_S + 0.05)
+            || self.tapped.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAP_S + 0.05)
             || self.search.is_some_and(|(since, _)| since.elapsed().as_secs_f32() < 30.0 && (self.searching() || since.elapsed().as_secs_f32() < SEARCH_MIN_S + 0.4))
             || self.note.as_ref().is_some_and(|(_, at)| Instant::now().saturating_duration_since(*at).as_secs_f32() < 0.5);
         let d = self.sink_to - self.sink;

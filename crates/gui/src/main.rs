@@ -1255,10 +1255,25 @@ fn build(app: &adw::Application) {
             if n != 1 || !standing {
                 return;
             }
-            let Some(i) = cube_at(&ui.floor_view.borrow(), (x, y)) else { return };
+            let fv = ui.floor_view.borrow();
+            match cube_at(&fv, (x, y)) {
+                Some(i) => {
+                    drop(fv);
+                    trace(format_args!("cube {i} pressed: looking for the phone"));
+                    ui.intro.borrow_mut().press(i);
+                }
+                None => {
+                    // The table's square under the pointer.
+                    let Some(p) = table_under(&fv, (x, y)) else { return };
+                    let step = square() * fv.k;
+                    let (sx, sy) = floor_shift(fv.k);
+                    let at = (sx + (((p.0 - sx) / step).floor() + 0.5) * step, sy + (((p.1 - sy) / step).floor() + 0.5) * step);
+                    drop(fv);
+                    trace(format_args!("square at {at:?} pressed: looking for the phone"));
+                    ui.intro.borrow_mut().tap(at);
+                }
+            }
             g.set_state(gtk::EventSequenceState::Claimed);
-            trace(format_args!("cube {i} pressed: looking for the phone"));
-            ui.intro.borrow_mut().press(i);
             if !ui.looking.get() {
                 look(&ui);
             }
@@ -2634,6 +2649,8 @@ struct FloorView {
     cubes_at: (f32, f32),
     /// The note under them (not found) and its strength.
     note: Option<(String, f32)>,
+    /// A square of the table jumping (clicked): its middle, its height.
+    tapped: Option<((f32, f32), f32)>,
 }
 
 /// The table under the Duo across the page, in 2 cm squares, in the very
@@ -2829,32 +2846,53 @@ fn cube_shapes(fv: &FloorView) -> Vec<CubeShape> {
     let z0 = fv.table;
     let mut order: Vec<usize> = (0..5).collect();
     order.sort_by(|a, b| (left(*b) + step / 2.0).abs().partial_cmp(&(left(*a) + step / 2.0).abs()).unwrap());
-    order
+    let foot = p3(left(0), y1, z0);
+    let mut shapes: Vec<CubeShape> = order
         .into_iter()
         .filter(|i| fv.cubes[*i].0 > 0.0)
         .map(|i| {
             let (there, h) = fv.cubes[i];
-            let (x0, x1) = (left(i), left(i) + step);
-            let zt = z0 + h * step;
-            // The shadow toward the viewer.
-            let reach = 0.45 * h * step;
-            let shadow = [p3(x0, y0, z0), p3(x1, y0, z0), p3(x1 + reach * 0.3, y1 + reach, z0), p3(x0 + reach * 0.3, y1 + reach, z0)];
-            // Each face wound so that seen from outside it turns as the top
-            // does seen from above: kept only so turned.
-            let top = [p3(x0, y0, zt), p3(x1, y0, zt), p3(x1, y1, zt), p3(x0, y1, zt)];
-            let facing = area(&top).signum();
-            let faces = [
-                ([p3(x0, y1, z0), p3(x0, y1, zt), p3(x1, y1, zt), p3(x1, y1, z0)], 0.93),
-                ([p3(x1, y0, z0), p3(x1, y0, zt), p3(x0, y0, zt), p3(x0, y0, z0)], 0.99),
-                ([p3(x1, y1, z0), p3(x1, y1, zt), p3(x1, y0, zt), p3(x1, y0, z0)], 0.965),
-                ([p3(x0, y0, z0), p3(x0, y0, zt), p3(x0, y1, zt), p3(x0, y1, z0)], 0.965),
-            ]
-            .into_iter()
-            .filter(|(q, _)| area(q).signum() == facing)
-            .collect();
-            CubeShape { i, shadow, faces, top, there, size: step, foot: p3(left(0), y1, z0) }
+            let (shadow, faces, top) = box_shape(&p3, (left(i), y0), step, z0, h);
+            CubeShape { i, shadow, faces, top, there, size: step, foot }
         })
-        .collect()
+        .collect();
+    // A square of the table jumping (clicked): no letter (i past the word);
+    // drawn before the word's if farther than them, else after.
+    if let Some(((tx, ty), h)) = fv.tapped {
+        let (shadow, faces, top) = box_shape(&p3, (tx - step / 2.0, ty - step / 2.0), step, z0, h);
+        let jump = CubeShape { i: usize::MAX, shadow, faces, top, there: 1.0, size: step, foot };
+        if ty < cy {
+            shapes.insert(0, jump);
+        } else {
+            shapes.push(jump);
+        }
+    }
+    shapes
+}
+
+/// A box on the table (a square of `side` from its near-left corner,
+/// raised `h` of its side): its shadow, its faces turned to the eye with
+/// their light, its top.
+fn box_shape(p3: &dyn Fn(f32, f32, f32) -> (f64, f64), (x0, y0): (f32, f32), side: f32, z0: f32, h: f32) -> (Quad, Vec<(Quad, f64)>, Quad) {
+    let (x1, y1) = (x0 + side, y0 + side);
+    let zt = z0 + h * side;
+    // The shadow toward the viewer.
+    let reach = 0.45 * h * side;
+    let shadow = [p3(x0, y0, z0), p3(x1, y0, z0), p3(x1 + reach * 0.3, y1 + reach, z0), p3(x0 + reach * 0.3, y1 + reach, z0)];
+    // Each face wound so that seen from outside it turns as the top does
+    // seen from above: kept only so turned.
+    let top = [p3(x0, y0, zt), p3(x1, y0, zt), p3(x1, y1, zt), p3(x0, y1, zt)];
+    let facing = area(&top).signum();
+    let faces = [
+        ([p3(x0, y1, z0), p3(x0, y1, zt), p3(x1, y1, zt), p3(x1, y1, z0)], 0.93),
+        ([p3(x1, y0, z0), p3(x1, y0, zt), p3(x0, y0, zt), p3(x0, y0, z0)], 0.99),
+        ([p3(x1, y1, z0), p3(x1, y1, zt), p3(x1, y0, zt), p3(x1, y0, z0)], 0.965),
+        ([p3(x0, y0, z0), p3(x0, y0, zt), p3(x0, y1, zt), p3(x0, y1, z0)], 0.965),
+    ]
+    .into_iter()
+    .filter(|(q, _)| area(q).signum() == facing)
+    .collect();
+    (shadow, faces, top)
 }
 
 /// Twice a polygon's signed area (its turn).
@@ -2878,7 +2916,7 @@ fn cube_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
     if fv.word <= 0.0 {
         return None;
     }
-    cube_shapes(fv).into_iter().rev().find(|c| inside(&c.top, p) || c.faces.iter().any(|(q, _)| inside(q, p))).map(|c| c.i)
+    cube_shapes(fv).into_iter().rev().find(|c| c.i < intro::WORD.len() && (inside(&c.top, p) || c.faces.iter().any(|(q, _)| inside(q, p)))).map(|c| c.i)
 }
 
 fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
@@ -2902,7 +2940,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     let shapes = cube_shapes(fv);
     let _ = cr.push_group();
     for c in &shapes {
-        let h = fv.cubes[c.i].1;
+        let h = fv.cubes.get(c.i).map_or(fv.tapped.map_or(0.0, |t| t.1), |c| c.1);
         path(&c.shadow);
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h.min(1.0) * fv.eye) as f64);
         let _ = cr.fill();
@@ -2916,6 +2954,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         cr.set_source_rgb(1.0, 1.0, 1.0);
         let _ = cr.fill_preserve();
         line(cr);
+        let Some(letter) = intro::WORD.get(c.i) else { continue };
         // The letter on the top: the face's own frame (its corners), the
         // letter laid in it.
         let (a, b, d) = (c.top[0], c.top[1], c.top[3]);
@@ -2927,7 +2966,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         font.set_weight(gtk::pango::Weight::Light);
         font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
         layout.set_font_description(Some(&font));
-        layout.set_text(intro::WORD[c.i]);
+        layout.set_text(letter);
         // Across: the letter's ink centred; up and down: the line's, so the
         // letters keep one baseline.
         let (ink, logical) = layout.pixel_extents();
@@ -3521,6 +3560,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             .to_matrix();
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
+        let tapped = intro.tapped();
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
         ui.duo.set_opacity(intro.duo() as f64);
@@ -3532,9 +3572,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped };
         if changed {
             ui.floor.queue_draw();
         }
