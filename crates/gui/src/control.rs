@@ -9,6 +9,7 @@
 //!                     top left, for input there), the start, the floor,
 //!                     the drawn Duo, the phone
 //!   {"cmd":"replay"}  the start again
+//!   {"cmd":"renderer"} GTK's renderer for the window
 //!
 //! Input is not made here: hythe-mcp moves the pointer itself (xdotool),
 //! so the window's own gestures are what is tried.

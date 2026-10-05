@@ -79,9 +79,10 @@ fn square() -> f32 {
     }
 }
 
-/// A frame's step of the squares' size toward where the wheel sent it;
-/// whether it moved.
-fn ease_square() -> bool {
+/// A frame's step (`dt` s) of the squares' size toward where the wheel
+/// sent it, by the time and not the frames (the window gets 30 a second
+/// here: X11 and GNOME's compositor); whether it moved.
+fn ease_square(dt: f32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
     let to = match SQUARE_TO.load(Relaxed) {
         0 => return false,
@@ -95,7 +96,8 @@ fn ease_square() -> bool {
         }
         return false;
     }
-    SQUARE.store((now + (to - now) * 0.18).to_bits(), Relaxed);
+    let k = 1.0 - (-dt / 0.12).exp();
+    SQUARE.store((now + (to - now) * k).to_bits(), Relaxed);
     true
 }
 
@@ -1122,6 +1124,7 @@ fn build(app: &adw::Application) {
             let Some(ui) = weak.upgrade() else { return serde_json::json!({ "error": "gone" }) };
             match request["cmd"].as_str() {
                 Some("shot") => control::shot(&ui.window),
+                Some("renderer") => serde_json::json!({ "renderer": ui.window.native().and_then(|n| n.renderer()).map(|r| r.type_().name().to_string()) }),
                 Some("replay") => {
                     ui.intro.borrow_mut().replay();
                     serde_json::json!({ "ok": true })
@@ -1645,6 +1648,7 @@ fn build(app: &adw::Application) {
     ui.duo.add_tick_callback({
         let ui = Rc::downgrade(&ui);
         let drawn_at = std::cell::Cell::new(-1);
+        let last_frame = std::cell::Cell::new(0i64);
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
             if ui.duo.width() > 1 && !ui.intro.borrow().begun() {
@@ -1690,7 +1694,9 @@ fn build(app: &adw::Application) {
             let far = rfar || qfar || (shown - to).abs() > 0.05 || (0..2).any(|i| (tilt[i] - tilt_to[i]).abs() > 0.05 || (orbit[i] - orbit_to[i]).abs() > 0.05);
             // The start, and the cubes rising or sinking; the squares' size
             // eased toward the wheel's.
-            let resized = ease_square();
+            let now_us = clock.frame_time();
+            let dt = (now_us - last_frame.replace(now_us)) as f32 / 1e6;
+            let resized = ease_square(dt.clamp(0.0, 0.1));
             if resized {
                 ui.floor.queue_draw();
                 ui.cable.queue_draw();
@@ -2636,6 +2642,11 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     // Finer while the squares grow out (their edge in coarse pieces stepped).
     let pieces = if fv.grid < 1.0 { 160 } else { 40 };
     cr.set_line_width(1.6);
+    // The pieces by how strong they are (a few dozen strokes, not a stroke
+    // a piece: thousands of them took a frame's time).
+    const LEVELS: usize = 32;
+    const TOP: f64 = 0.15;
+    let mut levels: Vec<Vec<((f64, f64), (f64, f64))>> = vec![Vec::new(); LEVELS];
     for i in -n..=n {
         for along_x in [true, false] {
             // Rows at the shift in y, columns at the shift in x.
@@ -2649,12 +2660,21 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
                     continue;
                 }
                 let (Some(p0), Some(p1)) = (project(ax, ay), project(bx, by)) else { continue };
-                cr.set_source_rgba(0.0, 0.0, 0.0, a);
-                cr.move_to(p0.0, p0.1);
-                cr.line_to(p1.0, p1.1);
-                let _ = cr.stroke();
+                let level = ((a / TOP * LEVELS as f64) as usize).min(LEVELS - 1);
+                levels[level].push((p0, p1));
             }
         }
+    }
+    for (level, pieces) in levels.iter().enumerate() {
+        if pieces.is_empty() {
+            continue;
+        }
+        for (p0, p1) in pieces {
+            cr.move_to(p0.0, p0.1);
+            cr.line_to(p1.0, p1.1);
+        }
+        cr.set_source_rgba(0.0, 0.0, 0.0, TOP * (level as f64 + 0.5) / LEVELS as f64);
+        let _ = cr.stroke();
     }
     draw_cubes(fv, cr);
     // The hole: seen through its opening - its floor dark, the walls that
@@ -3405,6 +3425,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
         ui.duo.set_opacity(intro.duo() as f64);
+        // Not seen: its GL area not drawn (it was each frame regardless; the
+        // frames go on, ticking on the Duo's room).
+        ui.gl3d.set_visible(intro.duo() > 0.0);
         for l in [&ui.name, &ui.name_sub, &ui.battery] {
             l.set_opacity(intro.duo() as f64);
         }
