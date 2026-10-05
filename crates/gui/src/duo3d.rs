@@ -359,8 +359,8 @@ fn bottom_edge(m: &mut Mesh, port_x: f32, k: f32) {
     }
     // The speaker: a long slot along the top of the edge, right under the
     // glass, following the edge's round there.
-    let (x0, x1) = (port_x + 18.0, port_x + 33.0);
-    let (z0, z1) = (-1.25, -0.35);
+    let (x0, x1) = (port_x + 20.5, port_x + 30.5);
+    let (z0, z1) = (-0.95, -0.02);
     let on_round = |z: f32| {
         // The rounding's ellipse: z = -EDGE_Z + EDGE_Z sin a, inset EDGE (1 - cos a).
         let sa = ((z + EDGE_Z) / EDGE_Z).clamp(-1.0, 1.0);
