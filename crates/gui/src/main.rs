@@ -302,6 +302,8 @@ struct Ui {
     /// The phone was closed and went (asleep): drawn shut, lying on the
     /// table, not waiting open; and the hinge's last angle read.
     shut_away: std::cell::Cell<bool>,
+    /// The phone's USB link up at the last second's check.
+    usb_was: std::cell::Cell<bool>,
     last_angle: std::cell::Cell<Option<f64>>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, cradle_core::posture::Stop)>>,
@@ -962,6 +964,7 @@ fn build(app: &adw::Application) {
         orbit: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         idle: std::cell::Cell::new(false),
         shut_away: std::cell::Cell::new(false),
+        usb_was: std::cell::Cell::new(false),
         last_angle: std::cell::Cell::new(None),
         tilt: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         pose: pose.clone(),
@@ -1417,6 +1420,13 @@ fn build(app: &adw::Application) {
         let ui = ui.clone();
         move || {
             follow_hinge(&ui);
+            // Not seen and the phone's USB link just came up (it woke): look
+            // now, not at the next round (up to 5 s).
+            let usb = cradle_core::link::usb_up();
+            let was = ui.usb_was.replace(usb);
+            if usb && !was && ui.state.borrow().host.is_none() {
+                look(&ui);
+            }
             glib::ControlFlow::Continue
         }
     });
@@ -1944,7 +1954,10 @@ fn follow_hinge(ui: &Rc<Ui>) {
         stop.stop();
     }
     let Some(host) = want else { return };
-    let Ok((mut follow, stop)) = cradle_core::posture::follow(&host) else { return };
+    // On the cable (charging) the phone is kept awake while followed: the
+    // lid and the hinge come at once.
+    let cable = cradle_core::link::Via::of(&host) == cradle_core::link::Via::Cable;
+    let Ok((mut follow, stop)) = cradle_core::posture::follow(&host, cable) else { return };
     *ui.following.borrow_mut() = Some((host, stop.clone()));
     let (tx, rx) = async_channel::bounded::<cradle_core::posture::Reading>(16);
     gio::spawn_blocking(move || {

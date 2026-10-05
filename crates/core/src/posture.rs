@@ -59,9 +59,23 @@ impl Stop {
     }
 }
 
-/// Starts following the hinge on the phone at `host`.
-pub fn follow(host: &str) -> Result<(Follow, Stop), String> {
-    let mut child = crate::phone::spawn(host, &crate::phone::as_owner(FOLLOW), Stdio::piped())?;
+/// Starts following the hinge on the phone at `host`; `awake`: the phone
+/// kept from sleeping as long as it is followed (a kernel wakelock, let go
+/// when the following ends - the window closed or the cable out, within the
+/// heartbeat's 10 s): asleep, the lid and the hinge reached the window only
+/// after it woke, the link came back and the window looked again - seconds.
+pub fn follow(host: &str, awake: bool) -> Result<(Follow, Stop), String> {
+    // As root for the wakelock; the following itself as the owner (in a
+    // subshell: as_owner ends in exec).
+    let script = if awake {
+        format!("echo cradle-follow > /sys/power/wake_lock
+( {} )
+echo cradle-follow > /sys/power/wake_unlock
+", crate::phone::as_owner(FOLLOW))
+    } else {
+        crate::phone::as_owner(FOLLOW)
+    };
+    let mut child = crate::phone::spawn(host, &script, Stdio::piped())?;
     let out = child.stdout.take().ok_or("no output")?;
     Ok((Follow { lines: BufReader::new(out), queued: Default::default() }, Stop(Arc::new(Mutex::new(child)))))
 }
