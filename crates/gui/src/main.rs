@@ -3004,10 +3004,10 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     draw_flips(fv, cr);
 }
 
-/// The credit's squares (of the table's, or cubes' lids if raised): each
-/// turning over as a departures board's flap does - folding to its middle
-/// line, lifted a little, and opening with the next letter; still, the
-/// letter on the table (or the lid).
+/// The credit's squares: each turning over once - its near edge lifting,
+/// over its far one, down on its other side (its axis raised so that it
+/// never goes into the table) - the letter on that side; still, the letter
+/// on the table.
 fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     use gtk::graphene;
     let Some(m) = fv.matrix else { return };
@@ -3025,16 +3025,12 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         cr.close_path();
     };
-    let line = |cr: &gtk::cairo::Context| {
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
-        cr.set_line_width(1.6);
-        let _ = cr.stroke();
-    };
-    let letter = |q: &Quad, ch: char| {
+    // The letter in a square whose corners (its top left, top right,
+    // bottom left) are these on the page.
+    let letter = |a: (f64, f64), b: (f64, f64), d: (f64, f64), ch: char| {
         if ch == ' ' {
             return;
         }
-        let (a, b, d) = (q[0], q[1], q[3]);
         let s = side as f64;
         cr.save().ok();
         cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
@@ -3050,73 +3046,40 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         pangocairo::functions::show_layout(cr, &layout);
         cr.restore().ok();
     };
-    // Farthest from the eye's line first.
-    let mut flips = fv.flips.clone();
     let x_of = |i: usize| fv.credit_at.0 + i as f32 * side;
-    let off_eye = |i: usize| (x_of(i) + side / 2.0 - fv.eye_x).abs();
-    flips.sort_by(|a, b| off_eye(b.i).partial_cmp(&off_eye(a.i)).unwrap());
-    for f in &flips {
-        let (x0, y0) = (x_of(f.i), fv.credit_at.1);
-        let (shadow, faces, top) = box_shape(&p3, (x0, y0), side, z0, f.height);
-        if f.height > 0.0 {
-            path(&shadow);
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * f.height as f64);
-            let _ = cr.fill();
-            for (q, light) in &faces {
-                path(q);
-                cr.set_source_rgb(*light, *light, light * 1.005);
-                let _ = cr.fill_preserve();
-                line(cr);
-            }
-            path(&top);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            let _ = cr.fill_preserve();
-            line(cr);
-        }
+    let y0 = fv.credit_at.1;
+    for f in &fv.flips {
+        let x0 = x_of(f.i);
         if f.turn <= 0.0 {
-            letter(&top, f.from);
+            letter(p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0, y0 + side, z0), f.from);
             continue;
         }
-        // The lid folding to its middle and open again, lifted as it turns
-        // (its square on the table left blank under it meanwhile).
-        if f.height <= 0.0 {
-            path(&top);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            let _ = cr.fill_preserve();
-            line(cr);
-        }
+        // A point of the square, `v` along it from its far edge (0..1), as
+        // turned: about its middle line, raised by half its side at most.
         let a = f.turn * std::f32::consts::PI;
-        let half = side / 2.0 * a.cos().abs();
-        let zt = z0 + f.height * side + a.sin() * side * 0.25;
-        let yc = y0 + side / 2.0;
-        let lid = [p3(x0, yc - half, zt), p3(x0 + side, yc - half, zt), p3(x0 + side, yc + half, zt), p3(x0, yc + half, zt)];
-        path(&lid);
+        let (yc, za) = (y0 + side / 2.0, z0 + side / 2.0 * a.sin());
+        let at = |u: f32, v: f32| {
+            let d = (v - 0.5) * side;
+            p3(x0 + u * side, yc + d * a.cos(), za + d * a.sin())
+        };
+        let q = [at(0.0, 0.0), at(1.0, 0.0), at(1.0, 1.0), at(0.0, 1.0)];
+        // Its place on the table blank meanwhile; the square over it.
+        path(&[p3(x0, y0, z0), p3(x0 + side, y0, z0), p3(x0 + side, y0 + side, z0), p3(x0, y0 + side, z0)]);
         cr.set_source_rgb(1.0, 1.0, 1.0);
+        let _ = cr.fill();
+        path(&q);
+        // The side turned toward the eye a little darker as it stands up.
+        let light = 1.0 - 0.06 * a.sin() as f64;
+        cr.set_source_rgb(light, light, light * 1.005);
         let _ = cr.fill_preserve();
-        line(cr);
-        if half > 0.5 {
-            // The letter squeezed with it (its frame the lid's).
-            let ch = if f.turn < 0.5 { f.from } else { f.to };
-            // Drawn in the lid's own frame: squeezed with it.
-            let (a, b, d) = (lid[0], lid[1], lid[3]);
-            let s = side as f64;
-            cr.save().ok();
-            path(&lid);
-            cr.clip();
-            cr.transform(gtk::cairo::Matrix::new((b.0 - a.0) / s, (b.1 - a.1) / s, (d.0 - a.0) / s, (d.1 - a.1) / s, a.0, a.1));
-            let layout = pangocairo::functions::create_layout(cr);
-            let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
-            font.set_weight(gtk::pango::Weight::Light);
-            font.set_absolute_size(0.7 * s * gtk::pango::SCALE as f64);
-            layout.set_font_description(Some(&font));
-            if ch != ' ' {
-                layout.set_text(&ch.to_string());
-                let (ink, logical) = layout.pixel_extents();
-                cr.move_to((s - ink.width() as f64) / 2.0 - ink.x() as f64, (s - logical.height() as f64) / 2.0 - logical.y() as f64 - 0.03 * s);
-                cr.set_source_rgba(0.16, 0.16, 0.18, 0.88);
-                pangocairo::functions::show_layout(cr, &layout);
-            }
-            cr.restore().ok();
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.14);
+        cr.set_line_width(1.6);
+        let _ = cr.stroke();
+        if f.turn < 0.5 {
+            letter(at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), f.from);
+        } else {
+            // The other side: its near edge (v 1) is the far one now.
+            letter(at(0.0, 1.0), at(1.0, 1.0), at(0.0, 0.0), f.to);
         }
     }
 }

@@ -6,9 +6,10 @@
 //! Duo is where they were. Gone again, they rise.
 //!
 //! Then the credit turns up in the table's own squares, nearer the
-//! viewer: each square turning over letter after letter as a departures
-//! board's flaps do until it shows its own; the eye comes near it (the
-//! word off in the distance) and back; the squares turn blank again.
+//! viewer: each square turning over once, in one movement, its letter
+//! underneath - one after the other along the line; the eye comes near it
+//! (the word off in the distance) and back; the squares turn over blank
+//! again.
 //!
 //! A cube clicked - or any of the table's squares - looks for the phone at
 //! once: the cube pressed in (a square jumps up out of the table and back),
@@ -22,13 +23,11 @@ pub const WORD: [&str; 5] = ["h", "y", "t", "h", "e"];
 /// The credit, a letter a square of the table (none for the space).
 pub const CREDIT: &str = "by AgentsCo";
 
-/// A credit square now: which letter's place, its height (a part of its
-/// side; 0: the table's own), turning `from` one letter `to` the next
-/// (`turn` 0..1; 0 still, showing `from`).
+/// A credit square now: which letter's place; turning over from showing
+/// `from` to showing `to` (`turn` 0..1; 0 still, showing `from`).
 #[derive(Clone, Copy, PartialEq)]
 pub struct Flip {
     pub i: usize,
-    pub height: f32,
     pub from: char,
     pub to: char,
     pub turn: f32,
@@ -40,13 +39,12 @@ const WORD_IN: f32 = 0.5;
 const GRID: (f32, f32) = (0.55, 1.7);
 const EYE: (f32, f32) = (1.6, 3.0);
 /// The credit set letter by letter; the eye near it and back; it goes.
-/// The credit's cubes up (one after the other), their lids turning (a
-/// flap's turn FLIP_S; each lid starting a little after the one before);
-/// blank again and down.
-const CREDIT_UP: f32 = 3.1;
-const FLIPS_FROM: f32 = 3.45;
-const FLIP_S: f32 = 0.11;
-const CREDIT_BLANK: f32 = 6.45;
+/// The credit's squares turning over (FLIP_S each, each a little after the
+/// one before), and back blank.
+const CREDIT_UP: f32 = 3.2;
+const FLIP_S: f32 = 0.55;
+const FLIP_EACH: f32 = 0.07;
+const CREDIT_BLANK: f32 = 6.2;
 const FOCUS_IN: (f32, f32) = (3.4, 4.9);
 const FOCUS_OUT: (f32, f32) = (6.0, 7.5);
 const END: f32 = 7.5;
@@ -159,33 +157,22 @@ impl Intro {
         if !self.begun() || t < CREDIT_UP || t >= END {
             return Vec::new();
         }
-        let letters = b"abcdefghijklmnopqrstuvwxyz";
         CREDIT
             .chars()
             .enumerate()
             .filter(|(_, ch)| *ch != ' ')
             .map(|(i, ch)| {
-                // The letters a lid goes through: from blank, a few on the
-                // way, its own.
-                let n = 3 + (i * 5) % 3;
-                let mut seq = vec![' '];
-                seq.extend((0..n - 1).map(|k| letters[(i * 31 + k * 17 + 7) % 26] as char));
-                seq.push(ch);
-                let start = FLIPS_FROM + i as f32 * 0.06;
-                let k = ((t - start) / FLIP_S).floor();
-                let (mut from, mut to, mut turn) = if t < start {
-                    (' ', ' ', 0.0)
-                } else if k as usize >= n {
-                    (ch, ch, 0.0)
+                let over = |at: f32| smoother((t - at - i as f32 * FLIP_EACH) / FLIP_S);
+                let (on, off) = (over(CREDIT_UP), over(CREDIT_BLANK));
+                if off >= 1.0 {
+                    Flip { i, from: ' ', to: ' ', turn: 0.0 }
+                } else if off > 0.0 {
+                    Flip { i, from: ch, to: ' ', turn: off }
+                } else if on >= 1.0 {
+                    Flip { i, from: ch, to: ch, turn: 0.0 }
                 } else {
-                    (seq[k as usize], seq[k as usize + 1], (t - start) / FLIP_S - k)
-                };
-                let blank = CREDIT_BLANK + i as f32 * 0.03;
-                if t >= blank {
-                    let p = (t - blank) / FLIP_S;
-                    (from, to, turn) = if p < 1.0 { (ch, ' ', p) } else { (' ', ' ', 0.0) };
+                    Flip { i, from: ' ', to: ch, turn: on }
                 }
-                Flip { i, height: 0.0, from, to, turn }
             })
             .collect()
     }
