@@ -37,7 +37,7 @@ const DUO_PANEL: (f64, f64) = (86.654, 115.539);
 const DUO_SCREEN_X: (f64, f64) = (4.1, 96.146);
 const DUO_SCREEN_TOP: f64 = 14.831;
 // Small enough for the sections under it (#169; was 2.35).
-const DUO_PX_PER_MM: f64 = 1.45;
+const DUO_PX_PER_MM: f64 = 2.0;
 /// Transparent room round each drawn half and its shadow, px: their edges
 /// smoothed as they turn.
 const DUO_PAD: f32 = 3.0;
@@ -46,6 +46,16 @@ const DUO_THICK: f32 = 4.8 * DUO_PX_PER_MM as f32;
 const DUO_EDGE_LAYERS: usize = 9;
 /// The hinge's barrels' width, mm.
 const DUO_HINGE_W: f64 = 10.2;
+/// The USB-C cable (mm): its plug's housing, where it is on the right half's
+/// bottom edge (from the spine), and the room its picture has.
+const CABLE_PLUG: (f64, f64) = (11.0, 19.0);
+/// The port's middle from the spine (the plug's edge ~1.5 cm from it).
+const CABLE_PORT_X: f64 = 21.0;
+/// The plug's thickness (mm) and its layers, drawn as the halves' are.
+const CABLE_PLUG_T: f32 = 5.0;
+const CABLE_PLUG_LAYERS: usize = 7;
+const CABLE_ROOM: (f64, f64) = (90.0, 80.0);
+const CABLE_PAD: f64 = 4.0;
 const DUO_FLOOR_PAD: f32 = 30.0;
 /// The drawn Duo's room, in its body's heights and widths: the raised half
 /// above it, its near edge wider in perspective.
@@ -68,6 +78,8 @@ headerbar { background: #ffffff; box-shadow: none; border-bottom: none; }
 .navigation-sidebar > row.nav-apart { margin-top: 14px; }
 .boxed-list button.pill { padding: 3px 14px; min-height: 26px; font-weight: 500; }
 .boxed-list button.pill.destructive-action { background: alpha(#e01b24, 0.08); color: #c01c28; }
+.status-bar { padding: 10px 24px; border-top: 1px solid alpha(black, 0.07); }
+.bar-title { font-weight: 600; }
 .duo-name { font-weight: 600; font-size: 1.25em; }
 .duo-panel {
   background: #0b0b0d;
@@ -241,12 +253,18 @@ struct Ui {
     mode_buttons: gtk::Box,
     /// What needs Linux: the sections and the facts.
     linux_only: gtk::Box,
+    /// The sections' list, in the menu.
+    nav: gtk::ListBox,
     /// The Duo drawn: the right half (and its back) turned as the phone
     /// folds; the angle shown and the one to go to.
     duo: gtk::Fixed,
     /// Its halves (left, right): front, back and shade each.
     halves: [DuoHalf; 2],
     spine: gtk::Picture,
+    /// The USB-C cable in the right half's port, while the phone is on it:
+    /// its cord, and its plug in layers (bottom to top).
+    cable: gtk::Picture,
+    cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
     /// The angle the drawn Duo shows, and the one to go to.
@@ -312,6 +330,7 @@ const NAV: &[(&str, &str, &str)] = &[
     ("about", "About", "help-about-symbolic"),
     ("updates", "Updates & Backups", "software-update-available-symbolic"),
     ("repair", "Repair & Reset", "applications-engineering-symbolic"),
+    ("developer", "Developer", "utilities-terminal-symbolic"),
 ];
 
 
@@ -337,14 +356,14 @@ fn build(app: &adw::Application) {
 
     // General: the Duo on the left and the sections under it (#169), the
     // section chosen on the right.
-    let general = gtk::Box::new(gtk::Orientation::Horizontal, 40);
-    general.set_margin_top(16);
-    general.set_margin_bottom(24);
-    general.set_margin_start(40);
-    general.set_margin_end(40);
+    // The Duo in the middle, the sections from the menu (top right) in its
+    // place, how it is along the bottom (#169).
+    let general = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let device = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    device.set_valign(gtk::Align::Start);
+    device.set_valign(gtk::Align::Center);
+    device.set_halign(gtk::Align::Center);
+    device.set_vexpand(true);
     // The Duo as it lies on a table (data/duo-body.py: agentsco.uk's
     // drawing, in mm): each half one picture - its body with its live screen
     // in it (duo_half) - turned whole in 3D by show_fold; the spine and the
@@ -401,6 +420,20 @@ fn build(app: &adw::Application) {
     for h in &halves {
         duo.put(&h.floor, 0.0, 0.0);
     }
+    let cable_px = |mm: f64| (mm * DUO_PX_PER_MM) as f32;
+    let (cw, ch) = (cable_px(CABLE_ROOM.0) as i32, cable_px(CABLE_ROOM.1) as i32);
+    let cable = leaf(&duo_cable(), cw, ch);
+    cable.set_visible(false);
+    duo.put(&cable, 0.0, 0.0);
+    let cable_plug: Vec<gtk::Picture> = (0..CABLE_PLUG_LAYERS)
+        .map(|i| {
+            let t = i as f64 / (CABLE_PLUG_LAYERS - 1) as f64;
+            let p = leaf(&duo_cable_plug(t, i == CABLE_PLUG_LAYERS - 1), cw, ch);
+            p.set_visible(false);
+            duo.put(&p, 0.0, 0.0);
+            p
+        })
+        .collect();
     for h in &halves {
         for w in std::iter::once(&h.back).chain(&h.edge).chain([&h.front, &h.glare, &h.shade]) {
             duo.put(w, 0.0, 0.0);
@@ -429,7 +462,8 @@ fn build(app: &adw::Application) {
     duo_over.add_overlay(&duo_mode);
     device.append(&duo_over);
     // The posture, in words.
-    let pose = gtk::Label::builder().css_classes(["dim-label"]).margin_top(4).build();
+    // Room above it for the cable, which lies toward the viewer.
+    let pose = gtk::Label::builder().css_classes(["dim-label"]).margin_top(44).build();
     device.append(&pose);
     let live_badge = gtk::Label::builder().label("● LIVE").css_classes(["live-badge"]).build();
     live_badge.set_visible(false);
@@ -446,7 +480,7 @@ fn build(app: &adw::Application) {
     device.append(&join);
     // The sections, as item Settings has them on the phone: what the phone
     // is and what is set from here, Repair & Reset at the bottom, apart.
-    let nav = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).css_classes(["navigation-sidebar"]).margin_top(14).width_request(280).halign(gtk::Align::Center).build();
+    let nav = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).css_classes(["navigation-sidebar"]).width_request(230).build();
     for (key, title, icon) in NAV {
         let r = gtk::ListBoxRow::builder().name(*key).build();
         let b = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -456,12 +490,20 @@ fn build(app: &adw::Application) {
         if *key == "repair" {
             r.add_css_class("nav-apart");
         }
+        if *key == "developer" {
+            r.set_visible(developer_mode());
+        }
         nav.append(&r);
     }
     nav.select_row(nav.row_at_index(0).as_ref());
-    device.append(&nav);
-    let device_scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&device).propagate_natural_width(true).build();
-    general.append(&device_scroll);
+    let nav_pop = gtk::Popover::builder().child(&nav).has_arrow(false).build();
+    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").popover(&nav_pop).tooltip_text("Sections").build();
+    header.pack_end(&menu_button);
+    // In a section: back to the Duo, and the section's name.
+    let back_home = gtk::Button::builder().icon_name("go-previous-symbolic").tooltip_text("Back to your Duo").visible(false).build();
+    let section_name = gtk::Label::builder().css_classes(["heading"]).visible(false).build();
+    header.pack_start(&back_home);
+    header.pack_start(&section_name);
 
     let sections = gtk::Box::new(gtk::Orientation::Vertical, 22);
     sections.set_hexpand(true);
@@ -597,14 +639,16 @@ fn build(app: &adw::Application) {
     sys.append(&facts);
     linux_only.append(&sys);
     // The simple page: how the Duo is, what to do now.
-    let home = gtk::Box::new(gtk::Orientation::Vertical, 22);
-    let status_head = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    let home = gtk::Box::new(gtk::Orientation::Horizontal, 22);
+    home.add_css_class("status-bar");
+    let status_head = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let status_dot = gtk::Box::builder().css_classes(["status-dot", "fine"]).valign(gtk::Align::Center).build();
-    let status_title = gtk::Label::builder().label("Your Duo is fine").xalign(0.0).wrap(true).css_classes(["status-title"]).build();
+    let status_title = gtk::Label::builder().label("Your Duo is fine").xalign(0.0).css_classes(["bar-title"]).build();
     status_head.append(&status_dot);
     status_head.append(&status_title);
-    let status_lines = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(60).css_classes(["dim-label"]).margin_start(26).build();
-    let status_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let status_lines = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["dim-label"]).build();
+    let status_box = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    status_box.set_hexpand(true);
     status_box.append(&status_head);
     status_box.append(&status_lines);
     home.append(&status_box);
@@ -615,10 +659,23 @@ fn build(app: &adw::Application) {
     // Updates come as a row once there is one to give (from releases).
     home_list.set_visible(false);
     home.set_visible(false);
-    sections.append(&home);
-    sections.append(&linux_only);
 
-    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&sections).hexpand(true).build();
+    // Overview: the job under way and the phone's mode over the Duo, the
+    // Duo in the middle.
+    sections.set_hexpand(false);
+    sections.set_halign(gtk::Align::Center);
+    sections.set_width_request(560);
+    let overview = gtk::Box::new(gtk::Orientation::Vertical, 18);
+    overview.set_margin_top(16);
+    overview.set_margin_bottom(16);
+    overview.append(&sections);
+    overview.append(&device);
+    let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&overview).hexpand(true).build();
+    // Developer: what Developer Mode shows - software, slots, backups,
+    // Android, the screen, the system.
+    let developer = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    developer.append(&gtk::Label::builder().label("Developer").xalign(0.0).css_classes(["status-title"]).build());
+    developer.append(&linux_only);
     // Repair & Reset: what is done once in a while, each asking first, all
     // on the cable.
     let repair = gtk::Box::new(gtk::Orientation::Vertical, 16);
@@ -669,11 +726,18 @@ fn build(app: &adw::Application) {
     repair.append(&repair_note);
     repair.append(&gtk::Label::builder().label("Developer").xalign(0.0).css_classes(["section-title"]).margin_top(10).build());
     repair.append(&dev_list);
-    let page = |child: &gtk::Box| gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(child).hexpand(true).build();
+    let page = |child: &gtk::Box| {
+        child.set_margin_top(20);
+        child.set_margin_bottom(24);
+        child.set_margin_start(40);
+        child.set_margin_end(40);
+        gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(child).hexpand(true).build()
+    };
     let right = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(150).hexpand(true).build();
     right.add_named(&scroll, Some("overview"));
     right.add_named(&page(&agent), Some("agent"));
     right.add_named(&page(&repair), Some("repair"));
+    right.add_named(&page(&developer), Some("developer"));
     // The sections showing the phone itself (sections.rs).
     let (section_ui, section_pages) = sections::build();
     let section_ui = Rc::new(section_ui);
@@ -681,10 +745,33 @@ fn build(app: &adw::Application) {
         right.add_named(&page(b), Some(key));
     }
     nav.connect_row_activated({
-        let right = right.clone();
-        move |_, r| right.set_visible_child_name(&r.widget_name())
+        let (right, nav_pop) = (right.clone(), nav_pop.clone());
+        move |_, r| {
+            right.set_visible_child_name(&r.widget_name());
+            nav_pop.popdown();
+        }
     });
+    right.connect_visible_child_name_notify({
+        let (back_home, section_name) = (back_home.clone(), section_name.clone());
+        move |r| {
+            let key = r.visible_child_name().unwrap_or_default();
+            let home = key == "overview";
+            back_home.set_visible(!home);
+            // The page says its name itself.
+            section_name.set_visible(false);
+            section_name.set_label(NAV.iter().find(|n| n.0 == key.as_str()).map_or("", |n| n.1));
+        }
+    });
+    back_home.connect_clicked({
+        let (right, nav) = (right.clone(), nav.clone());
+        move |_| {
+            right.set_visible_child_name("overview");
+            nav.select_row(nav.row_at_index(0).as_ref());
+        }
+    });
+    right.set_vexpand(true);
     general.append(&right);
+    general.append(&home);
 
     // The storage along the bottom.
     let storage = gtk::DrawingArea::builder().content_height(8).hexpand(true).build();
@@ -729,9 +816,10 @@ fn build(app: &adw::Application) {
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
     view.set_content(Some(&toasts));
-    // The storage bar at the foot of Overview (was along the window's
-    // bottom: the sections under the Duo want the height).
-    sections.append(&bottom);
+    // The storage bar at the top of Storage.
+    if let Some((_, b)) = section_pages.iter().find(|(k, _)| *k == "storage") {
+        b.insert_child_after(&bottom, b.first_child().as_ref());
+    }
     bottom.set_visible(false);
     window.set_content(Some(&view));
 
@@ -758,10 +846,13 @@ fn build(app: &adw::Application) {
         mode_text,
         mode_buttons,
         linux_only,
+        nav: nav.clone(),
         cable_only: [&reinstall, &restore, &try_ram, &backup_all, &back_full, &to_android, &r_reinstall, &r_restore, &r_android].into_iter().map(|b| (b.clone(), b.tooltip_text())).collect(),
         duo: duo.clone(),
         halves: halves.clone(),
         spine: spine.clone(),
+        cable: cable.clone(),
+        cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
         following: RefCell::default(),
@@ -1408,7 +1499,14 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
     }
     ui.mode.set_visible(false);
     ui.linux_only.set_visible(dev);
-    ui.home.set_visible(!dev);
+    ui.home.set_visible(true);
+    let mut i = 0;
+    while let Some(row) = ui.nav.row_at_index(i) {
+        if row.widget_name() == "developer" {
+            row.set_visible(dev);
+        }
+        i += 1;
+    }
     ui.battery.set_visible(dev);
     ui.refresh.set_visible(dev);
     ui.legend.set_visible(dev);
@@ -1831,6 +1929,135 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
     }
 }
 
+/// The USB-C cable as it lies from the port: the plug's housing (graphite,
+/// lit along its top), its strain relief, and the cord curving off toward
+/// the bottom right, fading; a soft shadow under all of it. In mm from the
+/// picture's top left, the plug's top CABLE_PAD in from it.
+fn duo_cable() -> gdk::Paintable {
+    use gtk::graphene;
+    let k = DUO_PX_PER_MM;
+    let (w, h) = (CABLE_ROOM.0 * k, CABLE_ROOM.1 * k);
+    let snap = gtk::Snapshot::new();
+    let cr = snap.append_cairo(&graphene::Rect::new(0.0, 0.0, w as f32, h as f32));
+    cr.scale(k, k);
+    let (pw, pl) = CABLE_PLUG;
+    let x0 = CABLE_PAD;
+    let y0 = CABLE_PAD;
+    let cx = x0 + pw / 2.0;
+    let relief = 6.0;
+    let cord = |cr: &gtk::cairo::Context| {
+        cr.move_to(cx, y0 + pl + relief - 0.5);
+        cr.curve_to(cx, y0 + pl + 18.0, cx + 26.0, y0 + pl + 14.0, cx + 66.0, y0 + pl + 30.0);
+    };
+    let plug = |cr: &gtk::cairo::Context, dx: f64, dy: f64| {
+        let r = 2.2;
+        let (x, y, ww, hh) = (x0 + dx, y0 + dy, pw, pl);
+        cr.new_sub_path();
+        cr.arc(x + ww - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+        cr.arc(x + ww - r, y + hh - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+        cr.arc(x + r, y + hh - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        cr.arc(x + r, y + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
+        cr.close_path();
+        // The strain relief, narrower, below it.
+        let rw = 5.0;
+        cr.rectangle(x + (ww - rw) / 2.0, y + hh - 0.5, rw, relief);
+    };
+    let fade = |cr: &gtk::cairo::Context, rgb: (f64, f64, f64), a: f64| {
+        let g = gtk::cairo::LinearGradient::new(cx, y0 + pl, cx + 66.0, y0 + pl + 30.0);
+        g.add_color_stop_rgba(0.0, rgb.0, rgb.1, rgb.2, a);
+        g.add_color_stop_rgba(0.55, rgb.0, rgb.1, rgb.2, a);
+        g.add_color_stop_rgba(1.0, rgb.0, rgb.1, rgb.2, 0.0);
+        let _ = cr.set_source(&g);
+    };
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    // The shadow: the same, a little down and right, soft (three widths).
+    for (grow, a) in [(3.0, 0.04), (1.8, 0.06), (0.8, 0.08)] {
+        cr.save().ok();
+        cr.translate(1.2, 1.8);
+        cord(&cr);
+        fade(&cr, (0.0, 0.0, 0.0), a);
+        cr.set_line_width(3.4 + grow);
+        let _ = cr.stroke();
+        plug(&cr, 0.0, 0.0);
+        cr.set_source_rgba(0.0, 0.0, 0.0, a);
+        let _ = cr.fill();
+        cr.restore().ok();
+    }
+    // The cord, a tube: dark at its sides, lighter toward the middle, a thin
+    // highlight a little to the light's side (up and left).
+    for (wd, c, dx, dy) in [(3.4, 0.16, 0.0, 0.0), (2.6, 0.24, -0.15, -0.15), (1.7, 0.31, -0.3, -0.3)] {
+        cr.save().ok();
+        cr.translate(dx, dy);
+        cord(&cr);
+        fade(&cr, (c, c + 0.005, c + 0.02), 1.0);
+        cr.set_line_width(wd);
+        let _ = cr.stroke();
+        cr.restore().ok();
+    }
+    cr.save().ok();
+    cr.translate(-0.55, -0.55);
+    cord(&cr);
+    fade(&cr, (1.0, 1.0, 1.0), 0.28);
+    cr.set_line_width(0.6);
+    let _ = cr.stroke();
+    cr.restore().ok();
+    // The strain relief (the plug's housing is its own layers:
+    // duo_cable_plug).
+    let rw = 5.0;
+    let g = gtk::cairo::LinearGradient::new(cx - rw / 2.0, 0.0, cx + rw / 2.0, 0.0);
+    g.add_color_stop_rgb(0.0, 0.17, 0.175, 0.19);
+    g.add_color_stop_rgb(0.35, 0.36, 0.365, 0.38);
+    g.add_color_stop_rgb(1.0, 0.15, 0.155, 0.17);
+    let _ = cr.set_source(&g);
+    cr.rectangle(cx - rw / 2.0, y0 + pl - 0.5, rw, relief);
+    let _ = cr.fill();
+    drop(cr);
+    flatten(&snap, w as f32, h as f32)
+}
+
+/// One layer of the plug's housing (as the halves' edges are drawn: its
+/// silhouette layer on layer): `t` 0 the bottom, darker, to 1; the top one
+/// lit - a band of light along it and a bevel round its rim.
+fn duo_cable_plug(t: f64, top: bool) -> gdk::Paintable {
+    use gtk::graphene;
+    let k = DUO_PX_PER_MM;
+    let (w, h) = (CABLE_ROOM.0 * k, CABLE_ROOM.1 * k);
+    let snap = gtk::Snapshot::new();
+    let cr = snap.append_cairo(&graphene::Rect::new(0.0, 0.0, w as f32, h as f32));
+    cr.scale(k, k);
+    let (pw, pl) = CABLE_PLUG;
+    let (x, y, r) = (CABLE_PAD, CABLE_PAD, 2.4);
+    let shape = |cr: &gtk::cairo::Context, inset: f64| {
+        let (x, y, ww, hh, r) = (x + inset, y + inset, pw - 2.0 * inset, pl - 2.0 * inset, (r - inset).max(0.5));
+        cr.new_sub_path();
+        cr.arc(x + ww - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+        cr.arc(x + ww - r, y + hh - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+        cr.arc(x + r, y + hh - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        cr.arc(x + r, y + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
+        cr.close_path();
+    };
+    shape(&cr, 0.0);
+    if top {
+        let g = gtk::cairo::LinearGradient::new(x, y, x + pw, y + pl * 0.4);
+        g.add_color_stop_rgb(0.0, 0.25, 0.255, 0.27);
+        g.add_color_stop_rgb(0.4, 0.42, 0.425, 0.44);
+        g.add_color_stop_rgb(1.0, 0.22, 0.225, 0.24);
+        let _ = cr.set_source(&g);
+        let _ = cr.fill();
+        // The bevel: a lighter rim inside the edge.
+        shape(&cr, 0.6);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
+        cr.set_line_width(0.5);
+        let _ = cr.stroke();
+    } else {
+        let c = 0.10 + 0.10 * t;
+        cr.set_source_rgb(c, c + 0.004, c + 0.015);
+        let _ = cr.fill();
+    }
+    drop(cr);
+    flatten(&snap, w as f32, h as f32)
+}
+
 /// The light on a half's screen: a soft band across it, corner to corner.
 fn duo_glare(i: usize, bw: i32, bh: i32) -> gdk::Paintable {
     use gtk::{graphene, gsk};
@@ -2066,6 +2293,31 @@ fn show_fold(ui: &Ui, angle: f64) {
         .rotate_3d(face - rock, &graphene::Vec3::y_axis())
         .translate(&graphene::Point::new(-hw / 2.0, 0.0));
     ui.duo.set_child_transform(&ui.spine, Some(&hinge));
+    // The cable from the right half's bottom edge, in its plane, under the
+    // halves (the plug goes into the port), after the shadows; a leaning
+    // half (the tent) holds it in the air: faded there.
+    let k = DUO_PX_PER_MM as f32;
+    let cable_at = |z: f32| {
+        local(view(at, true).translate(&graphene::Point::new(mid, 0.0)), 1, rock, raise).translate_3d(&graphene::Point3D::new(
+            ((CABLE_PORT_X - CABLE_PLUG.0 / 2.0 - CABLE_PAD) as f32) * k,
+            h - (CABLE_PAD as f32) * k,
+            -DUO_THICK / 2.0 + z,
+        ))
+    };
+    let shown = rock.to_radians().cos().powi(4).max(0.0) as f64;
+    ui.duo.set_child_transform(&ui.cable, Some(&cable_at(0.0)));
+    ui.cable.set_opacity(shown);
+    ui.cable.insert_after(&ui.duo, Some(&ui.halves[0].floor));
+    // The plug's layers, bottom to top, over the cord.
+    let mut after: gtk::Widget = ui.cable.clone().upcast();
+    let n = ui.cable_plug.len().max(2) as f32 - 1.0;
+    for (i, p) in ui.cable_plug.iter().enumerate() {
+        let z = (i as f32 / n - 0.5) * CABLE_PLUG_T * k;
+        ui.duo.set_child_transform(p, Some(&cable_at(z)));
+        p.set_opacity(shown);
+        p.insert_after(&ui.duo, Some(&after));
+        after = p.clone().upcast();
+    }
     // The shadows on the table: the right half's under it; the left's under
     // it while it lies there, narrowing toward the spine as it rises, gone
     // when it folds under.
@@ -2105,6 +2357,10 @@ fn show_fold(ui: &Ui, angle: f64) {
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
+    ui.cable.set_visible(link == "cable");
+    for p in &ui.cable_plug {
+        p.set_visible(link == "cable");
+    }
     if let Some(a) = s.hinge {
         fold_to(ui, a);
     }

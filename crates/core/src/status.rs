@@ -17,7 +17,9 @@ echo "port=$(v adaptation-droidian-surfaceduo)"
 echo "sensorfw=$(v sensorfw-qt6)"
 echo "hinge=$(runuser -u droidian -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u droidian)/bus busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle 2>/dev/null | awk '{print $2}')"
 # The owner's session locked or not (item tells logind: LockedHint).
-echo "locked=$(loginctl show-session $(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" {print $1; exit}') -p LockedHint --value 2>/dev/null)"
+# item's own session is the wayland one (the owner has a manager session too).
+ses=$(for x in $(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" {print $1}'); do [ "$(loginctl show-session $x -p Type --value)" = wayland ] && echo $x; done | head -1)
+echo "locked=$([ -n "$ses" ] && loginctl show-session $ses -p LockedHint --value 2>/dev/null)"
 echo "fingers=$(busctl --system call org.droidian.fingerprint /org/droidian/fingerprint org.droidian.fingerprint GetAll 2>/dev/null | awk '{print $2}')"
 b=/sys/class/power_supply/battery
 echo "battery=$(cat $b/capacity 2>/dev/null)"
