@@ -2,7 +2,7 @@
 //! as a departures board's flaps do (each square through a few letters to
 //! its own, quick at first and slowing to the last), one line and one
 //! letter a little after another; a line under the pointer darker; a line
-//! clicked tells its key; closed, a board fades. The table is where Hythe
+//! clicked tells its key; closed, a board fades. The table is where Gridbay
 //! talks with whoever is at it: the sections' menu first.
 
 use std::time::Instant;

@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-pub const WORD: [&str; 5] = ["h", "y", "t", "h", "e"];
+pub const WORD: [&str; 7] = ["g", "r", "i", "d", "b", "a", "y"];
 
 /// The credit, a letter a square of the table (none for the space).
 pub const CREDIT: &str = "by AgentsCo";
@@ -74,8 +74,8 @@ const TAP_S: f32 = 0.6;
 
 impl Default for Intro {
     fn default() -> Intro {
-        // HYTHE_INTRO=0: started at its end (the cubes up, the eye down).
-        let skip = std::env::var("HYTHE_INTRO").is_ok_and(|v| v == "0");
+        // GRIDBAY_INTRO=0: started at its end (the cubes up, the eye down).
+        let skip = std::env::var("GRIDBAY_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(END));
         Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0 }
     }
@@ -171,7 +171,7 @@ impl Intro {
     /// its height. Seen from above they are the table's squares themselves
     /// (risen, their tops nearer the eye showed larger than the squares):
     /// they rise out of the table as the eye comes down.
-    pub fn cubes(&self) -> [(f32, f32); 5] {
+    pub fn cubes(&self) -> [(f32, f32); WORD.len()] {
         let risen = smooth(self.eye() / 0.7);
         std::array::from_fn(|i| {
             // They stay when the phone comes (in the page's upper left, the

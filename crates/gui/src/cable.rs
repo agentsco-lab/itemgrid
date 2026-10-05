@@ -270,7 +270,7 @@ impl Rope {
         }
         if motion < 0.05 {
             self.quiet += 1;
-            if self.quiet == 45 && std::env::var_os("HYTHE_ROPE").is_some() {
+            if self.quiet == 45 && std::env::var_os("GRIDBAY_ROPE").is_some() {
                 eprintln!("rope: at rest");
             }
         } else {

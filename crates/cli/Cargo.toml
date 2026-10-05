@@ -1,13 +1,13 @@
 [package]
-name = "hythe"
+name = "gridbay"
 edition.workspace = true
 version.workspace = true
-description = "The command line over hythe-core"
+description = "The command line over gridbay-core"
 
 [[bin]]
-name = "hythe"
+name = "gridbay"
 path = "src/main.rs"
 
 [dependencies]
 libc = "0.2"
-hythe-core = { path = "../core" }
+gridbay-core = { path = "../core" }

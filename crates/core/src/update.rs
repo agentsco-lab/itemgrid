@@ -25,18 +25,18 @@ impl Step {
     }
 }
 
-/// item's tree: HYTHE_ITEM, else ~/.config/hythe/item (a path in it),
+/// item's tree: GRIDBAY_ITEM, else ~/.config/gridbay/item (a path in it),
 /// else ~/Desktop/projects/item/item/compositor if it is there.
 pub fn item_tree() -> Result<PathBuf, String> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let from_env = std::env::var_os("HYTHE_ITEM").map(PathBuf::from);
-    let from_file = std::fs::read_to_string(home.join(".config/hythe/item")).ok().map(|s| PathBuf::from(s.trim()));
+    let from_env = std::env::var_os("GRIDBAY_ITEM").map(PathBuf::from);
+    let from_file = std::fs::read_to_string(home.join(".config/gridbay/item")).ok().map(|s| PathBuf::from(s.trim()));
     let guess = home.join("Desktop/projects/item/item/compositor");
     let tree = from_env.or(from_file).unwrap_or(guess);
     if tree.join("tools/install-phone.sh").exists() {
         Ok(tree)
     } else {
-        Err(format!("item's tree not found at {} - set HYTHE_ITEM or write its path in ~/.config/hythe/item", tree.display()))
+        Err(format!("item's tree not found at {} - set GRIDBAY_ITEM or write its path in ~/.config/gridbay/item", tree.display()))
     }
 }
 

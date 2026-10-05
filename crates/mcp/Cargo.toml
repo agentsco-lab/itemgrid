@@ -1,11 +1,11 @@
 [package]
-name = "hythe-mcp"
-description = "Hythe's window for Claude Code to look at and try (MCP, stdio)"
+name = "gridbay-mcp"
+description = "Gridbay's window for Claude Code to look at and try (MCP, stdio)"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "hythe-mcp"
+name = "gridbay-mcp"
 path = "src/main.rs"
 
 [dependencies]

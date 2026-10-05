@@ -2,18 +2,18 @@
 //! tools/flash-safely.sh (schema v2, by serial): one counter and one history
 //! for both, so neither can go around the other's limit. On a computer with
 //! the port's tree it is that tree's out/flash-state.json; elsewhere
-//! ~/.local/state/hythe/flash-state.json. Read here only, for now.
+//! ~/.local/state/gridbay/flash-state.json. Read here only, for now.
 
 use std::path::{Path, PathBuf};
 
 /// RAM boots in a row not yet confirmed, before the gate closes.
 pub const MAX_UNCONFIRMED: u64 = 2;
 
-/// The port's tree: HYTHE_PORT, ~/.config/hythe/port, or the usual place.
+/// The port's tree: GRIDBAY_PORT, ~/.config/gridbay/port, or the usual place.
 pub fn port_tree() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let from_env = std::env::var_os("HYTHE_PORT").map(PathBuf::from);
-    let from_file = std::fs::read_to_string(home.join(".config/hythe/port")).ok().map(|s| PathBuf::from(s.trim()));
+    let from_env = std::env::var_os("GRIDBAY_PORT").map(PathBuf::from);
+    let from_file = std::fs::read_to_string(home.join(".config/gridbay/port")).ok().map(|s| PathBuf::from(s.trim()));
     let tree = from_env.or(from_file).unwrap_or_else(|| home.join("Desktop/projects/surfaceduo/surfaceduo-droidian"));
     tree.join("tools/flash-safely.sh").exists().then_some(tree)
 }
@@ -21,7 +21,7 @@ pub fn port_tree() -> Option<PathBuf> {
 pub fn state_path() -> PathBuf {
     match port_tree() {
         Some(t) => t.join("out/flash-state.json"),
-        None => Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/state/hythe/flash-state.json"),
+        None => Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/state/gridbay/flash-state.json"),
     }
 }
 
@@ -102,7 +102,7 @@ pub fn confirm_flashed(serial: &str, ev: &Evidence) -> Result<(), String> {
     }
     d["consecutive_unconfirmed"] = 0.into();
     let event = format!(
-        "CONFIRMED by a flashed boot of {} (slot _{}, running, {}) - hythe",
+        "CONFIRMED by a flashed boot of {} (slot _{}, running, {}) - gridbay",
         ev.partition_sha256,
         ev.slot,
         ev.image.clone().unwrap_or_else(|| format!("Linux {}", ev.running_kernel))
@@ -182,7 +182,7 @@ pub fn count_attempt(serial: &str, sha: &str) -> Result<u64, String> {
         d["confirmed_sha256"] = serde_json::Value::Null;
         d["last_image_sha256"] = sha.into();
         d["product"] = "surfaceduo".into();
-        push_event(d, &format!("ram-boot attempt {n}/{MAX_UNCONFIRMED} sha={sha} - hythe"))
+        push_event(d, &format!("ram-boot attempt {n}/{MAX_UNCONFIRMED} sha={sha} - gridbay"))
     })?;
     Ok(n)
 }
@@ -200,15 +200,15 @@ pub fn confirm_ram_boot(serial: &str, sha: &str, fb: &crate::ramboot::Fastboot, 
             "unbootable_a": fb.unbootable_a, "unbootable_b": fb.unbootable_b,
             "critical": fb.critical, "product": fb.product, "captured": stamp(),
         });
-        push_event(d, &format!("CONFIRMED ram-boot of {sha}{} - hythe", if flashable { "" } else { " (a recovery: not to be flashed)" }))
+        push_event(d, &format!("CONFIRMED ram-boot of {sha}{} - gridbay", if flashable { "" } else { " (a recovery: not to be flashed)" }))
     })
 }
 
 /// The image confirmed for flashing taken back (a recovery's, confirmed by
-/// an older hythe).
+/// an older gridbay).
 pub fn unconfirm_flashing(serial: &str, why: &str) -> Result<(), String> {
     edit(serial, |d| {
         d["confirmed_sha256"] = serde_json::Value::Null;
-        push_event(d, &format!("flash confirmation withdrawn: {why} - hythe"))
+        push_event(d, &format!("flash confirmation withdrawn: {why} - gridbay"))
     })
 }

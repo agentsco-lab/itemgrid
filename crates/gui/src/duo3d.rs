@@ -4,7 +4,7 @@
 //! edges were layers, their order guessed, GTK's bounds for them loose).
 //!
 //! The geometry is the Surface Duo 1's, in millimetres, from the drawing
-//! Hythe has (data/duo-body.py: agentsco.uk's DuoBody, off a straight-on
+//! Gridbay has (data/duo-body.py: agentsco.uk's DuoBody, off a straight-on
 //! photo and Microsoft's spec sheet): each half 91.6 x 145.2 mm and 4.8 thick,
 //! its outer corners round (R 10), at its inner edge the notches the hinge's
 //! knuckles sit in; its edges rounded all round. Each half is made in the
@@ -696,13 +696,13 @@ pub fn area(scene: Rc<RefCell<Scene>>, w: i32, h: i32, k: f32) -> gtk::GLArea {
         move |a| {
             a.make_current();
             if let Some(e) = a.error() {
-                eprintln!("hythe: 3D: {e}");
+                eprintln!("gridbay: 3D: {e}");
                 return;
             }
             let es = a.context().is_some_and(|c| c.api() == gtk::gdk::GLAPI::GLES);
             match Gpu::new(es, k) {
                 Ok(g) => *gpu.borrow_mut() = Some(g),
-                Err(e) => eprintln!("hythe: 3D: {e}"),
+                Err(e) => eprintln!("gridbay: 3D: {e}"),
             }
         }
     });

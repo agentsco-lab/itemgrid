@@ -78,7 +78,7 @@ pub fn store(host: &str, key: &str) -> Result<(), String> {
     let script = format!(
         r#"{user}
 umask 077
-f=$(mktemp -p /run/user/$I .hythe-key.XXXXXX) || exit 1
+f=$(mktemp -p /run/user/$I .gridbay-key.XXXXXX) || exit 1
 printf '%s' '{key}' > "$f"
 chown "$U" "$f"
 sudo -u "$U" env XDG_RUNTIME_DIR=/run/user/$I DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$I/bus sh -c 'secret-tool store --label="item: OpenRouter key" {ATTRS} < "$0" && echo stored; rm -f "$0"' "$f"

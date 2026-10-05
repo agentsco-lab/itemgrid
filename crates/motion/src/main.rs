@@ -1,6 +1,6 @@
-//! duo-motion: the Duo's motion for Hythe, on the phone.
+//! duo-motion: the Duo's motion for Gridbay, on the phone.
 //!
-//! Hythe starts it over ssh (as root) while its window follows the phone,
+//! Gridbay starts it over ssh (as root) while its window follows the phone,
 //! and reads its lines; it ends when they can no longer be written (the
 //! window closed, the link gone). Straight from sensorfw's data socket -
 //! its own sessions, so the sensors run whatever the display does (the
@@ -28,7 +28,7 @@
 //! other end gone with it; the link's TCP would take minutes to tell, and
 //! whatever holds the phone awake for it would hold on).
 //!
-//! Kept from sleeping by whoever starts it (Hythe: logind's inhibitor
+//! Kept from sleeping by whoever starts it (Gridbay: logind's inhibitor
 //! around it - a kernel wakelock does not stop systemd-sleep).
 
 mod ahrs;

@@ -1,16 +1,16 @@
-//! hythe: look after a connected Surface Duo from the computer.
+//! gridbay: look after a connected Surface Duo from the computer.
 
-use hythe_core::{status, Mode};
+use gridbay_core::{status, Mode};
 
 fn main() {
-    hythe_core::moved::from_cradle();
-    // Output cut short (| head) ends hythe quietly, as other tools.
+    gridbay_core::moved::from_old_names();
+    // Output cut short (| head) ends gridbay quietly, as other tools.
     // SAFETY: setting SIGPIPE's disposition before any thread runs.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // A job that changes the phone, recorded for a Hythe window open
+    // A job that changes the phone, recorded for a Gridbay window open
     // meanwhile (it begins with the job's first step).
     let job = match (args.first().map(String::as_str), args.get(1).map(String::as_str)) {
         (Some("backup"), Some("full")) => Some("full-backup"),
@@ -57,14 +57,14 @@ fn main() {
         Some("android") => cmd_android(&args[1..]),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some(other) => {
-            eprintln!("hythe: '{other}' is not here yet");
+            eprintln!("gridbay: '{other}' is not here yet");
             usage();
             2
         }
     };
     if STARTED.load(std::sync::atomic::Ordering::Relaxed) {
         let failed = LAST_STOP.lock().unwrap().take();
-        hythe_core::activity::end(&if code == 0 { Ok(()) } else { Err(failed.unwrap_or_else(|| "stopped".into())) });
+        gridbay_core::activity::end(&if code == 0 { Ok(()) } else { Err(failed.unwrap_or_else(|| "stopped".into())) });
     }
     std::process::exit(code);
 }
@@ -78,20 +78,20 @@ fn said(start: &std::time::Instant, words: &str) {
     println!("[{:>4.0}s] {words}", start.elapsed().as_secs_f64());
     if let Some(job) = *JOB.lock().unwrap() {
         if !STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            hythe_core::activity::begin(job);
+            gridbay_core::activity::begin(job);
         }
-        hythe_core::activity::line(words);
+        gridbay_core::activity::line(words);
     }
 }
 
 /// A job stopped: said, and kept for the record.
 fn stop(why: &str) {
-    eprintln!("hythe: STOP: {why}");
+    eprintln!("gridbay: STOP: {why}");
     *LAST_STOP.lock().unwrap() = Some(why.to_owned());
 }
 
 fn cmd_status() -> i32 {
-    let seen = hythe_core::detect();
+    let seen = gridbay_core::detect();
     let via = if seen.via.is_empty() { String::new() } else { format!(" ({})", seen.via) };
     println!("Phone:     {}{via}", seen.mode.name());
     if seen.mode != Mode::Linux {
@@ -101,11 +101,11 @@ fn cmd_status() -> i32 {
     let s = match status::read(&seen.via) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             return 1;
         }
     };
-    if let Some(d) = hythe_core::club::known(&s.serial) {
+    if let Some(d) = gridbay_core::club::known(&s.serial) {
         println!("Club:      {}{}", d.number, d.label.map(|l| format!(" - {l}")).unwrap_or_default());
     }
     let (h, m) = (s.uptime_s / 3600, s.uptime_s / 60 % 60);
@@ -134,26 +134,26 @@ fn cmd_status() -> i32 {
 
 fn cmd_update(args: &[String]) -> i32 {
     let build = !args.iter().any(|a| a == "--no-build");
-    let seen = hythe_core::detect();
+    let seen = gridbay_core::detect();
     if seen.mode != Mode::Linux {
-        eprintln!("hythe: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
+        eprintln!("gridbay: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
         return 1;
     }
     let start = std::time::Instant::now();
-    let result = hythe_core::update::update(&seen.via, build, &mut |step| {
+    let result = gridbay_core::update::update(&seen.via, build, &mut |step| {
         said(&start, step.words());
     });
     match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             1
         }
     }
 }
 
 fn cmd_logs(args: &[String]) -> i32 {
-    use hythe_core::logs::Query;
+    use gridbay_core::logs::Query;
     let mut q = Query { lines: Some(200), ..Default::default() };
     let mut save: Option<Option<String>> = None;
     let mut boots = false;
@@ -178,7 +178,7 @@ fn cmd_logs(args: &[String]) -> i32 {
             Ok(())
         })();
         if let Err(e) = r {
-            eprintln!("hythe logs: {e}");
+            eprintln!("gridbay logs: {e}");
             return 2;
         }
         // A file after --save, if one is given.
@@ -190,20 +190,20 @@ fn cmd_logs(args: &[String]) -> i32 {
             }
         }
     }
-    let seen = hythe_core::detect();
+    let seen = gridbay_core::detect();
     if seen.mode != Mode::Linux {
-        eprintln!("hythe: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
+        eprintln!("gridbay: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
         return 1;
     }
     if boots {
-        return hythe_core::phone::stream(&seen.via, hythe_core::logs::BOOTS).unwrap_or_else(|e| {
-            eprintln!("hythe: {e}");
+        return gridbay_core::phone::stream(&seen.via, gridbay_core::logs::BOOTS).unwrap_or_else(|e| {
+            eprintln!("gridbay: {e}");
             1
         });
     }
     match save {
-        None => hythe_core::phone::stream(&seen.via, &q.script()).unwrap_or_else(|e| {
-            eprintln!("hythe: {e}");
+        None => gridbay_core::phone::stream(&seen.via, &q.script()).unwrap_or_else(|e| {
+            eprintln!("gridbay: {e}");
             1
         }),
         Some(file) => {
@@ -212,22 +212,22 @@ fn cmd_logs(args: &[String]) -> i32 {
                 q.lines = None;
             }
             q.follow = false;
-            let text = match hythe_core::phone::run(&seen.via, &q.script()) {
+            let text = match gridbay_core::phone::run(&seen.via, &q.script()) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("hythe: {e}");
+                    eprintln!("gridbay: {e}");
                     return 1;
                 }
             };
             let path = file.unwrap_or_else(|| {
-                let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("hythe-logs");
+                let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("gridbay-logs");
                 let _ = std::fs::create_dir_all(&dir);
                 let stamp = std::process::Command::new("date").arg("+%Y-%m-%d-%H%M%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
                 let part = q.only.clone().unwrap_or_else(|| "all".into());
                 dir.join(format!("{stamp}-boot{}-{part}.log", q.boot)).display().to_string()
             });
             if let Err(e) = std::fs::write(&path, &text) {
-                eprintln!("hythe: {path}: {e}");
+                eprintln!("gridbay: {path}: {e}");
                 return 1;
             }
             println!("{} lines saved to {path}", text.lines().count());
@@ -238,9 +238,9 @@ fn cmd_logs(args: &[String]) -> i32 {
 
 /// The phone, if Linux is up; said why not otherwise.
 fn linux() -> Option<String> {
-    let seen = hythe_core::detect();
+    let seen = gridbay_core::detect();
     if seen.mode != Mode::Linux {
-        eprintln!("hythe: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
+        eprintln!("gridbay: the phone is {}, not Linux: {}", seen.mode.name(), seen.mode.means());
         return None;
     }
     Some(seen.via)
@@ -253,45 +253,45 @@ fn cmd_run(args: &[String]) -> i32 {
         [flag, path] if flag.as_str() == "--file" => match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("hythe run: {path}: {e}");
+                eprintln!("gridbay run: {path}: {e}");
                 return 2;
             }
         },
         [] => {
-            eprintln!("hythe run: what to run? e.g. hythe run uptime, hythe run --file x.sh");
+            eprintln!("gridbay run: what to run? e.g. gridbay run uptime, gridbay run --file x.sh");
             return 2;
         }
         words => words.iter().map(|w| w.as_str()).collect::<Vec<_>>().join(" "),
     };
     // The check sees what was typed, before it is wrapped for the owner.
-    if let Err(e) = hythe_core::guard::check(&script) {
-        eprintln!("hythe: {e}");
+    if let Err(e) = gridbay_core::guard::check(&script) {
+        eprintln!("gridbay: {e}");
         return 3;
     }
-    let script = if owner { hythe_core::phone::as_owner(&script) } else { script };
+    let script = if owner { gridbay_core::phone::as_owner(&script) } else { script };
     let Some(host) = linux() else { return 1 };
-    hythe_core::phone::stream(&host, &script).unwrap_or_else(|e| {
-        eprintln!("hythe: {e}");
+    gridbay_core::phone::stream(&host, &script).unwrap_or_else(|e| {
+        eprintln!("gridbay: {e}");
         1
     })
 }
 
 fn cmd_shell(args: &[String]) -> i32 {
     let Some(host) = linux() else { return 1 };
-    eprintln!("{}", hythe_core::guard::SHELL_WARNING);
-    hythe_core::phone::shell(&host, args.iter().any(|a| a == "--user")).unwrap_or_else(|e| {
-        eprintln!("hythe: {e}");
+    eprintln!("{}", gridbay_core::guard::SHELL_WARNING);
+    gridbay_core::phone::shell(&host, args.iter().any(|a| a == "--user")).unwrap_or_else(|e| {
+        eprintln!("gridbay: {e}");
         1
     })
 }
 
 fn cmd_backup(args: &[String]) -> i32 {
-    use hythe_core::backup::{self, Kind};
+    use gridbay_core::backup::{self, Kind};
     let Some(host) = linux() else { return 1 };
     let serial = match backup::serial(&host) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             return 1;
         }
     };
@@ -301,7 +301,7 @@ fn cmd_backup(args: &[String]) -> i32 {
         Some("quick") => vec![Kind::Quick],
         Some("full") => {
             let start = std::time::Instant::now();
-            return match hythe_core::full::take(&host, &mut |line| said(&start, &line)) {
+            return match gridbay_core::full::take(&host, &mut |line| said(&start, &line)) {
                 Ok(b) => {
                     println!("        {}", b.dir.display());
                     0
@@ -322,7 +322,7 @@ fn cmd_backup(args: &[String]) -> i32 {
             k
         }
         Some(other) => {
-            eprintln!("hythe backup: '{other}' - device, boot, quick, full or all");
+            eprintln!("gridbay backup: '{other}' - device, boot, quick, full or all");
             return 2;
         }
     };
@@ -331,12 +331,12 @@ fn cmd_backup(args: &[String]) -> i32 {
         match backup::take(&host, kind, &mut |line| said(&start, &line)) {
             Ok(b) => println!("        {}", b.dir.display()),
             Err(e) => {
-                eprintln!("hythe: {}: {e}", kind.words());
+                eprintln!("gridbay: {}: {e}", kind.words());
                 return 1;
             }
         }
     }
-    if let Some(device) = hythe_core::backup::list(Some(&serial)).into_iter().find(|b| b.manifest.kind == Kind::Device) {
+    if let Some(device) = gridbay_core::backup::list(Some(&serial)).into_iter().find(|b| b.manifest.kind == Kind::Device) {
         if !device.manifest.off_computer {
             println!("\nThe device data (radio calibration, IMEI, keys) exists nowhere but on the phone and here:");
             println!("copy {} to a USB drive or a cloud too.", device.dir.display());
@@ -346,24 +346,24 @@ fn cmd_backup(args: &[String]) -> i32 {
 }
 
 fn cmd_backups() -> i32 {
-    let all = hythe_core::backup::list(None);
+    let all = gridbay_core::backup::list(None);
     if all.is_empty() {
-        println!("No backups yet: hythe backup");
+        println!("No backups yet: gridbay backup");
         return 0;
     }
     for b in all {
         let flags = [b.manifest.keep.then_some("kept"), b.manifest.off_computer.then_some("copied off")].into_iter().flatten().collect::<Vec<_>>().join(", ");
-        println!("{}  {:<18} {:>9}  item {}  slot {}  {}", b.manifest.created, b.manifest.kind.words(), hythe_core::status::size_words(b.size() / 1024), b.manifest.item, b.manifest.slot, flags);
+        println!("{}  {:<18} {:>9}  item {}  slot {}  {}", b.manifest.created, b.manifest.kind.words(), gridbay_core::status::size_words(b.size() / 1024), b.manifest.item, b.manifest.slot, flags);
     }
     0
 }
 
 fn cmd_slots() -> i32 {
     let Some(host) = linux() else { return 1 };
-    let slots = match hythe_core::slots::read(&host) {
+    let slots = match gridbay_core::slots::read(&host) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             return 1;
         }
     };
@@ -380,12 +380,12 @@ fn cmd_slots() -> i32 {
         println!("Slot {}:  {}", s.name.to_ascii_uppercase(), flags.join(", "));
         println!("         {}{}", s.image.clone().unwrap_or_else(|| "an image not known here".into()), if s.kernel.is_empty() { String::new() } else { format!(" · Linux {}", s.kernel) });
     }
-    if let Ok(serial) = hythe_core::backup::serial(&host) {
-        let g = hythe_core::flash::gate(&serial);
+    if let Ok(serial) = gridbay_core::backup::serial(&host) {
+        let g = gridbay_core::flash::gate(&serial);
         println!(
             "RAM boots: {} of {} unconfirmed - {}",
             g.unconfirmed,
-            hythe_core::flash::MAX_UNCONFIRMED,
+            gridbay_core::flash::MAX_UNCONFIRMED,
             if g.open() { "the gate is open" } else { "the gate is CLOSED: confirm a good boot or reset it on purpose" }
         );
     }
@@ -394,10 +394,10 @@ fn cmd_slots() -> i32 {
 
 fn cmd_confirm(args: &[String]) -> i32 {
     let Some(host) = linux() else { return 1 };
-    let (serial, ev) = match hythe_core::backup::serial(&host).and_then(|s| hythe_core::flash::evidence(&host).map(|e| (s, e))) {
+    let (serial, ev) = match gridbay_core::backup::serial(&host).and_then(|s| gridbay_core::flash::evidence(&host).map(|e| (s, e))) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             return 1;
         }
     };
@@ -406,23 +406,23 @@ fn cmd_confirm(args: &[String]) -> i32 {
     println!("Kernel in slot:  {}", ev.slot_kernel);
     println!("Image in slot:   {}", ev.image.clone().unwrap_or_else(|| "not known here".into()));
     if !ev.holds() {
-        eprintln!("hythe: they differ - nothing is confirmed");
+        eprintln!("gridbay: they differ - nothing is confirmed");
         return 1;
     }
-    let g = hythe_core::flash::gate(&serial);
-    println!("RAM boots now:   {} of {} unconfirmed", g.unconfirmed, hythe_core::flash::MAX_UNCONFIRMED);
+    let g = gridbay_core::flash::gate(&serial);
+    println!("RAM boots now:   {} of {} unconfirmed", g.unconfirmed, gridbay_core::flash::MAX_UNCONFIRMED);
     if !args.iter().any(|a| a == "--yes") {
         println!("\nThis records that the system running booted from slot {} and counts the RAM boots back to 0.", ev.slot.to_ascii_uppercase());
         println!("Nothing on the phone changes. Run again with --yes to record it.");
         return 0;
     }
-    match hythe_core::flash::confirm_flashed(&serial, &ev) {
+    match gridbay_core::flash::confirm_flashed(&serial, &ev) {
         Ok(()) => {
-            println!("Recorded in {}: the RAM boots are 0 of {} now.", hythe_core::flash::state_path().display(), hythe_core::flash::MAX_UNCONFIRMED);
+            println!("Recorded in {}: the RAM boots are 0 of {} now.", gridbay_core::flash::state_path().display(), gridbay_core::flash::MAX_UNCONFIRMED);
             0
         }
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             1
         }
     }
@@ -430,23 +430,23 @@ fn cmd_confirm(args: &[String]) -> i32 {
 
 fn cmd_ramboot(args: &[String]) -> i32 {
     let Some(image) = args.iter().find(|a| !a.starts_with('-')) else {
-        eprintln!("hythe ramboot: which image? e.g. hythe ramboot boot.img");
+        eprintln!("gridbay ramboot: which image? e.g. gridbay ramboot boot.img");
         return 2;
     };
     let image = std::path::Path::new(image);
     let Some(host) = linux() else { return 1 };
-    let (img, serial, slot) = match hythe_core::ramboot::preflight(&host, image) {
+    let (img, serial, slot) = match gridbay_core::ramboot::preflight(&host, image) {
         Ok(r) => r,
         Err(e) => {
             stop(&e);
             return 1;
         }
     };
-    let gate = hythe_core::flash::gate(&serial);
+    let gate = gridbay_core::flash::gate(&serial);
     println!("Image:     {} ({} MB)", image.display(), img.size >> 20);
     println!("           header v2, ARM64 kernel, DTB, Android {}, hardware {}, sha {}", img.os_version, img.hardware, &img.sha256[..16]);
-    println!("Phone:     booted from slot {}; RAM boots {} of {} unconfirmed", slot.to_ascii_uppercase(), gate.unconfirmed, hythe_core::flash::MAX_UNCONFIRMED);
-    println!("Baseline:  {}", hythe_core::flash::baseline(&serial).map(|b| b.to_string()).unwrap_or_else(|| "none yet (taken from this boot)".into()));
+    println!("Phone:     booted from slot {}; RAM boots {} of {} unconfirmed", slot.to_ascii_uppercase(), gate.unconfirmed, gridbay_core::flash::MAX_UNCONFIRMED);
+    println!("Baseline:  {}", gridbay_core::flash::baseline(&serial).map(|b| b.to_string()).unwrap_or_else(|| "none yet (taken from this boot)".into()));
     if !args.iter().any(|a| a == "--yes") {
         println!("\nThe checks that need no change passed. With --yes, in order (each a stop if it fails):");
         for step in [
@@ -462,9 +462,9 @@ fn cmd_ramboot(args: &[String]) -> i32 {
         return 0;
     }
     let start = std::time::Instant::now();
-    let expect = if args.iter().any(|a| a == "--recovery") { hythe_core::ramboot::Expect::Recovery } else { hythe_core::ramboot::Expect::of(image) };
-    println!("Boots into: {}", if expect == hythe_core::ramboot::Expect::Recovery { "a recovery (awaited over adb)" } else { "Linux (awaited over ssh)" });
-    match hythe_core::ramboot::ram_boot(&host, image, expect, &mut |line| said(&start, &line)) {
+    let expect = if args.iter().any(|a| a == "--recovery") { gridbay_core::ramboot::Expect::Recovery } else { gridbay_core::ramboot::Expect::of(image) };
+    println!("Boots into: {}", if expect == gridbay_core::ramboot::Expect::Recovery { "a recovery (awaited over adb)" } else { "Linux (awaited over ssh)" });
+    match gridbay_core::ramboot::ram_boot(&host, image, expect, &mut |line| said(&start, &line)) {
         Ok(()) => 0,
         Err(e) => {
             stop(&e);
@@ -474,19 +474,19 @@ fn cmd_ramboot(args: &[String]) -> i32 {
 }
 
 fn cmd_install(args: &[String]) -> i32 {
-    use hythe_core::install;
+    use gridbay_core::install;
     let release = match args.iter().find(|a| !a.starts_with('-')) {
         Some(d) => match install::read(std::path::Path::new(d)) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("hythe: {e}");
+                eprintln!("gridbay: {e}");
                 return 1;
             }
         },
         None => match install::releases().pop() {
             Some(r) => r,
             None => {
-                eprintln!("hythe: no release image here ({})", install::places().iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+                eprintln!("gridbay: no release image here ({})", install::places().iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
                 return 1;
             }
         },
@@ -501,7 +501,7 @@ fn cmd_install(args: &[String]) -> i32 {
     };
     println!("Erase and install - the plan\n");
     println!("Image:     {} ({} MB; adaptation {}, item {})", release.name, release.size >> 20, release.adaptation, release.item);
-    let serial = hythe_core::backup::serial(&host).unwrap_or_default();
+    let serial = gridbay_core::backup::serial(&host).unwrap_or_default();
     println!("Kept:      {} (--keep-files: home, Wi-Fi, time zone, PIN; --full-copy: the whole system, ~20 min more)", mode.words());
     println!("Erased:    everything on userdata - the system, home, settings, the Android container");
     println!("Untouched: the device data, the boot chain, the unlocked bootloader");
@@ -510,7 +510,7 @@ fn cmd_install(args: &[String]) -> i32 {
         println!("\nRun again with --yes to go (the phone's number is asked before anything is erased).");
         return 0;
     }
-    let word = hythe_core::android::confirm_word(&serial);
+    let word = gridbay_core::android::confirm_word(&serial);
     println!("\nThis ERASES the phone's userdata. Type {word} to go on:");
     let mut typed = String::new();
     let _ = std::io::stdin().read_line(&mut typed);
@@ -525,13 +525,13 @@ fn cmd_install(args: &[String]) -> i32 {
 }
 
 fn cmd_stock(args: &[String]) -> i32 {
-    use hythe_core::stock;
-    // A package named, or those kept in ~/.cache/hythe/stock.
+    use gridbay_core::stock;
+    // A package named, or those kept in ~/.cache/gridbay/stock.
     let pkgs = match args.iter().find(|a| !a.starts_with('-')) {
         Some(p) => match stock::read(std::path::Path::new(p)) {
             Ok(pkg) => vec![pkg],
             Err(e) => {
-                eprintln!("hythe: {e}");
+                eprintln!("gridbay: {e}");
                 return 1;
             }
         },
@@ -543,7 +543,7 @@ fn cmd_stock(args: &[String]) -> i32 {
     }
     let start = std::time::Instant::now();
     for pkg in &pkgs {
-        println!("{} · Android build {} · security patch {} · {}", pkg.path.file_name().and_then(|n| n.to_str()).unwrap_or(""), pkg.build, pkg.security_patch, hythe_core::android::when(pkg.timestamp));
+        println!("{} · Android build {} · security patch {} · {}", pkg.path.file_name().and_then(|n| n.to_str()).unwrap_or(""), pkg.build, pkg.security_patch, gridbay_core::android::when(pkg.timestamp));
         match stock::boot_chain(pkg, &mut |l| said(&start, &l)) {
             Ok(dir) => println!("boot chain in {}", dir.display()),
             Err(e) => {
@@ -559,13 +559,13 @@ fn cmd_brake() -> i32 {
     // The parking brake armed from Linux: a surprise restart stops in the
     // bootloader. Also what ends a way back finished by hand.
     let Some(host) = linux() else { return 1 };
-    match hythe_core::ramboot::arm_brake_linux(&host) {
+    match gridbay_core::ramboot::arm_brake_linux(&host) {
         Ok(()) => {
             println!("parking brake armed: the next restart stops in the bootloader");
             0
         }
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             1
         }
     }
@@ -574,24 +574,24 @@ fn cmd_brake() -> i32 {
 fn cmd_recovery_exit() -> i32 {
     // The phone is in the recovery: no Linux to ask its serial; the last
     // one backed up or seen in the state is it.
-    let serial = hythe_core::backup::list(None).first().map(|b| b.manifest.serial.clone());
+    let serial = gridbay_core::backup::list(None).first().map(|b| b.manifest.serial.clone());
     let Some(serial) = serial else {
-        eprintln!("hythe: no phone known here yet");
+        eprintln!("gridbay: no phone known here yet");
         return 1;
     };
-    let host = hythe_core::phone::hosts().into_iter().next().unwrap_or_default();
+    let host = gridbay_core::phone::hosts().into_iter().next().unwrap_or_default();
     let start = std::time::Instant::now();
-    match hythe_core::ramboot::leave_recovery(&host, &serial, &mut |line| said(&start, &line)) {
+    match gridbay_core::ramboot::leave_recovery(&host, &serial, &mut |line| said(&start, &line)) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             1
         }
     }
 }
 
 fn cmd_club(args: &[String]) -> i32 {
-    use hythe_core::club;
+    use gridbay_core::club;
     match args.first().map(String::as_str) {
         Some("token") => {
             println!("Paste the registry token from {} (Settings -> Device registry), then Enter:", club::server());
@@ -605,7 +605,7 @@ fn cmd_club(args: &[String]) -> i32 {
                     0
                 }
                 Err(e) => {
-                    eprintln!("hythe: {e}");
+                    eprintln!("gridbay: {e}");
                     1
                 }
             }
@@ -616,13 +616,13 @@ fn cmd_club(args: &[String]) -> i32 {
                 0
             }
             Err(e) => {
-                eprintln!("hythe: {e}");
+                eprintln!("gridbay: {e}");
                 1
             }
         },
         _ => {
             println!("The club: {}", club::server());
-            println!("Token: {}", if club::token().is_some() { "in the keyring" } else { "none - hythe club token" });
+            println!("Token: {}", if club::token().is_some() { "in the keyring" } else { "none - gridbay club token" });
             0
         }
     }
@@ -630,14 +630,14 @@ fn cmd_club(args: &[String]) -> i32 {
 
 fn cmd_register() -> i32 {
     let Some(host) = linux() else { return 1 };
-    match hythe_core::club::register(&host) {
+    match gridbay_core::club::register(&host) {
         Ok(d) => {
             println!("This Duo is {} in the club{}.", d.number, if d.new { " - newly registered" } else { "" });
             println!("Written on the phone: /etc/item/device-id");
             0
         }
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             1
         }
     }
@@ -647,25 +647,25 @@ fn cmd_restore(args: &[String]) -> i32 {
     let slot = match args.iter().position(|a| a == "--slot").and_then(|i| args.get(i + 1)).and_then(|s| s.chars().next()) {
         Some(c) => c.to_ascii_lowercase(),
         None => {
-            eprintln!("hythe restore: which slot? --slot a or --slot b");
+            eprintln!("gridbay restore: which slot? --slot a or --slot b");
             return 2;
         }
     };
     let rewrite = args.iter().any(|a| a == "--rewrite");
     let dir = args.iter().enumerate().find(|(i, a)| !a.starts_with('-') && args.get(i.wrapping_sub(1)).is_none_or(|p| p != "--slot")).map(|(_, a)| std::path::PathBuf::from(a));
     let Some(host) = linux() else { return 1 };
-    let serial = match hythe_core::backup::serial(&host) {
+    let serial = match gridbay_core::backup::serial(&host) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             return 1;
         }
     };
-    let Some(backup) = hythe_core::restore::pick(&serial, dir.as_deref()) else {
-        eprintln!("hythe: no such boot-chain backup of this phone (hythe backups)");
+    let Some(backup) = gridbay_core::restore::pick(&serial, dir.as_deref()) else {
+        eprintln!("gridbay: no such boot-chain backup of this phone (gridbay backups)");
         return 1;
     };
-    let plan = match hythe_core::restore::plan(&host, &backup, slot, rewrite) {
+    let plan = match gridbay_core::restore::plan(&host, &backup, slot, rewrite) {
         Ok(p) => p,
         Err(e) => {
             stop(&e);
@@ -692,7 +692,7 @@ fn cmd_restore(args: &[String]) -> i32 {
         return 0;
     }
     let start = std::time::Instant::now();
-    match hythe_core::restore::restore(&host, &plan, &mut |l| said(&start, &l)) {
+    match gridbay_core::restore::restore(&host, &plan, &mut |l| said(&start, &l)) {
         Ok(()) => 0,
         Err(e) => {
             stop(&e);
@@ -702,7 +702,7 @@ fn cmd_restore(args: &[String]) -> i32 {
 }
 
 fn cmd_android(args: &[String]) -> i32 {
-    use hythe_core::android;
+    use gridbay_core::android;
     let yes = args.iter().any(|a| a == "--yes");
     let start = std::time::Instant::now();
     let mut say = |l: String| said(&start, &l);
@@ -716,18 +716,18 @@ fn cmd_android(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("start") | Some("back") => {
             // In Linux (a system installed afresh): its serial over ssh.
-            let in_linux = hythe_core::phone::hosts().into_iter().find(|h| hythe_core::phone::answers(h)).and_then(|h| hythe_core::backup::serial(&h).ok());
+            let in_linux = gridbay_core::phone::hosts().into_iter().find(|h| gridbay_core::phone::answers(h)).and_then(|h| gridbay_core::backup::serial(&h).ok());
             let Some(serial) = in_linux.or_else(android::away_serial) else {
                 if android::port_without_system() {
-                    eprintln!("hythe: the phone restarted into the port's kernel, which finds no system on the erased userdata.");
+                    eprintln!("gridbay: the phone restarted into the port's kernel, which finds no system on the erased userdata.");
                     eprintln!("        Hold Power ~15 s until it is off, then Volume Down + Power for the bootloader; run this again.");
                 } else {
-                    eprintln!("hythe: no phone with a whole-system backup is on the USB (in Android it needs USB debugging on;");
+                    eprintln!("gridbay: no phone with a whole-system backup is on the USB (in Android it needs USB debugging on;");
                     eprintln!("        or Volume Down + Power from off, for the bootloader)");
                 }
                 return 1;
             };
-            let host = hythe_core::phone::hosts().into_iter().next().unwrap_or_default();
+            let host = gridbay_core::phone::hosts().into_iter().next().unwrap_or_default();
             if args[0] == "start" {
                 return done(android::start(&host, &serial, &mut say));
             }
@@ -742,7 +742,7 @@ fn cmd_android(args: &[String]) -> i32 {
         Some("trial") => {
             // The way back tried alone, in TWRP: nothing is erased.
             let Some(serial) = android::away_serial() else {
-                eprintln!("hythe: no phone with a whole-system backup is on the USB");
+                eprintln!("gridbay: no phone with a whole-system backup is on the USB");
                 return 1;
             };
             say("trying the way back (512 MB onto the phone, checked)".into());
@@ -754,7 +754,7 @@ fn cmd_android(args: &[String]) -> i32 {
         }
         Some("go") | None => {}
         Some(other) => {
-            eprintln!("hythe android: unknown '{other}' (go, start, back, trial)");
+            eprintln!("gridbay android: unknown '{other}' (go, start, back, trial)");
             return 2;
         }
     }
@@ -762,7 +762,7 @@ fn cmd_android(args: &[String]) -> i32 {
     let plan = match android::plan(&host) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             return 1;
         }
     };
@@ -788,7 +788,7 @@ fn cmd_android(args: &[String]) -> i32 {
     if !plan.losses.is_empty() {
         println!("Lost with userdata (in no backup):");
         for (name, bytes) in &plan.losses {
-            println!("                {name} ({})", hythe_core::status::size_words(bytes / 1024));
+            println!("                {name} ({})", gridbay_core::status::size_words(bytes / 1024));
         }
     }
     if plan.stops.is_empty() {
@@ -800,14 +800,14 @@ fn cmd_android(args: &[String]) -> i32 {
         }
     }
     if args.first().map(String::as_str) != Some("go") || !yes || !plan.stops.is_empty() {
-        println!("\n`hythe android go --yes`: the whole system backed up (or checked); TWRP from RAM; the way back");
+        println!("\n`gridbay android go --yes`: the whole system backed up (or checked); TWRP from RAM; the way back");
         println!("tried; then, after you type the phone's number, metadata and userdata ERASED and stock Android");
         println!("started from RAM - as a guest: the port's kernel stays on the slot, so a plain restart finds no system;");
-        println!("hold Volume Down + Power for the bootloader, then `hythe android start` runs Android again and");
-        println!("`hythe android back` puts Linux back. Lost things need --accept-losses.");
+        println!("hold Volume Down + Power for the bootloader, then `gridbay android start` runs Android again and");
+        println!("`gridbay android back` puts Linux back. Lost things need --accept-losses.");
         return if plan.stops.is_empty() { 0 } else { 1 };
     }
-    let word = android::confirm_word(&hythe_core::backup::serial(&host).unwrap_or_default());
+    let word = android::confirm_word(&gridbay_core::backup::serial(&host).unwrap_or_default());
     println!("\nThis ERASES the phone's userdata. Type {word} to go on:");
     let mut typed = String::new();
     let _ = std::io::stdin().read_line(&mut typed);
@@ -817,10 +817,10 @@ fn cmd_android(args: &[String]) -> i32 {
 fn cmd_reboot() -> i32 {
     let Some(host) = linux() else { return 1 };
     let start = std::time::Instant::now();
-    match hythe_core::phone::reboot(&host, &mut |b| said(&start, b.words())) {
+    match gridbay_core::phone::reboot(&host, &mut |b| said(&start, b.words())) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             1
         }
     }
@@ -829,27 +829,27 @@ fn cmd_reboot() -> i32 {
 fn cmd_screenshot(args: &[String]) -> i32 {
     let hinge = args.iter().any(|a| a == "--hinge");
     let path = args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| {
-        let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("hythe-shots");
+        let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("gridbay-shots");
         let _ = std::fs::create_dir_all(&dir);
         let stamp = std::process::Command::new("date").arg("+%Y-%m-%d-%H%M%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
         dir.join(format!("{stamp}.png")).display().to_string()
     });
     let Some(host) = linux() else { return 1 };
-    let png = hythe_core::screenshot::take(&host).and_then(|rgba| hythe_core::screenshot::png(&rgba, hinge));
+    let png = gridbay_core::screenshot::take(&host).and_then(|rgba| gridbay_core::screenshot::png(&rgba, hinge));
     match png.and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))) {
         Ok(()) => {
             println!("{path}");
             0
         }
         Err(e) => {
-            eprintln!("hythe: {e}");
+            eprintln!("gridbay: {e}");
             1
         }
     }
 }
 
 fn usage() {
-    println!("hythe - look after a connected Surface Duo\n");
+    println!("gridbay - look after a connected Surface Duo\n");
     println!("  status       what the phone is doing; on Linux its versions, battery, heat, space, failed services");
     println!("  update       build item, install it, reboot, wait until it runs (--no-build: install what is built)");
     println!("  logs         the phone's journal: --boot -1, --only item|sensorfw|kernel|posture|pen|UNIT,");
@@ -858,7 +858,7 @@ fn usage() {
     println!("               refused: the GPIO debug file, writing block devices");
     println!("  shell        a shell on the phone as root (--user: as its owner)");
     println!("  reboot       reboot the phone and wait until item runs again");
-    println!("  backup       back up to ~/hythe-backups: device data (once), boot chain, home and settings;");
+    println!("  backup       back up to ~/gridbay-backups: device data (once), boot chain, home and settings;");
     println!("               or one: device | boot | quick. Reads only.");
     println!("               full: the whole system from TWRP (the phone in TWRP ~15-20 min, then back)");
     println!("  backups      the backups on this computer");
@@ -878,5 +878,5 @@ fn usage() {
     println!("               back --yes: Linux again, from the whole-system backup");
     println!("  restore      a slot's boot chain from a backup: [BACKUP] --slot a|b (shows the plan; --yes;");
     println!("               --rewrite writes the same bytes, to try the writing on the spare slot)");
-    println!("  screenshot   both panels as one PNG ([FILE], ~/hythe-shots/ by default; --hinge keeps its strip)");
+    println!("  screenshot   both panels as one PNG ([FILE], ~/gridbay-shots/ by default; --hinge keeps its strip)");
 }

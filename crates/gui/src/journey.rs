@@ -22,7 +22,7 @@ const fn st(title: &'static str, explain: &'static str, phone: &'static str, sta
 
 const CHECKING: Stage = st(
     "Getting ready",
-    "Hythe checks the image and the phone's health, and sets a safety catch: if anything goes wrong, the phone stops in its bootloader instead of trying again.",
+    "Gridbay checks the image and the phone's health, and sets a safety catch: if anything goes wrong, the phone stops in its bootloader instead of trying again.",
     "Linux",
     &["checking the image", "image fine", "arming the parking brake", "into TWRP, from RAM"],
     8.0,
@@ -155,7 +155,7 @@ pub fn after(job: &str) -> &'static str {
         "install-full" => "item is installed afresh. Unlock with 1234, then choose your own PIN. Your old system is on this computer: Back to Linux brings it back exactly.",
         "backup" => "The backup is on this computer.",
         "android-trial" => "The way back works.",
-        "stock-download" => "Microsoft's Android for this Duo is on this computer: Hythe uses it to return to Android, and to repair it.",
+        "stock-download" => "Microsoft's Android for this Duo is on this computer: Gridbay uses it to return to Android, and to repair it.",
         _ => "Enter the PIN on the phone when the lock screen appears.",
     }
 }

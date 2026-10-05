@@ -1,7 +1,7 @@
-//! What Hythe is doing with the phone right now, wherever it runs: a long
+//! What Gridbay is doing with the phone right now, wherever it runs: a long
 //! job (the command line's, or the window's) writes its steps to a small
 //! file, so a window open meanwhile shows them - a backup going on, not a
-//! phone that vanished. $XDG_RUNTIME_DIR/hythe-activity.json.
+//! phone that vanished. $XDG_RUNTIME_DIR/gridbay-activity.json.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -29,7 +29,7 @@ static CURRENT: Mutex<Option<Activity>> = Mutex::new(None);
 
 fn path() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    dir.join("hythe-activity.json")
+    dir.join("gridbay-activity.json")
 }
 
 fn now() -> u64 {

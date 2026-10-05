@@ -1,4 +1,4 @@
-//! Hythe's window, in the spirit of Finder's page for a connected iPhone.
+//! Gridbay's window, in the spirit of Finder's page for a connected iPhone.
 //!
 //! Simple by default: the Duo on the left; on the right one sentence on how
 //! it is (a coloured dot), one button for what to do now, backups, updates
@@ -9,7 +9,7 @@
 //! Before the simple page, the window was:
 //! the Duo on the left - its two panels showing what is on them - with its
 //! name, mode and battery; on the right Software, Backups, Screen and System;
-//! the storage as one bar along the bottom. Over hythe-core: the same
+//! the storage as one bar along the bottom. Over gridbay-core: the same
 //! actions and safety rules as the command line. Everything that waits on the
 //! phone runs off the main thread (gio::spawn_blocking); the window only
 //! shows.
@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use hythe_core::{screenshot, status, Mode};
+use gridbay_core::{screenshot, status, Mode};
 use gtk::{gdk, gio, glib};
 
 mod board;
@@ -32,7 +32,7 @@ mod place;
 mod saver;
 mod sections;
 
-const APP_ID: &str = "lab.agentsco.Hythe";
+const APP_ID: &str = "lab.agentsco.Gridbay";
 const REFRESH_S: u32 = 5;
 /// The screens on the Duo drawn here, taken again this often while the
 /// window is in front on General (each frame is ~20 MB over USB).
@@ -66,9 +66,12 @@ const CABLE_PAD: f64 = 4.0;
 /// The floor's squares (mm), and the depth of the hole the cord goes down.
 const FLOOR_SQUARE: f64 = 20.0;
 
+/// Half the word's width, in squares (its cubes laid about their middle).
+const WORD_HALF: f32 = intro::WORD.len() as f32 / 2.0;
+
 /// Night: the table dark, its lines light - by the time of day (20:00 to
 /// 7:00), unless set to stay day or night (settings; kept in
-/// ~/.config/hythe/night: auto, day or night).
+/// ~/.config/gridbay/night: auto, day or night).
 static NIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How night is chosen: "auto" (by the hour), "night" or "day".
@@ -94,7 +97,7 @@ fn night() -> bool {
 }
 
 fn night_file() -> std::path::PathBuf {
-    glib::user_config_dir().join("hythe/night")
+    glib::user_config_dir().join("gridbay/night")
 }
 
 /// The table's own grey (what is white by day).
@@ -258,27 +261,27 @@ headerbar { background: #ffffff; box-shadow: none; border-bottom: none; }
 ";
 
 fn main() -> glib::ExitCode {
-    hythe_core::moved::from_cradle();
+    gridbay_core::moved::from_old_names();
     // Ubuntu 24.04 lets no unconfined program make user namespaces, and
-    // WebKit's sandbox needs them: without Hythe's AppArmor profile
+    // WebKit's sandbox needs them: without Gridbay's AppArmor profile
     // (data/apparmor) the Microsoft window would bring the whole app down.
     // Then WebKit runs unsandboxed - and that window goes to Microsoft's
     // sign-in and support pages only (see microsoft_only).
     let restricted = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").is_ok_and(|v| v.trim() == "1");
-    if restricted && !std::path::Path::new("/etc/apparmor.d/hythe-gui").exists() {
+    if restricted && !std::path::Path::new("/etc/apparmor.d/gridbay-gui").exists() {
         std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
     }
     let app = adw::Application::builder().application_id(APP_ID).build();
-    // A picture taken (HYTHE_SHOT) by an instance of its own, beside a
+    // A picture taken (GRIDBAY_SHOT) by an instance of its own, beside a
     // running window.
-    if std::env::var_os("HYTHE_SHOT").is_some() {
+    if std::env::var_os("GRIDBAY_SHOT").is_some() {
         app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
     }
     app.connect_activate(build);
     app.run()
 }
 
-/// Where the phone is, as Hythe sees it.
+/// Where the phone is, as Gridbay sees it.
 #[derive(Clone, Debug, Default, PartialEq)]
 enum Place {
     /// Linux up, over ssh at this host.
@@ -438,7 +441,7 @@ struct Ui {
     /// The turn about the vertical taken off duo-motion's world (x to
     /// magnetic north) so the viewer is in front of the drawing (rad); and
     /// the one at the computer's bearing from north, as the last look told
-    /// it (kept: ~/.config/hythe/user-heading).
+    /// it (kept: ~/.config/gridbay/user-heading).
     yaw_ref: std::cell::Cell<Option<f64>>,
     /// Where the reference goes (after a look): eased there.
     yaw_ref_to: std::cell::Cell<Option<f64>>,
@@ -470,7 +473,7 @@ struct Ui {
     looking: std::cell::Cell<bool>,
     last_angle: std::cell::Cell<Option<f64>>,
     /// The hinge followed (posture.rs): where, and its stop.
-    following: RefCell<Option<(String, hythe_core::posture::Stop)>>,
+    following: RefCell<Option<(String, gridbay_core::posture::Stop)>>,
     /// The simple page and its parts.
     home: gtk::Box,
     status_dot: gtk::Box,
@@ -494,10 +497,10 @@ struct Ui {
     bottom: gtk::Box,
     tabs: adw::ViewStack,
     /// The system disk by part, for the bar; counted when the phone comes.
-    parts: RefCell<Option<hythe_core::storage::Parts>>,
+    parts: RefCell<Option<gridbay_core::storage::Parts>>,
     /// The live view running (its stop), and when it last failed - not
     /// tried again for a while (an item without a mirror).
-    live: RefCell<Option<hythe_core::live::Stop>>,
+    live: RefCell<Option<gridbay_core::live::Stop>>,
     live_failed: RefCell<Option<std::time::Instant>>,
     live_badge: gtk::Label,
     state: RefCell<State>,
@@ -514,14 +517,14 @@ fn wrap(a: f64) -> f64 {
 
 /// Where the one at this computer was, from north, as the phone last saw.
 fn user_heading_file() -> std::path::PathBuf {
-    glib::user_config_dir().join("hythe/user-heading")
+    glib::user_config_dir().join("gridbay/user-heading")
 }
 
-/// HYTHE_TRACE=1: what the window hears and does, with the time (to see
+/// GRIDBAY_TRACE=1: what the window hears and does, with the time (to see
 /// where the drawn Duo lags the phone).
 fn trace(what: std::fmt::Arguments) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ON.get_or_init(|| std::env::var_os("HYTHE_TRACE").is_some()) {
+    if *ON.get_or_init(|| std::env::var_os("GRIDBAY_TRACE").is_some()) {
         let t = glib::DateTime::now_local().ok().and_then(|d| d.format("%T.%f").ok()).map(|s| s[..12].to_string()).unwrap_or_default();
         eprintln!("{t} {what}");
     }
@@ -551,7 +554,7 @@ fn build(app: &adw::Application) {
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
-    let window = adw::ApplicationWindow::builder().application(app).title("Hythe").default_width(1000).default_height(800).build();
+    let window = adw::ApplicationWindow::builder().application(app).title("Gridbay").default_width(1000).default_height(800).build();
     if night() {
         window.add_css_class("night");
     }
@@ -679,9 +682,9 @@ fn build(app: &adw::Application) {
         screens[i].connect_paintable_notify(move |p| {
             let mut sc = scene3d.borrow_mut();
             let tex = p.paintable().and_downcast::<gdk::Texture>();
-            // Picturing them (HYTHE_SCREENS): kept while the window, with
+            // Picturing them (GRIDBAY_SCREENS): kept while the window, with
             // no phone, clears them.
-            if tex.is_none() && std::env::var_os("HYTHE_SCREENS").is_some() {
+            if tex.is_none() && std::env::var_os("GRIDBAY_SCREENS").is_some() {
                 return;
             }
             sc.screens[i] = tex;
@@ -876,7 +879,7 @@ fn build(app: &adw::Application) {
 
     // Android: the phone's own Android, for a while.
     let android = section("Android");
-    android.append(&body("Stock Android can come back for a while. Hythe backs everything up first and tests the way back, then clears Linux's data and starts Android. Back to Linux puts it all back from the backup."));
+    android.append(&body("Stock Android can come back for a while. Gridbay backs everything up first and tests the way back, then clears Linux's data and starts Android. Back to Linux puts it all back from the backup."));
     let android_row = row();
     let to_android = pill("Return to Android…");
     let get_android = pill("Get Android from Microsoft…");
@@ -890,7 +893,7 @@ fn build(app: &adw::Application) {
 
     // Screen.
     let scr = section("Screen");
-    scr.append(&body("What both panels show, on the Duo here and saved to ~/hythe-shots."));
+    scr.append(&body("What both panels show, on the Duo here and saved to ~/gridbay-shots."));
     let scr_row = row();
     let shot = pill("Take Screenshot");
     let folder = pill("Open Folder");
@@ -948,11 +951,11 @@ fn build(app: &adw::Application) {
     floor.set_draw_func({
         let fv = floor_view.clone();
         move |_, cr, w, h| {
-            // HYTHE_FRAMES=1: each drawing's time in the trace.
+            // GRIDBAY_FRAMES=1: each drawing's time in the trace.
             static FRAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             let t = std::time::Instant::now();
             draw_floor(&fv.borrow(), cr, w, h);
-            if *FRAMES.get_or_init(|| std::env::var_os("HYTHE_FRAMES").is_some()) {
+            if *FRAMES.get_or_init(|| std::env::var_os("GRIDBAY_FRAMES").is_some()) {
                 trace(format_args!("floor drawn in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0));
             }
         }
@@ -1245,7 +1248,7 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         });
     }
-    // Looked at from outside (HYTHE_CONTROL=1, control.rs; hythe-mcp).
+    // Looked at from outside (GRIDBAY_CONTROL=1, control.rs; gridbay-mcp).
     {
         let weak = Rc::downgrade(&ui);
         control::start(move |request| {
@@ -1450,7 +1453,7 @@ fn build(app: &adw::Application) {
                                 p.close();
                             }
                         } else {
-                            // Without the phone only Hythe's own: its
+                            // Without the phone only Gridbay's own: its
                             // settings, about it; with it, the phone's
                             // sections, then those.
                             let phone = ui.state.borrow().host.is_some();
@@ -1461,7 +1464,7 @@ fn build(app: &adw::Application) {
                             };
                             lines.push(board::Line::new("settings", "settings"));
                             if !phone {
-                                lines.push(board::Line::new("hythe", "about"));
+                                lines.push(board::Line::new("gridbay", "about"));
                             }
                             *b = Some(board::Board::open(lines));
                             drop(b);
@@ -1508,11 +1511,11 @@ fn build(app: &adw::Application) {
                 // menu kept, its line chosen).
                 let on_table = key.as_deref().and_then(|k| ui.section_words.borrow().get(k).cloned().map(|rows| (k.to_owned(), rows)));
                 let on_table = on_table.or_else(|| key.as_deref().filter(|k| ["about", "storage", "updates"].contains(k)).map(|k| (k.to_owned(), vec![("", "no duo yet".to_owned())])));
-                // Hythe's own: its settings (lines to click), about it.
+                // Gridbay's own: its settings (lines to click), about it.
                 let own = match key.as_deref() {
                     Some("settings") => Some(settings_lines()),
-                    Some("hythe") => Some(vec![
-                        board::Line::new("", format!("hythe  {}", env!("CARGO_PKG_VERSION"))),
+                    Some("gridbay") => Some(vec![
+                        board::Line::new("", format!("gridbay  {}", env!("CARGO_PKG_VERSION"))),
                         board::Line::new("", "by     AgentsCo"),
                         board::Line::new("", "site   agentsco.uk"),
                     ]),
@@ -1663,7 +1666,7 @@ fn build(app: &adw::Application) {
             };
             let (key_row, key_forget, model_row, limit_row) = (key_row.clone(), key_forget.clone(), model_row.clone(), limit_row.clone());
             glib::spawn_future_local(async move {
-                let read = gio::spawn_blocking(move || (hythe_core::agent::stored(&host), hythe_core::agent::choices(&host))).await;
+                let read = gio::spawn_blocking(move || (gridbay_core::agent::stored(&host), gridbay_core::agent::choices(&host))).await;
                 let Ok((stored, choices)) = read else { return };
                 match stored {
                     Ok(Some(last)) => {
@@ -1736,7 +1739,7 @@ fn build(app: &adw::Application) {
             let (ui2, key_row, key_forget, b) = (ui.clone(), key_row.clone(), key_forget.clone(), b.clone());
             b.set_sensitive(false);
             glib::spawn_future_local(async move {
-                let done = gio::spawn_blocking(move || hythe_core::agent::forget(&host)).await;
+                let done = gio::spawn_blocking(move || gridbay_core::agent::forget(&host)).await;
                 b.set_sensitive(true);
                 match done {
                     Ok(Ok(())) => {
@@ -1768,10 +1771,10 @@ fn build(app: &adw::Application) {
                         }
                     }
                 };
-                let c = hythe_core::agent::Choices { model: model_row.text().trim().to_owned(), monthly_limit };
+                let c = gridbay_core::agent::Choices { model: model_row.text().trim().to_owned(), monthly_limit };
                 let ui = ui.clone();
                 glib::spawn_future_local(async move {
-                    match gio::spawn_blocking(move || hythe_core::agent::set_choices(&host, &c)).await {
+                    match gio::spawn_blocking(move || gridbay_core::agent::set_choices(&host, &c)).await {
                         Ok(Ok(())) => ui.toasts.add_toast(adw::Toast::new("Saved on the phone")),
                         Ok(Err(e)) => ui.toasts.add_toast(adw::Toast::new(&e)),
                         Err(_) => {}
@@ -1863,7 +1866,7 @@ fn build(app: &adw::Application) {
         let ui = ui.clone();
         move |_| {
             let serial = ui.serial.borrow().clone();
-            let newest = hythe_core::backup::list(Some(&serial)).into_iter().find(|b| b.manifest.kind == hythe_core::backup::Kind::Full);
+            let newest = gridbay_core::backup::list(Some(&serial)).into_iter().find(|b| b.manifest.kind == gridbay_core::backup::Kind::Full);
             let Some(b) = newest else {
                 stopped(&ui, "No full backup of this phone yet: Back Up Everything makes one.");
                 return;
@@ -1905,7 +1908,7 @@ fn build(app: &adw::Application) {
             let Some(ui) = ui.upgrade() else { return };
             let mut st = ui.state.borrow_mut();
             st.job = None;
-            st.dismissed = hythe_core::activity::elsewhere(u64::MAX).and_then(|a| a.ended_at).or(st.dismissed);
+            st.dismissed = gridbay_core::activity::elsewhere(u64::MAX).and_then(|a| a.ended_at).or(st.dismissed);
             drop(st);
             ui.card.hide();
         }
@@ -1943,7 +1946,7 @@ fn build(app: &adw::Application) {
             };
             // Over Wi-Fi a look costs the phone's radio: every 10 s with the
             // window in front, every 30 s behind it.
-            let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| hythe_core::link::Via::of(h) == hythe_core::link::Via::Wifi);
+            let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| gridbay_core::link::Via::of(h) == gridbay_core::link::Via::Wifi);
             let every = if !wifi { 1 } else if ui.window.is_active() { 2 } else { 6 };
             if !busy && !elsewhere && ticks % every == 0 {
                 look(&ui);
@@ -2007,7 +2010,7 @@ fn build(app: &adw::Application) {
                 ui.intro.borrow_mut().begin();
             }
             // Waiting for the phone: the drawn one opens and closes, slowly.
-            if ui.idle.get() && !ui.shut_away.get() && std::env::var_os("HYTHE_FOLD").is_none() {
+            if ui.idle.get() && !ui.shut_away.get() && std::env::var_os("GRIDBAY_FOLD").is_none() {
                 let t = clock.frame_time() as f64 / 1e6;
                 ui.fold.set((ui.fold.get().0, 135.0 + 40.0 * (t * 0.6).sin()));
             }
@@ -2144,10 +2147,10 @@ fn build(app: &adw::Application) {
             // not seen: looked for now and each second for 4 s, not at the
             // next round (up to 5 s) - the phone's end of the link takes
             // its address a moment after this one's.
-            let usb = hythe_core::link::usb_up();
+            let usb = gridbay_core::link::usb_up();
             let was = ui.usb_was.replace(usb);
             if usb != was {
-                gio::spawn_blocking(|| hythe_core::phone::close_shared(hythe_core::link::CABLE));
+                gio::spawn_blocking(|| gridbay_core::phone::close_shared(gridbay_core::link::CABLE));
             }
             if usb && !was && ui.state.borrow().host.is_none() {
                 for s in 0..5u64 {
@@ -2162,9 +2165,9 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
-    // HYTHE_SCREENS=file.png: the phone's two panels from a screenshot
-    // (Hythe's, both side by side), to picture them without the phone.
-    if let Some(path) = std::env::var_os("HYTHE_SCREENS") {
+    // GRIDBAY_SCREENS=file.png: the phone's two panels from a screenshot
+    // (Gridbay's, both side by side), to picture them without the phone.
+    if let Some(path) = std::env::var_os("GRIDBAY_SCREENS") {
         if let Ok(pb) = gtk::gdk_pixbuf::Pixbuf::from_file(&path) {
             let w = pb.width() / 2;
             #[allow(deprecated)]
@@ -2181,17 +2184,17 @@ fn build(app: &adw::Application) {
             });
         }
     }
-    // HYTHE_FOLD: shown so from the start too, phone or not.
-    if std::env::var_os("HYTHE_FOLD").is_some() {
+    // GRIDBAY_FOLD: shown so from the start too, phone or not.
+    if std::env::var_os("GRIDBAY_FOLD").is_some() {
         fold_to(&ui, 180.0);
     }
-    // HYTHE_MENU=1: the sections' menu open at the start (to picture it).
-    if std::env::var_os("HYTHE_MENU").is_some() {
+    // GRIDBAY_MENU=1: the sections' menu open at the start (to picture it).
+    if std::env::var_os("GRIDBAY_MENU").is_some() {
         let pop = nav_pop.clone();
         glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || pop.popup());
     }
-    // HYTHE_SECTION=key: that section shown first (agent, repair...).
-    if let Ok(key) = std::env::var("HYTHE_SECTION") {
+    // GRIDBAY_SECTION=key: that section shown first (agent, repair...).
+    if let Ok(key) = std::env::var("GRIDBAY_SECTION") {
         let mut i = 0;
         while let Some(r) = nav.row_at_index(i) {
             if r.widget_name() == key {
@@ -2201,11 +2204,11 @@ fn build(app: &adw::Application) {
             i += 1;
         }
     }
-    // HYTHE_SHOT=file.png: the window drawn into a picture 4 s after the start
+    // GRIDBAY_SHOT=file.png: the window drawn into a picture 4 s after the start
     // (to see it without a screen grab).
-    if let Some(path) = std::env::var_os("HYTHE_SHOT") {
+    if let Some(path) = std::env::var_os("GRIDBAY_SHOT") {
         let window = ui.window.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_secs_f64(std::env::var("HYTHE_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0)), move || {
+        glib::timeout_add_local_once(std::time::Duration::from_secs_f64(std::env::var("GRIDBAY_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0)), move || {
             let paintable = gtk::WidgetPaintable::new(Some(&window));
             let (w, h) = (window.width() as f64, window.height() as f64);
             let snap = gtk::Snapshot::new();
@@ -2244,7 +2247,7 @@ fn tell(ui: &Rc<Ui>) {
             return;
         }
     }
-    let other = hythe_core::activity::elsewhere(15 * 60);
+    let other = gridbay_core::activity::elsewhere(15 * 60);
     let dismissed = ui.state.borrow().dismissed;
     match other {
         Some(a) if a.ended_at.is_none() || a.ended_at != dismissed => {
@@ -2313,7 +2316,7 @@ fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
 }
 
 fn shots_dir() -> std::path::PathBuf {
-    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("hythe-shots")
+    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("gridbay-shots")
 }
 
 /// Looks at the phone again, off the main thread, and shows what it found.
@@ -2322,18 +2325,18 @@ fn look(ui: &Rc<Ui>) {
     ui.looking.set(true);
     glib::spawn_future_local(async move {
         let found = gio::spawn_blocking(|| {
-            let seen = hythe_core::detect();
+            let seen = gridbay_core::detect();
             let place = match seen.mode {
                 Mode::Linux => Place::Linux(seen.via.clone()),
                 Mode::Fastboot => Place::Fastboot(seen.via.clone()),
                 Mode::Recovery => Place::Recovery(seen.via.clone()),
                 Mode::Android => Place::Android(seen.via.clone()),
-                Mode::Gone if hythe_core::android::port_without_system() => Place::NoSystem,
-                Mode::Gone => hythe_core::android::on_usb_quietly().map(Place::Quiet).unwrap_or(Place::Gone),
+                Mode::Gone if gridbay_core::android::port_without_system() => Place::NoSystem,
+                Mode::Gone => gridbay_core::android::on_usb_quietly().map(Place::Quiet).unwrap_or(Place::Gone),
             };
             // What can be done from there: is Android a guest (Linux's data
             // erased), is there a whole backup to come back from.
-            let guest = place.serial().is_some_and(|s| hythe_core::android::guest(s).is_some());
+            let guest = place.serial().is_some_and(|s| gridbay_core::android::guest(s).is_some());
             let status = if let Place::Linux(host) = &place { Some(status::read(host)) } else { None };
             (place, guest, status)
         })
@@ -2400,7 +2403,7 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
     ui.free_label.set_visible(!dev);
     ui.duo_mode.set_visible(false);
     // On the cable or on Wi-Fi: what leaves Linux only on the cable.
-    let cable = hythe_core::link::Via::of(host) == hythe_core::link::Via::Cable;
+    let cable = gridbay_core::link::Via::of(host) == gridbay_core::link::Via::Cable;
     ui.name_sub.set_label(&if cable { "Linux · cable".to_owned() } else { format!("Linux · Wi-Fi ({host})") });
     for (b, tip) in &ui.cable_only {
         b.set_sensitive(cable);
@@ -2416,7 +2419,7 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
                 ui.banner.set_title(&format!("Could not read the phone: {e}"));
                 ui.banner.set_revealed(true);
             }
-            say_status(ui, "look", "Your Duo is not answering", &format!("It is there, but did not answer just now. Hythe keeps trying.\n{e}"));
+            say_status(ui, "look", "Your Duo is not answering", &format!("It is there, but did not answer just now. Gridbay keeps trying.\n{e}"));
         }
         None => {}
     }
@@ -2458,7 +2461,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         ui.updates_row.set_visible(false);
         ui.name_sub.set_label("Asleep");
         ui.battery.set_label("");
-        say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Hythe finds it again.");
+        say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Gridbay finds it again.");
         // Known to lie there shut: drawn so, not the cubes.
         ui.intro.borrow_mut().sink_to = 1.0;
         ui.idle.set(true);
@@ -2485,7 +2488,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         ui.intro.borrow_mut().sink_to = if ui.shut_away.get() { 1.0 } else { 0.0 };
         ui.battery.set_label("");
         if ui.shut_away.get() {
-            say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Hythe finds it again.");
+            say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Gridbay finds it again.");
         } else {
             say_status(ui, "away", "Looking for your Duo", "Plug it in with the USB cable, or connect it to the same Wi-Fi as this computer.\nIf it is off, hold the power key for a few seconds.");
         }
@@ -2540,30 +2543,30 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
             } else {
                 button("Back to Linux", true, Job::RecoveryExit(s.clone()), None);
             }
-            ("applications-engineering-symbolic", "Recovery (TWRP)", "The Duo is in the recovery", "TWRP, a small repair system, runs from memory. It has no touch: Hythe drives it from here.", false)
+            ("applications-engineering-symbolic", "Recovery (TWRP)", "The Duo is in the recovery", "TWRP, a small repair system, runs from memory. It has no touch: Gridbay drives it from here.", false)
         }
         Place::Android(s) => {
             if guest {
                 button("Back to Linux…", true, Job::AndroidBack(s.clone()), Some(("Back to Linux?", BACK_BODY)));
                 button("Restart Android", false, Job::AndroidStart(s.clone()), None);
             }
-            ("phone-symbolic", "Android", "The Duo runs Android", if guest { "Stock Android, started by Hythe as a guest. Don't restart it from its own menu: Restart Android here does it the right way." } else { "Android runs on the phone." }, false)
+            ("phone-symbolic", "Android", "The Duo runs Android", if guest { "Stock Android, started by Gridbay as a guest. Don't restart it from its own menu: Restart Android here does it the right way." } else { "Android runs on the phone." }, false)
         }
         Place::Quiet(_) => (
             "phone-symbolic",
             "Android",
             "The Duo runs Android - or is starting",
-            "Hythe sees the phone on the cable but cannot talk to it yet. If Android is up: Settings → About phone → tap Build number seven times → System → Developer options → USB debugging, then allow this computer on the phone.",
+            "Gridbay sees the phone on the cable but cannot talk to it yet. If Android is up: Settings → About phone → tap Build number seven times → System → Developer options → USB debugging, then allow this computer on the phone.",
             true,
         ),
         Place::NoSystem => (
             "dialog-information-symbolic",
             "No system",
             "The Duo started without a system",
-            "Android was restarted plainly, so the phone started Linux's kernel - but Linux's data is in the backup now. Hold Power about 15 seconds until it is off, then hold Volume Down and press Power: the bootloader opens, and Hythe takes it from there.",
+            "Android was restarted plainly, so the phone started Linux's kernel - but Linux's data is in the backup now. Hold Power about 15 seconds until it is off, then hold Volume Down and press Power: the bootloader opens, and Gridbay takes it from there.",
             false,
         ),
-        _ => ("content-loading-symbolic", "Restarting…", "Waiting for the Duo", "It is restarting, or the cable came out. Hythe keeps looking.", true),
+        _ => ("content-loading-symbolic", "Restarting…", "Waiting for the Duo", "It is restarting, or the cable came out. Gridbay keeps looking.", true),
     };
     ui.mode_icon.set_icon_name(Some(icon));
     ui.mode_title.set_label(title);
@@ -2588,7 +2591,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
 }
 
 /// Developer Mode: on, the window shows slots, images from RAM, every kind
-/// of backup and the logs (~/.config/hythe/gui).
+/// of backup and the logs (~/.config/gridbay/gui).
 fn developer_mode() -> bool {
     std::fs::read_to_string(gui_settings()).is_ok_and(|t| t.lines().any(|l| l.trim() == "developer=1"))
 }
@@ -2600,7 +2603,7 @@ fn set_developer_mode(on: bool) {
 }
 
 fn gui_settings() -> std::path::PathBuf {
-    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".config/hythe/gui")
+    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".config/gridbay/gui")
 }
 
 /// The simple page's sentence: its dot (fine, look, busy, away), its title
@@ -2635,7 +2638,7 @@ fn ago(created: &str) -> (String, i64) {
 
 /// The simple page from the phone's state: fine, or what needs a look.
 fn simple_status(ui: &Ui, s: &status::Status, problems: &[String], link: &str) {
-    use hythe_core::backup::{self, Kind};
+    use gridbay_core::backup::{self, Kind};
     let charge = s.battery.map(|b| format!("Battery {b}%")).unwrap_or_else(|| "Battery ?".into());
     let charging = match s.battery_status.as_str() {
         "Charging" => " · charging",
@@ -2708,21 +2711,21 @@ fn follow_hinge(ui: &Rc<Ui>) {
     let Some(host) = want else { return };
     // On the cable (charging) the phone is kept awake while followed: the
     // lid and the hinge come at once.
-    let cable = hythe_core::link::Via::of(&host) == hythe_core::link::Via::Cable;
+    let cable = gridbay_core::link::Via::of(&host) == gridbay_core::link::Via::Cable;
     trace(format_args!("follow: start {host} awake {cable}"));
     // duo-motion on the cable (put on the phone as needed), else
     // sfduo-posture through gdbus. Only where the phone is kept from
     // sleeping: it went to sleep under duo-motion's sensors (Wi-Fi, no
     // inhibitor) and sensorfw stuck - sfduo-posture lets go of its own with
     // the screen.
-    let motion_try = if cable { hythe_core::posture::follow_motion(&host, cable) } else { None };
+    let motion_try = if cable { gridbay_core::posture::follow_motion(&host, cable) } else { None };
     let (follow, motion) = match motion_try {
         Some(Ok(f)) => (Ok(f), true),
         Some(Err(e)) => {
             trace(format_args!("follow: duo-motion failed: {e}"));
-            (hythe_core::posture::follow(&host, cable), false)
+            (gridbay_core::posture::follow(&host, cable), false)
         }
-        None => (hythe_core::posture::follow(&host, cable), false),
+        None => (gridbay_core::posture::follow(&host, cable), false),
     };
     ui.motion_on.set(motion);
     ui.yaw_ref.set(None);
@@ -2731,7 +2734,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
     trace(format_args!("follow: through {}", if motion { "duo-motion" } else { "sfduo-posture" }));
     let Ok((mut follow, stop)) = follow else { return };
     *ui.following.borrow_mut() = Some((host, stop.clone()));
-    let (tx, rx) = async_channel::bounded::<hythe_core::posture::Reading>(16);
+    let (tx, rx) = async_channel::bounded::<gridbay_core::posture::Reading>(16);
     gio::spawn_blocking(move || {
         while let Some(a) = follow.next() {
             if tx.send_blocking(a).is_err() {
@@ -2746,11 +2749,11 @@ fn follow_hinge(ui: &Rc<Ui>) {
         let mut raw = None::<f64>;
         let shut = |ui: &Ui, a: f64| if ui.pose_name.borrow().as_str() == "closed" { 0.0 } else { a };
         while let Ok(r) = rx.recv().await {
-            if !matches!(r, hythe_core::posture::Reading::Gravity(_)) {
+            if !matches!(r, gridbay_core::posture::Reading::Gravity(_)) {
                 trace(format_args!("reading: {r:?}"));
             }
             match r {
-                hythe_core::posture::Reading::Angle(a) => {
+                gridbay_core::posture::Reading::Angle(a) => {
                     raw = Some(a);
                     ui.last_angle.set(Some(a));
                     // duo-motion tells the angle only: the posture by it, as
@@ -2768,8 +2771,8 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     }
                     fold_to(&ui, shut(&ui, a));
                 }
-                hythe_core::posture::Reading::Version(v) => trace(format_args!("duo-motion protocol {v}")),
-                hythe_core::posture::Reading::North(n) => {
+                gridbay_core::posture::Reading::Version(v) => trace(format_args!("duo-motion protocol {v}")),
+                gridbay_core::posture::Reading::North(n) => {
                     // The field heeded: the world is north's - the one at the
                     // computer where they were last seen, at once.
                     if n && !ui.absolute.get() {
@@ -2782,7 +2785,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
                         }
                     }
                 }
-                hythe_core::posture::Reading::Look(l) => {
+                gridbay_core::posture::Reading::Look(l) => {
                     // Looked at: the one at the computer is where its screen
                     // faced. The reference so that that way is toward the
                     // viewer (-y in that world: the drawing's +y), and, the
@@ -2799,7 +2802,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
                         let _ = std::fs::write(user_heading_file(), format!("{}\n", wrap(l)));
                     }
                 }
-                hythe_core::posture::Reading::Quat(q) => {
+                gridbay_core::posture::Reading::Quat(q) => {
                     // The reference taken off: a look's, else where it was
                     // at the start.
                     let yaw = |q: [f64; 4]| (2.0 * (q[0] * q[3] + q[1] * q[2])).atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
@@ -2814,7 +2817,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     let [w, x, y, z] = q;
                     tilt_to(&ui, [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), w * w - x * x - y * y + z * z]);
                 }
-                hythe_core::posture::Reading::Gravity(g) => {
+                gridbay_core::posture::Reading::Gravity(g) => {
                     ui.gravity_at.set(Some(std::time::Instant::now()));
                     // With duo-motion the quaternion tells the tilt (this is
                     // its accelerometer, the swings in it).
@@ -2827,7 +2830,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
                         gs.pop_front();
                     }
                 }
-                hythe_core::posture::Reading::Posture(p) => {
+                gridbay_core::posture::Reading::Posture(p) => {
                     *ui.pose_name.borrow_mut() = p;
                     if let Some(a) = raw {
                         fold_to(&ui, shut(&ui, a));
@@ -2836,12 +2839,12 @@ fn follow_hinge(ui: &Rc<Ui>) {
                 // The lid's switch, at once: shut, drawn shut; opened, drawn
                 // opening (a laptop's angle) until the hinge's own reading
                 // comes - seconds later, once the display is lit.
-                hythe_core::posture::Reading::Lid(true) => {
+                gridbay_core::posture::Reading::Lid(true) => {
                     ui.lid_shut_at.set(Some(std::time::Instant::now()));
                     *ui.pose_name.borrow_mut() = "closed".into();
                     fold_to(&ui, 0.0);
                 }
-                hythe_core::posture::Reading::Lid(false) => {
+                gridbay_core::posture::Reading::Lid(false) => {
                     ui.lid_shut_at.set(None);
                     if ui.pose_name.borrow().as_str() == "closed" {
                         ui.pose_name.borrow_mut().clear();
@@ -2922,9 +2925,9 @@ fn tilt_to(ui: &Ui, g: [f64; 2 + 1]) {
 
 /// The phone's fold, to be shown: eased there (the tick above).
 fn fold_to(ui: &Ui, angle: f64) {
-    // HYTHE_FOLD=degrees: shown at that angle whatever the phone says (to
+    // GRIDBAY_FOLD=degrees: shown at that angle whatever the phone says (to
     // picture a posture).
-    let angle = std::env::var("HYTHE_FOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(angle);
+    let angle = std::env::var("GRIDBAY_FOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(angle);
     let (shown, _) = ui.fold.get();
     ui.fold.set((shown, angle.clamp(0.0, 360.0)));
 }
@@ -2998,7 +3001,7 @@ fn floor_shift(k: f32) -> (f32, f32) {
     let step = square() * k;
     let c = [0, 1].map(|i| f32::from_bits(CUBES_AT[i].load(std::sync::atomic::Ordering::Relaxed)));
     if c != [0.0, 0.0] {
-        return ((c[0] - 2.5 * step).rem_euclid(step), (c[1] - 0.5 * step).rem_euclid(step));
+        return ((c[0] - WORD_HALF * step).rem_euclid(step), (c[1] - 0.5 * step).rem_euclid(step));
     }
     ((CABLE_PORT_X as f32 * k - step / 2.0).rem_euclid(step), 0.0)
 }
@@ -3018,7 +3021,7 @@ struct FloorView {
     /// cubes, the word's strength, each cube's being there and height.
     grid: f32,
     word: f32,
-    cubes: [(f32, f32); 5],
+    cubes: [(f32, f32); intro::WORD.len()],
     /// How far the eye has come down (0 straight above .. 1).
     eye: f32,
     /// The cubes' middle on the table (px, in the table's squares).
@@ -3259,10 +3262,10 @@ fn cube_shapes(fv: &FloorView) -> Vec<CubeShape> {
     // Five squares in a row about their middle (laid in the squares by
     // show_fold).
     let (cx, cy) = fv.cubes_at;
-    let left = |i: usize| cx + (i as f32 - 2.5) * step;
+    let left = |i: usize| cx + (i as f32 - WORD_HALF) * step;
     let y0 = cy - step / 2.0;
     let z0 = fv.table;
-    let mut order: Vec<usize> = (0..5).collect();
+    let mut order: Vec<usize> = (0..intro::WORD.len()).collect();
     let off_eye = |i: usize| (left(i) + step / 2.0 - fv.eye_x).abs();
     order.sort_by(|a, b| off_eye(*b).partial_cmp(&off_eye(*a)).unwrap());
     let mut shapes: Vec<CubeShape> = order
@@ -3628,7 +3631,7 @@ fn saver_off(ui: &Ui) {
     }
 }
 
-/// Hythe's settings as a board's lines (each clicked turns it).
+/// Gridbay's settings as a board's lines (each clicked turns it).
 fn settings_lines() -> Vec<board::Line> {
     let onoff = |on: bool| if on { "on" } else { "off" };
     let night = match night_mode().as_str() {
@@ -3983,9 +3986,9 @@ fn show_fold(ui: &Ui, angle: f64) {
     let room = h * DUO_ROOM as f32;
     let width = ui.duo.width().max(1) as f32;
     let [pitch, roll] = ui.tilt.get().0;
-    // HYTHE_TILT=pitch,roll: held so, whatever the phone says (to picture
+    // GRIDBAY_TILT=pitch,roll: held so, whatever the phone says (to picture
     // it).
-    let [pitch, roll] = std::env::var("HYTHE_TILT").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some([a.trim().parse().ok()?, b.trim().parse().ok()?]))).unwrap_or([pitch, roll]);
+    let [pitch, roll] = std::env::var("GRIDBAY_TILT").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some([a.trim().parse().ok()?, b.trim().parse().ok()?]))).unwrap_or([pitch, roll]);
     // How the phone is turned in the table's frame: by duo-motion's
     // quaternion when it comes (the whole turn, the yaw on the table too),
     // else by the gravity's pitch and roll. The quaternion's frame (the
@@ -4362,9 +4365,9 @@ fn show_fold(ui: &Ui, angle: f64) {
         // was dragged.
         let step = FLOOR_SQUARE as f32 * k;
         let sx = ((CABLE_PORT_X as f32 - FLOOR_SQUARE as f32 / 2.0) * k).rem_euclid(step);
-        let first = ((p.0 - sx) / step - 2.5).round();
+        let first = ((p.0 - sx) / step - WORD_HALF).round();
         let moved = grid_at();
-        let cubes_at = (sx + (first + 2.5) * step + moved.0 * k, ((p.1 / step).floor() + 0.5) * step + moved.1 * k);
+        let cubes_at = (sx + (first + WORD_HALF) * step + moved.0 * k, ((p.1 / step).floor() + 0.5) * step + moved.1 * k);
         // The saver's page is another size: the word kept where it was on
         // the table (worked out anew it went far off, past the squares).
         let cubes_at = if ui.saver.get().is_some() { ui.cubes_rest.get() } else { ui.cubes_rest.replace(cubes_at); cubes_at };
@@ -4421,7 +4424,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         // a square below it): the eye near enough for them to fill a good
         // part of the page's width, them toward its middle.
         let page = (ui.floor.width() as f32 * 0.42 - off.0, ui.floor.height() as f32 * 0.42 - off.1);
-        let (left, under) = on_squares(k, (cubes_at.0 - 2.5 * cur, cubes_at.1 + 1.5 * cur));
+        let (left, under) = on_squares(k, (cubes_at.0 - WORD_HALF * cur, cubes_at.1 + 1.5 * cur));
         let rest_m = matrix(rest);
         // Words from `at` (a square's far left corner): the eye on them,
         // near enough for them to fill `fill` of the page's width, them at
@@ -4540,7 +4543,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             let b = ui.buttons.borrow();
             (b.lift, b.hover)
         };
-        let cubes: [(f32, f32); 5] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
+        let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
         // The buttons in the word's row, at the page's right (as the usual
         // view shows it): the last in the square seen a square or so in
         // from the edge.
@@ -4681,7 +4684,7 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
     }
     // The club's number, if this computer knows it.
     *ui.serial.borrow_mut() = s.serial.clone();
-    match hythe_core::club::known(&s.serial) {
+    match gridbay_core::club::known(&s.serial) {
         Some(d) => {
             ui.name.set_label(&format!("Surface Duo · {}", d.number));
             ui.join.set_visible(false);
@@ -4706,14 +4709,14 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
         if st.job.as_ref().is_some_and(|j| j.ended == Some(None)) {
             st.job = None;
         }
-        if let Some(a) = hythe_core::activity::elsewhere(15 * 60).filter(|a| a.ended_at.is_some() && a.outcome() == Some(None)) {
+        if let Some(a) = gridbay_core::activity::elsewhere(15 * 60).filter(|a| a.ended_at.is_some() && a.outcome() == Some(None)) {
             st.dismissed = a.ended_at;
         }
     }
-    sections::fill(&ui.sections, s, hythe_core::club::known(&s.serial).map(|d| d.number), link, developer_mode());
+    sections::fill(&ui.sections, s, gridbay_core::club::known(&s.serial).map(|d| d.number), link, developer_mode());
     {
         let mut f = ui.section_words.borrow_mut();
-        f.insert("about", sections::about_rows(s, hythe_core::club::known(&s.serial).map(|d| d.number), link));
+        f.insert("about", sections::about_rows(s, gridbay_core::club::known(&s.serial).map(|d| d.number), link));
         f.insert("storage", sections::storage_rows(s));
         f.insert("updates", sections::updates_rows(s));
     }
@@ -4751,7 +4754,7 @@ fn count_storage(ui: &Rc<Ui>) {
     let Some(host) = ui.state.borrow().host.clone() else { return };
     let ui = ui.clone();
     glib::spawn_future_local(async move {
-        let Ok(Ok(parts)) = gio::spawn_blocking(move || hythe_core::storage::read(&host)).await else { return };
+        let Ok(Ok(parts)) = gio::spawn_blocking(move || gridbay_core::storage::read(&host)).await else { return };
         while let Some(child) = ui.legend.first_child() {
             ui.legend.remove(&child);
         }
@@ -4784,8 +4787,8 @@ fn count_storage(ui: &Rc<Ui>) {
 /// one for good, its folder; the device data asks to be copied elsewhere
 /// until it is.
 fn show_backups(ui: &Rc<Ui>) {
-    use hythe_core::backup::{self, Kind};
-    let pkgs = hythe_core::stock::packages();
+    use gridbay_core::backup::{self, Kind};
+    let pkgs = gridbay_core::stock::packages();
     ui.stock_line.set_label(&match pkgs.last() {
         Some(p) => format!("Microsoft's Android {} (security patch {}) is on this computer.", p.build, p.security_patch),
         None => "Microsoft's package is not on this computer yet.".to_owned(),
@@ -4848,8 +4851,8 @@ fn show_slots(ui: &Rc<Ui>) {
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let read = gio::spawn_blocking(move || {
-            let slots = hythe_core::slots::read(&host)?;
-            let gate = hythe_core::backup::serial(&host).map(|s| hythe_core::flash::gate(&s)).ok();
+            let slots = gridbay_core::slots::read(&host)?;
+            let gate = gridbay_core::backup::serial(&host).map(|s| gridbay_core::flash::gate(&s)).ok();
             Ok::<_, String>((slots, gate))
         })
         .await
@@ -4885,7 +4888,7 @@ fn show_slots(ui: &Rc<Ui>) {
             ui.slots.append(&row);
         }
         if let Some(g) = gate {
-            let max = hythe_core::flash::MAX_UNCONFIRMED;
+            let max = gridbay_core::flash::MAX_UNCONFIRMED;
             let row = adw::ActionRow::builder()
                 .title(format!("RAM boots: {} of {max} unconfirmed", g.unconfirmed))
                 .subtitle(if g.open() { "The gate is open: an image can be tried from RAM." } else { "The gate is closed: a good boot must be confirmed, or the counter reset on purpose." })
@@ -4912,7 +4915,7 @@ fn live_sync(ui: &Rc<Ui>) {
     // On the cable in the simple window too (the crash is fixed: item drew
     // the mirror's frame by a scaled blit); over Wi-Fi only in Developer
     // Mode - ten frames a second are some 8 MB/s of the phone's radio.
-    let cable = host.as_deref().is_some_and(|h| hythe_core::link::Via::of(h) == hythe_core::link::Via::Cable);
+    let cable = host.as_deref().is_some_and(|h| gridbay_core::link::Via::of(h) == gridbay_core::link::Via::Cable);
     let wanted = (developer_mode() || cable) && host.is_some() && !ui.state.borrow().busy && ui.tabs.visible_child_name().as_deref() == Some("general");
     if !wanted {
         if let Some(stop) = ui.live.borrow_mut().take() {
@@ -4926,7 +4929,7 @@ fn live_sync(ui: &Rc<Ui>) {
         return;
     }
     // ssh starts at once; only the reading waits, off the main thread.
-    let (mut live, stop) = match hythe_core::live::Live::start(&host.expect("wanted")) {
+    let (mut live, stop) = match gridbay_core::live::Live::start(&host.expect("wanted")) {
         Ok(started) => started,
         Err(_) => {
             *ui.live_failed.borrow_mut() = Some(std::time::Instant::now());
@@ -4934,7 +4937,7 @@ fn live_sync(ui: &Rc<Ui>) {
         }
     };
     *ui.live.borrow_mut() = Some(stop.clone());
-    let (tx, rx) = async_channel::bounded::<hythe_core::live::Frame>(2);
+    let (tx, rx) = async_channel::bounded::<gridbay_core::live::Frame>(2);
     let work = gio::spawn_blocking(move || loop {
         let Ok(frame) = live.next() else { return };
         if tx.send_blocking(frame).is_err() {
@@ -5016,16 +5019,16 @@ enum Job {
     Backup,
     FullBackup,
     RamBoot(std::path::PathBuf),
-    Restore(Box<hythe_core::restore::Plan>),
+    Restore(Box<gridbay_core::restore::Plan>),
     RecoveryExit(String),
     LeaveFastboot(String),
-    AndroidGo(Box<hythe_core::android::Plan>),
+    AndroidGo(Box<gridbay_core::android::Plan>),
     AndroidStart(String),
     AndroidBack(String),
     /// Microsoft's package from a link, then its boot chain taken out.
     StockDownload(String, String),
     /// A release image put on the phone, userdata made anew.
-    Install(Box<hythe_core::install::Release>, hythe_core::install::Mode),
+    Install(Box<gridbay_core::install::Release>, gridbay_core::install::Mode),
 }
 
 impl Job {
@@ -5044,9 +5047,9 @@ impl Job {
             Job::AndroidBack(_) => "android-back",
             Job::StockDownload(..) => "stock-download",
             Job::Install(_, m) => match m {
-                hythe_core::install::Mode::Erase => "install",
-                hythe_core::install::Mode::KeepFiles => "install-keep",
-                hythe_core::install::Mode::FullCopy => "install-full",
+                gridbay_core::install::Mode::Erase => "install",
+                gridbay_core::install::Mode::KeepFiles => "install-keep",
+                gridbay_core::install::Mode::FullCopy => "install-full",
             },
         }
     }
@@ -5056,7 +5059,7 @@ impl Job {
 /// off the main thread (reading only), then asked.
 fn choose_restore(ui: &Rc<Ui>) {
     let serial = ui.serial.borrow().clone();
-    let backups: Vec<hythe_core::backup::Backup> = hythe_core::backup::list(Some(&serial)).into_iter().filter(|b| b.manifest.kind == hythe_core::backup::Kind::Boot).collect();
+    let backups: Vec<gridbay_core::backup::Backup> = gridbay_core::backup::list(Some(&serial)).into_iter().filter(|b| b.manifest.kind == gridbay_core::backup::Kind::Boot).collect();
     if backups.is_empty() {
         stopped(ui, "No boot-chain backup of this phone yet: Back Up Now makes one.");
         return;
@@ -5087,7 +5090,7 @@ fn choose_restore(ui: &Rc<Ui>) {
         let slot = if slot_pick.selected() == 0 { 'a' } else { 'b' };
         let ui3 = ui2.clone();
         glib::spawn_future_local(async move {
-            let planned = gio::spawn_blocking(move || hythe_core::restore::plan(&host, &backup, slot, false)).await.unwrap_or_else(|_| Err("the work stopped".into()));
+            let planned = gio::spawn_blocking(move || gridbay_core::restore::plan(&host, &backup, slot, false)).await.unwrap_or_else(|_| Err("the work stopped".into()));
             let plan = match planned {
                 Ok(p) => p,
                 Err(e) => {
@@ -5136,7 +5139,7 @@ fn choose_ram_image(ui: &Rc<Ui>) {
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     let chooser = gtk::FileDialog::builder().title("Choose a boot image to try from RAM").filters(&filters).modal(true).build();
-    if let Some(out) = hythe_core::flash::port_tree().map(|t| t.join("out")) {
+    if let Some(out) = gridbay_core::flash::port_tree().map(|t| t.join("out")) {
         chooser.set_initial_folder(Some(&gio::File::for_path(out)));
     }
     let ui = ui.clone();
@@ -5147,8 +5150,8 @@ fn choose_ram_image(ui: &Rc<Ui>) {
         glib::spawn_future_local(async move {
             let p = path.clone();
             let checked = gio::spawn_blocking(move || {
-                let (img, serial, slot) = hythe_core::ramboot::preflight(&host, &p)?;
-                let gate = hythe_core::flash::gate(&serial);
+                let (img, serial, slot) = gridbay_core::ramboot::preflight(&host, &p)?;
+                let gate = gridbay_core::flash::gate(&serial);
                 Ok::<_, String>((img, slot, gate))
             })
             .await
@@ -5174,7 +5177,7 @@ fn choose_ram_image(ui: &Rc<Ui>) {
                 &img.sha256[..16],
                 slot.to_ascii_uppercase(),
                 gate.unconfirmed,
-                hythe_core::flash::MAX_UNCONFIRMED
+                gridbay_core::flash::MAX_UNCONFIRMED
             );
             let dialog = adw::AlertDialog::new(Some("Boot this image from RAM?"), Some(&body));
             dialog.add_responses(&[("cancel", "Cancel"), ("go", "Boot from RAM")]);
@@ -5194,14 +5197,14 @@ fn choose_ram_image(ui: &Rc<Ui>) {
 
 /// This Duo into the club: the token asked for first if the keyring has none.
 fn join_club(ui: &Rc<Ui>) {
-    if hythe_core::club::token().is_some() {
+    if gridbay_core::club::token().is_some() {
         register_now(ui);
         return;
     }
     let entry = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("creg_…").build();
     let dialog = adw::AlertDialog::new(
         Some("Join the owners' club"),
-        Some(&format!("Paste a registry token from {} (Settings → Device registry). Hythe keeps it in your keyring; the phone's serial number never leaves this computer.", hythe_core::club::server())),
+        Some(&format!("Paste a registry token from {} (Settings → Device registry). Gridbay keeps it in your keyring; the phone's serial number never leaves this computer.", gridbay_core::club::server())),
     );
     dialog.set_extra_child(Some(&entry));
     dialog.add_responses(&[("cancel", "Cancel"), ("go", "Join")]);
@@ -5212,7 +5215,7 @@ fn join_club(ui: &Rc<Ui>) {
         if response != "go" {
             return;
         }
-        match hythe_core::club::set_token(&entry.text()) {
+        match gridbay_core::club::set_token(&entry.text()) {
             Ok(()) => register_now(&ui2),
             Err(e) => stopped(&ui2, &e),
         }
@@ -5224,7 +5227,7 @@ fn register_now(ui: &Rc<Ui>) {
     let Some(host) = ui.state.borrow().host.clone() else { return };
     let ui = ui.clone();
     glib::spawn_future_local(async move {
-        match gio::spawn_blocking(move || hythe_core::club::register(&host)).await.unwrap_or_else(|_| Err("the work stopped".into())) {
+        match gio::spawn_blocking(move || gridbay_core::club::register(&host)).await.unwrap_or_else(|_| Err("the work stopped".into())) {
             Ok(d) => {
                 ui.name.set_label(&format!("Surface Duo · {}", d.number));
                 ui.join.set_visible(false);
@@ -5243,7 +5246,7 @@ fn set_agent_key(ui: &Rc<Ui>, key_row: &adw::ActionRow, key_forget: &gtk::Button
         stopped(ui, "Your Duo is not here: plug it in or bring it onto the same Wi-Fi to set its key.");
         return;
     };
-    let dialog = adw::AlertDialog::new(Some("OpenRouter key"), Some("Paste your key (sk-or-…) from openrouter.ai/keys. Hythe checks it with OpenRouter, then puts it into the phone's keyring; it is not kept on this computer."));
+    let dialog = adw::AlertDialog::new(Some("OpenRouter key"), Some("Paste your key (sk-or-…) from openrouter.ai/keys. Gridbay checks it with OpenRouter, then puts it into the phone's keyring; it is not kept on this computer."));
     let entry = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("sk-or-…").build();
     dialog.set_extra_child(Some(&entry));
     dialog.add_responses(&[("cancel", "Cancel"), ("save", "Check and Save")]);
@@ -5261,9 +5264,9 @@ fn set_agent_key(ui: &Rc<Ui>, key_row: &adw::ActionRow, key_forget: &gtk::Button
         key_row.set_subtitle("Checking the key with OpenRouter…");
         glib::spawn_future_local(async move {
             let done = gio::spawn_blocking(move || {
-                let info = hythe_core::agent::check(&key)?;
-                hythe_core::agent::store(&host, &key)?;
-                let last = hythe_core::agent::stored(&host)?.unwrap_or_default();
+                let info = gridbay_core::agent::check(&key)?;
+                gridbay_core::agent::store(&host, &key)?;
+                let last = gridbay_core::agent::stored(&host)?.unwrap_or_default();
                 Ok::<_, String>((info, last))
             })
             .await;
@@ -5306,7 +5309,7 @@ fn ask(ui: &Rc<Ui>, heading: &str, body: &str, yes: &str, job: Job) {
 }
 
 /// A job run off the main thread, told on the card as it goes; recorded for
-/// another Hythe too.
+/// another Gridbay too.
 fn run_job(ui: &Rc<Ui>, job: Job) {
     let host = ui.state.borrow().host.clone();
     let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_) | Job::Install(..));
@@ -5315,7 +5318,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         return;
     }
     // Where Linux will answer, for the jobs that end there.
-    let host = host.or_else(|| hythe_core::phone::hosts().into_iter().next()).unwrap_or_default();
+    let host = host.or_else(|| gridbay_core::phone::hosts().into_iter().next()).unwrap_or_default();
     let kind = job.kind();
     {
         let mut st = ui.state.borrow_mut();
@@ -5330,39 +5333,39 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
     tell(ui);
     let (tx, rx) = async_channel::unbounded::<String>();
     let work = gio::spawn_blocking(move || {
-        hythe_core::activity::begin(kind);
+        gridbay_core::activity::begin(kind);
         let mut say = |words: String| {
-            hythe_core::activity::line(&words);
+            gridbay_core::activity::line(&words);
             let _ = tx.send_blocking(words);
         };
         let result = match job {
-            Job::Update => hythe_core::update::update(&host, true, &mut |step| say(step.words().to_owned())),
-            Job::Reboot => hythe_core::phone::reboot(&host, &mut |b| say(b.words().to_owned())),
-            Job::Restore(plan) => hythe_core::restore::restore(&host, &plan, &mut say),
-            Job::RamBoot(path) => hythe_core::ramboot::ram_boot(&host, &path, hythe_core::ramboot::Expect::of(&path), &mut say),
-            Job::FullBackup => hythe_core::full::take(&host, &mut say).map(|_| ()),
-            Job::RecoveryExit(serial) => hythe_core::ramboot::leave_recovery(&host, &serial, &mut say),
-            Job::LeaveFastboot(serial) => hythe_core::ramboot::leave_fastboot(&host, &serial, &mut say),
+            Job::Update => gridbay_core::update::update(&host, true, &mut |step| say(step.words().to_owned())),
+            Job::Reboot => gridbay_core::phone::reboot(&host, &mut |b| say(b.words().to_owned())),
+            Job::Restore(plan) => gridbay_core::restore::restore(&host, &plan, &mut say),
+            Job::RamBoot(path) => gridbay_core::ramboot::ram_boot(&host, &path, gridbay_core::ramboot::Expect::of(&path), &mut say),
+            Job::FullBackup => gridbay_core::full::take(&host, &mut say).map(|_| ()),
+            Job::RecoveryExit(serial) => gridbay_core::ramboot::leave_recovery(&host, &serial, &mut say),
+            Job::LeaveFastboot(serial) => gridbay_core::ramboot::leave_fastboot(&host, &serial, &mut say),
             Job::AndroidGo(plan) => {
-                let word = hythe_core::backup::serial(&host).map(|s| hythe_core::android::confirm_word(&s)).unwrap_or_default();
+                let word = gridbay_core::backup::serial(&host).map(|s| gridbay_core::android::confirm_word(&s)).unwrap_or_default();
                 // The number was typed in the window already; the losses shown.
-                hythe_core::android::go(&host, &plan, &word, true, &mut say)
+                gridbay_core::android::go(&host, &plan, &word, true, &mut say)
             }
-            Job::AndroidStart(serial) => hythe_core::android::start(&host, &serial, &mut say),
-            Job::AndroidBack(serial) => hythe_core::android::back(&host, &serial, false, &mut say),
+            Job::AndroidStart(serial) => gridbay_core::android::start(&host, &serial, &mut say),
+            Job::AndroidBack(serial) => gridbay_core::android::back(&host, &serial, false, &mut say),
             Job::Install(release, mode) => {
-                let word = hythe_core::backup::serial(&host).map(|s| hythe_core::android::confirm_word(&s)).unwrap_or_default();
+                let word = gridbay_core::backup::serial(&host).map(|s| gridbay_core::android::confirm_word(&s)).unwrap_or_default();
                 // The number was typed in the window already.
-                hythe_core::install::erase_and_install(&host, &release, mode, &word, &mut say)
+                gridbay_core::install::erase_and_install(&host, &release, mode, &word, &mut say)
             }
             Job::StockDownload(url, label) => (|| {
                 say(format!("downloading {label}"));
-                let pkg = hythe_core::stock::download(&url, &mut |done, whole| say(format!("  downloaded: {} of {} MB", done >> 20, whole >> 20)))?;
-                hythe_core::stock::boot_chain(&pkg, &mut say)?;
+                let pkg = gridbay_core::stock::download(&url, &mut |done, whole| say(format!("  downloaded: {} of {} MB", done >> 20, whole >> 20)))?;
+                gridbay_core::stock::boot_chain(&pkg, &mut say)?;
                 Ok(())
             })(),
             Job::Backup => (|| {
-                use hythe_core::backup::{self, Kind};
+                use gridbay_core::backup::{self, Kind};
                 // The device data once; the boot chain and home each time.
                 let serial = backup::serial(&host)?;
                 let mut kinds = Vec::new();
@@ -5376,7 +5379,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
                 Ok(())
             })(),
         };
-        hythe_core::activity::end(&result);
+        gridbay_core::activity::end(&result);
         result
     });
     let ui = ui.clone();
@@ -5399,7 +5402,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
                 job.took = Some(job.started.elapsed().as_secs());
             }
             // This window's own record is not "elsewhere".
-            st.dismissed = hythe_core::activity::elsewhere(u64::MAX).and_then(|a| a.ended_at).or(st.dismissed);
+            st.dismissed = gridbay_core::activity::elsewhere(u64::MAX).and_then(|a| a.ended_at).or(st.dismissed);
         }
         tell(&ui);
         ui.actions.set_sensitive(true);
@@ -5411,7 +5414,7 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
 }
 
 /// Microsoft's package for this Duo: Microsoft's page in a window of its own
-/// (its sign-in kept for next time); once signed in, Hythe asks for the
+/// (its sign-in kept for next time); once signed in, Gridbay asks for the
 /// Duo by its serial, takes the link from the answer, and downloads it as a
 /// job on the card.
 fn get_android_from_microsoft(ui: &Rc<Ui>) {
@@ -5421,20 +5424,20 @@ fn get_android_from_microsoft(ui: &Rc<Ui>) {
         if s.is_empty() { ui.state.borrow().place.serial().unwrap_or_default().to_owned() } else { s }
     };
     if serial.is_empty() {
-        stopped(ui, "Hythe needs the phone connected to know its serial number.");
+        stopped(ui, "Gridbay needs the phone connected to know its serial number.");
         return;
     }
     let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let session = webkit::NetworkSession::new(
-        home.join(".local/share/hythe/web").to_str(),
-        home.join(".cache/hythe/web").to_str(),
+        home.join(".local/share/gridbay/web").to_str(),
+        home.join(".cache/gridbay/web").to_str(),
     );
     if let Some(cookies) = session.cookie_manager() {
-        cookies.set_persistent_storage(home.join(".local/share/hythe/web/cookies.sqlite").to_str().unwrap_or_default(), webkit::CookiePersistentStorage::Sqlite);
+        cookies.set_persistent_storage(home.join(".local/share/gridbay/web/cookies.sqlite").to_str().unwrap_or_default(), webkit::CookiePersistentStorage::Sqlite);
     }
     let web = webkit::WebView::builder().network_session(&session).vexpand(true).hexpand(true).build();
     let note = gtk::Label::builder()
-        .label("Hythe fetches Android with Microsoft's own page. Sign in with your Microsoft account once - Hythe does the rest and remembers the sign-in.")
+        .label("Gridbay fetches Android with Microsoft's own page. Sign in with your Microsoft account once - Gridbay does the rest and remembers the sign-in.")
         .wrap(true)
         .xalign(0.0)
         .margin_start(16)
@@ -5460,9 +5463,9 @@ fn get_android_from_microsoft(ui: &Rc<Ui>) {
             if event != webkit::LoadEvent::Finished || asked.get() {
                 return;
             }
-            let on_page = web.uri().is_some_and(|u| u.starts_with(hythe_core::stock::RECOVERY_PAGE));
+            let on_page = web.uri().is_some_and(|u| u.starts_with(gridbay_core::stock::RECOVERY_PAGE));
             if !on_page {
-                note.set_label("Sign in with your Microsoft account. Hythe goes on by itself after that.");
+                note.set_label("Sign in with your Microsoft account. Gridbay goes on by itself after that.");
                 return;
             }
             // Signed in, the page has the form: ask for this Duo with it.
@@ -5482,10 +5485,10 @@ fn get_android_from_microsoft(ui: &Rc<Ui>) {
             web.call_async_javascript_function(body, Some(&args.end()), None, None, gio::Cancellable::NONE, move |result| {
                 let text = result.ok().map(|v| v.to_str().to_string()).unwrap_or_default();
                 if text == "sign-in" || text.is_empty() {
-                    note.set_label("Sign in with your Microsoft account (Sign In on the page). Hythe goes on by itself after that.");
+                    note.set_label("Sign in with your Microsoft account (Sign In on the page). Gridbay goes on by itself after that.");
                     return;
                 }
-                match hythe_core::stock::link_in(&text) {
+                match gridbay_core::stock::link_in(&text) {
                     Some((url, label)) => {
                         asked.set(true);
                         dialog.close();
@@ -5515,7 +5518,7 @@ fn get_android_from_microsoft(ui: &Rc<Ui>) {
             true
         }
     });
-    web.load_uri(hythe_core::stock::RECOVERY_PAGE);
+    web.load_uri(gridbay_core::stock::RECOVERY_PAGE);
     dialog.present(Some(&ui.window));
 }
 
@@ -5533,7 +5536,7 @@ fn microsoft_only(uri: &str) -> bool {
 /// told plainly, the phone's number typed before anything is erased.
 fn erase_and_install(ui: &Rc<Ui>) {
     let Some(host) = ui.state.borrow().host.clone() else { return };
-    let Some(release) = hythe_core::install::releases().pop() else {
+    let Some(release) = gridbay_core::install::releases().pop() else {
         stopped(ui, "No release image on this computer yet (the port's tools/build-release-image.sh makes one).");
         return;
     };
@@ -5541,9 +5544,9 @@ fn erase_and_install(ui: &Rc<Ui>) {
     glib::spawn_future_local(async move {
         let h = host.clone();
         let read = gio::spawn_blocking(move || {
-            let serial = hythe_core::backup::serial(&h)?;
-            let fresh = hythe_core::android::fresh_full(&h, &serial)?.is_some();
-            Ok::<_, String>((hythe_core::android::confirm_word(&serial), fresh))
+            let serial = gridbay_core::backup::serial(&h)?;
+            let fresh = gridbay_core::android::fresh_full(&h, &serial)?.is_some();
+            Ok::<_, String>((gridbay_core::android::confirm_word(&serial), fresh))
         })
         .await
         .unwrap_or_else(|_| Err("the work stopped".into()));
@@ -5588,11 +5591,11 @@ fn erase_and_install(ui: &Rc<Ui>) {
         dialog.connect_response(None, move |_, response| {
             if response == "go" {
                 let mode = if keep.is_active() {
-                    hythe_core::install::Mode::KeepFiles
+                    gridbay_core::install::Mode::KeepFiles
                 } else if full.is_active() {
-                    hythe_core::install::Mode::FullCopy
+                    gridbay_core::install::Mode::FullCopy
                 } else {
-                    hythe_core::install::Mode::Erase
+                    gridbay_core::install::Mode::Erase
                 };
                 run_job(&ui2, Job::Install(Box::new(release.clone()), mode));
             }
@@ -5612,9 +5615,9 @@ fn return_to_android(ui: &Rc<Ui>) {
     glib::spawn_future_local(async move {
         let h = host.clone();
         let read = gio::spawn_blocking(move || {
-            let plan = hythe_core::android::plan(&h)?;
-            let serial = hythe_core::backup::serial(&h)?;
-            Ok::<_, String>((plan, hythe_core::android::confirm_word(&serial)))
+            let plan = gridbay_core::android::plan(&h)?;
+            let serial = gridbay_core::backup::serial(&h)?;
+            Ok::<_, String>((plan, gridbay_core::android::confirm_word(&serial)))
         })
         .await
         .unwrap_or_else(|_| Err("the work stopped".into()));
@@ -5637,7 +5640,7 @@ fn return_to_android(ui: &Rc<Ui>) {
              2. The recovery starts, and the way back is tested - nothing is erased if it fails.\n\
              3. Linux's data on the phone is erased (about 8 minutes).\n\
              4. Android starts from the computer's memory and opens its welcome screens.\n\n\
-             About {} minutes in all; keep the cable in. Back to Linux, here in Hythe, puts everything back.",
+             About {} minutes in all; keep the cable in. Back to Linux, here in Gridbay, puts everything back.",
             if plan.full_fresh { 15 } else { 35 }
         );
         if !plan.losses.is_empty() {
@@ -5694,7 +5697,7 @@ fn logs_view(owner: Rc<RefCell<Option<Rc<Ui>>>>) -> gtk::Box {
         let (part, search, previous) = (part.clone(), search.clone(), previous.clone());
         move || {
             let Some(host) = owner.borrow().as_ref().and_then(|ui| ui.state.borrow().host.clone()) else { return };
-            let q = hythe_core::logs::Query {
+            let q = gridbay_core::logs::Query {
                 boot: if previous.is_active() { -1 } else { 0 },
                 only: match part.selected() {
                     0 => None,
@@ -5706,7 +5709,7 @@ fn logs_view(owner: Rc<RefCell<Option<Rc<Ui>>>>) -> gtk::Box {
             };
             let (text, scroll) = (text.clone(), scroll.clone());
             glib::spawn_future_local(async move {
-                let out = gio::spawn_blocking(move || hythe_core::phone::run(&host, &q.script())).await.unwrap_or_else(|_| Err("the work stopped".into()));
+                let out = gio::spawn_blocking(move || gridbay_core::phone::run(&host, &q.script())).await.unwrap_or_else(|_| Err("the work stopped".into()));
                 let body = match out {
                     Ok(t) if t.trim().is_empty() => "Nothing here.".to_owned(),
                     Ok(t) => t,

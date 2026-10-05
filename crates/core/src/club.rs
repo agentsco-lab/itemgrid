@@ -1,6 +1,6 @@
 //! The Duo owners' club - the device registry on agentsco.uk (AgentsCo's
 //! AC-191). Each Duo gets a number there, in order (00001, 00002, ...),
-//! written onto the phone (/etc/item/device-id) and shown by Hythe.
+//! written onto the phone (/etc/item/device-id) and shown by Gridbay.
 //!
 //! - The token: a personal registry token made on the site (Settings ->
 //!   Device registry), kept in the desktop's keyring (Secret Service), never
@@ -8,7 +8,7 @@
 //! - The serial number never leaves this computer: what is sent is
 //!   sha256("cradle-device:" + serial), and the server keeps only its own
 //!   keyed hash of that.
-//! - The numbers known here are kept in ~/.local/share/hythe/devices.json
+//! - The numbers known here are kept in ~/.local/share/gridbay/devices.json
 //!   (club and serial -> number, label), so the phone has its number offline
 //!   too.
 
@@ -21,13 +21,13 @@ use serde::{Deserialize, Serialize};
 const SERVICE: &str = "cradle";
 const ACCOUNT: &str = "agentsco-registry";
 
-/// The registry's site: HYTHE_REGISTRY, ~/.config/hythe/registry, or
+/// The registry's site: GRIDBAY_REGISTRY, ~/.config/gridbay/registry, or
 /// agentsco.uk.
 pub fn server() -> String {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    std::env::var("HYTHE_REGISTRY")
+    std::env::var("GRIDBAY_REGISTRY")
         .ok()
-        .or_else(|| std::fs::read_to_string(home.join(".config/hythe/registry")).ok().map(|s| s.trim().to_owned()))
+        .or_else(|| std::fs::read_to_string(home.join(".config/gridbay/registry")).ok().map(|s| s.trim().to_owned()))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "https://agentsco.uk".into())
         .trim_end_matches('/')
@@ -77,7 +77,7 @@ pub struct Device {
 }
 
 fn local_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/hythe/devices.json")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/gridbay/devices.json")
 }
 
 fn local() -> HashMap<String, Device> {
@@ -113,7 +113,7 @@ fn remember(serial: &str, device: &Device) {
 /// Registers the phone at `host` in the club - or finds its number if it is
 /// there already - and writes the number onto the phone.
 pub fn register(host: &str) -> Result<Device, String> {
-    let token = token().ok_or("no registry token yet: make one on the site (Settings -> Device registry) and give it to Hythe")?;
+    let token = token().ok_or("no registry token yet: make one on the site (Settings -> Device registry) and give it to Gridbay")?;
     let serial = crate::backup::serial(host)?;
     let st = crate::status::read(host)?;
     let body = serde_json::json!({

@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Hythe
+Name=Gridbay
 Comment=Look after a connected Surface Duo
-Exec=hythe-gui
-Icon=lab.agentsco.Hythe
+Exec=gridbay-gui
+Icon=lab.agentsco.Gridbay
 Terminal=false
 Categories=Utility;System;
 Keywords=Surface;Duo;phone;flash;item;
