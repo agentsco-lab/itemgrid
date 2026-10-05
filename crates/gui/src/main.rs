@@ -4531,6 +4531,14 @@ fn show_fold(ui: &Ui, angle: f64) {
             e.tilt *= 1.0 - flat;
             e.far += (40.0 - e.far) * flat;
         }
+        // The whole view half a square to the left (the buttons as far in
+        // from the right as the word from the left: both margins alike).
+        let half = {
+            let a = on_page(&rest_m, (cubes_at.0, cubes_at.1));
+            let b = on_page(&rest_m, (cubes_at.0 + cur, cubes_at.1));
+            (b.0 - a.0).abs() / 2.0
+        };
+        e.on.0 -= half * (1.0 - flat);
         let at = e.on;
         let eye_x = e.look.0;
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
@@ -4552,7 +4560,15 @@ fn show_fold(ui: &Ui, angle: f64) {
         let buttons_at = {
             let m = rest_m;
             let row = cubes_at.1;
-            let want = ui.floor.width() as f32 - off.0 - 1.2 * cur;
+            // As far in from the right as the word is from the left (the
+            // whole view moved half a square left after, both with it).
+            let half = {
+                let a = on_page(&m, (cubes_at.0, cubes_at.1));
+                let b = on_page(&m, (cubes_at.0 + cur, cubes_at.1));
+                (b.0 - a.0).abs() / 2.0
+            };
+            let word_left = on_page(&m, (cubes_at.0 - WORD_HALF * cur, cubes_at.1 - 0.5 * cur)).0 + off.0 - half;
+            let want = ui.floor.width() as f32 - word_left - off.0 + half;
             // Along the row to that point of the page (Newton's way).
             let mut x = cubes_at.0 + 15.0 * cur;
             for _ in 0..12 {
