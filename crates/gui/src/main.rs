@@ -1992,10 +1992,11 @@ fn draw_floor(_: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
     let z_near = eye * f / (h - horizon);
     // Only rows still apart (3 px or more): further they ran together.
     let z_far = (eye * f / 3.0).sqrt();
-    let alpha = |y: f64, x: f64| {
-        let depth = ((y - horizon) / (h - horizon)).clamp(0.0, 1.0);
+    // Fainter far off - gone by the last rows drawn - and toward the sides.
+    let alpha = |z: f64, x: f64| {
+        let far = ((z_far - z) / (z_far * 0.55)).clamp(0.0, 1.0);
         let side = (1.0 - ((x - cx).abs() / (w * 0.62)).powi(2)).max(0.0);
-        0.075 * depth.powf(1.4) * side
+        0.16 * far * far * side
     };
     cr.set_line_width(1.0);
     // Rows, one a square deep.
@@ -2006,7 +2007,7 @@ fn draw_floor(_: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
         let pieces = 16;
         for i in 0..pieces {
             let (x0, x1) = (cx - half + 2.0 * half * i as f64 / pieces as f64, cx - half + 2.0 * half * (i + 1) as f64 / pieces as f64);
-            cr.set_source_rgba(0.0, 0.0, 0.0, alpha(y, (x0 + x1) / 2.0));
+            cr.set_source_rgba(0.0, 0.0, 0.0, alpha(z, (x0 + x1) / 2.0));
             cr.move_to(x0, y);
             cr.line_to(x1, y);
             let _ = cr.stroke();
@@ -2022,7 +2023,7 @@ fn draw_floor(_: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
             let (za, zb) = (z_near * (z_far / z_near).powf(i as f64 / pieces as f64), z_near * (z_far / z_near).powf((i + 1) as f64 / pieces as f64));
             let (xa, ya) = (cx + x * f / za, y_of(za));
             let (xb, yb) = (cx + x * f / zb, y_of(zb));
-            cr.set_source_rgba(0.0, 0.0, 0.0, alpha((ya + yb) / 2.0, (xa + xb) / 2.0));
+            cr.set_source_rgba(0.0, 0.0, 0.0, alpha((za + zb) / 2.0, (xa + xb) / 2.0));
             cr.move_to(xa, ya);
             cr.line_to(xb, yb);
             let _ = cr.stroke();
