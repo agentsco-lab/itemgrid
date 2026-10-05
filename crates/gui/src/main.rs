@@ -506,6 +506,9 @@ struct Ui {
     usb_was: std::cell::Cell<bool>,
     /// A look on its way (the quick ones after the link came wait for it).
     looking: std::cell::Cell<bool>,
+    /// Nothing done at the computer for a while (saver::rest_after_ms()): the
+    /// phone let go (not followed, not looked for over Wi-Fi).
+    resting: std::cell::Cell<bool>,
     last_angle: std::cell::Cell<Option<f64>>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, itemgrid_core::posture::Stop)>>,
@@ -1239,6 +1242,7 @@ fn build(app: &adw::Application) {
         shut_away: std::cell::Cell::new(false),
         usb_was: std::cell::Cell::new(false),
         looking: std::cell::Cell::new(false),
+        resting: std::cell::Cell::new(false),
         lid_shut_at: std::cell::Cell::new(None),
         gravity_at: std::cell::Cell::new(None),
         last_angle: std::cell::Cell::new(None),
@@ -1280,31 +1284,26 @@ fn build(app: &adw::Application) {
     // The letters the page sets, made ahead.
     glyphs_ahead("abcdefghijklmnopqrstuvwxyz?-&./");
     glyphs_ahead(intro::CREDIT);
-    // The saver: idle five minutes, on; anything done since it came, off
-    // (looked at each second).
+    // The saver: idle five minutes, on; anything done since it came, off.
+    // Idle ten, the phone let go (resting); anything done, looked for at
+    // once. Asked each 2 s, not waited for (it was a call each second on the
+    // main thread).
     {
         let weak = Rc::downgrade(&ui);
-        glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+        let asking = Rc::new(std::cell::Cell::new(false));
+        glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
             let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
-            let Some(idle) = saver::idle_ms() else { return glib::ControlFlow::Continue };
-            match ui.saver.get() {
-                None if idle >= saver::AFTER_MS => saver_on(&ui),
-                // Something done since it came (idle less than it has been
-                // on), after its first second: the pointer moved well away
-                // (a hand resting on the mouse stirs it a little), or not at
-                // all (a key).
-                Some(since) if since.elapsed().as_millis() > 1000 && idle + 700 < since.elapsed().as_millis() as u64 => {
-                    let now = place::pointer(&ui.window);
-                    let moved = match (ui.saver_pointer.get(), now) {
-                        (Some(a), Some(b)) => ((a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)) as f64,
-                        _ => f64::MAX,
-                    };
-                    if moved == 0.0 || moved > 40.0 * 40.0 {
-                        saver_off(&ui);
-                    }
-                }
-                _ => {}
+            if asking.replace(true) {
+                return glib::ControlFlow::Continue;
             }
+            let asking = asking.clone();
+            glib::spawn_future_local(async move {
+                let idle = saver::idle_ms_async().await;
+                asking.set(false);
+                if let Some(idle) = idle {
+                    idle_now(&ui, idle);
+                }
+            });
             glib::ControlFlow::Continue
         });
     }
@@ -2022,7 +2021,7 @@ fn build(app: &adw::Application) {
         let trying = Rc::new(std::cell::Cell::new(false));
         move || {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
-            let asleep = ui.state.borrow().host.is_none();
+            let asleep = ui.state.borrow().host.is_none() && !ui.resting.get();
             if asleep && !trying.get() && !ui.looking.get() {
                 trying.set(true);
                 let trying = trying.clone();
@@ -2051,7 +2050,7 @@ fn build(app: &adw::Application) {
             // window in front, every 30 s behind it.
             let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
             let every = if !wifi { 1 } else if ui.window.is_active() { 2 } else { 6 };
-            if !busy && !elsewhere && ticks % every == 0 {
+            if !busy && !elsewhere && !ui.resting.get() && ticks % every == 0 {
                 look(&ui);
                 live_sync(&ui);
                 // Without the live view (an item without a mirror), a picture
@@ -2862,6 +2861,9 @@ fn follow_hinge(ui: &Rc<Ui>) {
     // opened the sensors just as the phone went down) until a look sees it
     // open (fill).
     let want = want.filter(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable || ui.lid_shut_at.get().is_none());
+    // Nothing done at the computer for a while: let go (on the cable the
+    // phone may sleep again; on Wi-Fi its radio saves again).
+    let want = want.filter(|_| !ui.resting.get());
     if want.is_none() {
         ui.pose_name.borrow_mut().clear();
     }
@@ -4161,6 +4163,38 @@ fn wall_step(ui: &Ui, frame_us: i64) -> bool {
     }
     ui.wall_move.set(Some(w));
     true
+}
+
+/// What the idle time (ms) at the computer means: the saver on or off;
+/// resting (the phone let go) or back from it (looked for at once).
+fn idle_now(ui: &Rc<Ui>, idle: u64) {
+    let rest = idle >= saver::rest_after_ms();
+    if rest != ui.resting.get() {
+        ui.resting.set(rest);
+        trace(format_args!("{}", if rest { "resting: nothing done at the computer, the phone let go" } else { "back: looking for the phone" }));
+        follow_hinge(ui);
+        if !rest {
+            look(ui);
+        }
+    }
+    match ui.saver.get() {
+        None if idle >= saver::AFTER_MS => saver_on(&ui),
+        // Something done since it came (idle less than it has been
+        // on), after its first second: the pointer moved well away
+        // (a hand resting on the mouse stirs it a little), or not at
+        // all (a key).
+        Some(since) if since.elapsed().as_millis() > 1000 && idle + 700 < since.elapsed().as_millis() as u64 => {
+            let now = place::pointer(&ui.window);
+            let moved = match (ui.saver_pointer.get(), now) {
+                (Some(a), Some(b)) => ((a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)) as f64,
+                _ => f64::MAX,
+            };
+            if moved == 0.0 || moved > 40.0 * 40.0 {
+                saver_off(&ui);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The saver off: the window back where it was.

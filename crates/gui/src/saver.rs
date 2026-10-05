@@ -11,11 +11,13 @@ use gtk::{gdk, gio};
 /// monitor's wallpaper instead: place::desktop).
 pub const AFTER_MS: u64 = u64::MAX;
 
-/// How long nothing has been pressed or moved (ms), as GNOME counts it.
-pub fn idle_ms() -> Option<u64> {
-    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()?;
+/// How long nothing has been pressed or moved (ms), as GNOME counts it -
+/// not waited for on the main thread (a D-Bus call in its own time: the
+/// window draws on meanwhile).
+pub async fn idle_ms_async() -> Option<u64> {
+    let bus = gio::bus_get_future(gio::BusType::Session).await.ok()?;
     let reply = bus
-        .call_sync(
+        .call_future(
             Some("org.gnome.Mutter.IdleMonitor"),
             "/org/gnome/Mutter/IdleMonitor/Core",
             "org.gnome.Mutter.IdleMonitor",
@@ -24,10 +26,17 @@ pub fn idle_ms() -> Option<u64> {
             Some(gtk::glib::VariantTy::new("(t)").ok()?),
             gio::DBusCallFlags::NONE,
             500,
-            gio::Cancellable::NONE,
         )
+        .await
         .ok()?;
     reply.get::<(u64,)>().map(|(ms,)| ms)
+}
+
+/// Nothing done at this computer this long (ms): the phone let go -
+/// followed no more, not looked for over Wi-Fi - until something is.
+pub fn rest_after_ms() -> u64 {
+    // ITEMGRID_REST_S=seconds: sooner (to try it).
+    std::env::var("ITEMGRID_REST_S").ok().and_then(|v| v.parse::<u64>().ok()).map_or(10 * 60 * 1000, |s| s * 1000)
 }
 
 /// The second monitor: not the primary one (xrandr's word for it on X11);
