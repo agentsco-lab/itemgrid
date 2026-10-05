@@ -24,6 +24,7 @@ use gtk::{gdk, gio, glib};
 mod board;
 mod cable;
 mod duo3d;
+mod grid_gl;
 mod intro;
 mod card;
 mod control;
@@ -404,6 +405,8 @@ struct Ui {
     /// The table under the Duo as the page's floor: the view of the phone
     /// at rest (not turned by the pointer, nor as it is held).
     floor: gtk::DrawingArea,
+    /// The squares under it, on the GPU (grid_gl).
+    floor_gl: gtk::GLArea,
     floor_view: Rc<RefCell<FloorView>>,
     /// The start, and the cubes with the word standing while there is no
     /// phone (intro.rs).
@@ -968,8 +971,13 @@ fn build(app: &adw::Application) {
             }
         }
     });
+    let floor_gl = grid_gl::area({
+        let fv = floor_view.clone();
+        move || grid_of(&fv.borrow())
+    });
     let home_page = gtk::Overlay::new();
-    home_page.set_child(Some(&floor));
+    home_page.set_child(Some(&floor_gl));
+    home_page.add_overlay(&floor);
     home_page.add_overlay(scroll);
     // Nothing on the way to the page cuts the drawn Duo off: held up and
     // tipped it reaches far past its room (an overlay clipped it there).
@@ -1170,6 +1178,7 @@ fn build(app: &adw::Application) {
         gl3d: gl3d.clone(),
         scene3d: scene3d.clone(),
         floor: floor.clone(),
+        floor_gl: floor_gl.clone(),
         floor_view: floor_view.clone(),
         intro: RefCell::default(),
         buttons: RefCell::default(),
@@ -1336,6 +1345,7 @@ fn build(app: &adw::Application) {
         fn redraw(ui: &Ui) {
             show_fold(ui, ui.fold.get().0);
             ui.floor.queue_draw();
+            ui.floor_gl.queue_render();
             ui.cable.queue_draw();
         }
         let said: Rc<RefCell<Option<adw::Toast>>> = Rc::default();
@@ -2036,8 +2046,27 @@ fn build(app: &adw::Application) {
         let ui = Rc::downgrade(&ui);
         let drawn_at = std::cell::Cell::new(-1);
         let last_frame = std::cell::Cell::new(0i64);
+        let hooked = std::cell::Cell::new(false);
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
+            // ITEMGRID_FRAMES=1: the frame's layout and paint (GTK's own
+            // part: snapshot, render, the swap) timed too.
+            if !hooked.replace(true) && std::env::var_os("ITEMGRID_FRAMES").is_some() {
+                let at = Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+                clock.connect_layout({
+                    let at = at.clone();
+                    move |_| at.set(std::time::Instant::now())
+                });
+                let painting = Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+                clock.connect_paint({
+                    let painting = painting.clone();
+                    move |_| painting.set(std::time::Instant::now())
+                });
+                clock.connect_after_paint(move |_| {
+                    let (laid, painted) = (painting.get().duration_since(at.get()), painting.get().elapsed());
+                    trace(format_args!("layout {:.2} ms paint in {:.2} ms", laid.as_secs_f64() * 1000.0, painted.as_secs_f64() * 1000.0))
+                });
+            }
             if ui.duo.width() > 1 && !ui.intro.borrow().begun() {
                 ui.intro.borrow_mut().begin();
             }
@@ -2082,10 +2111,15 @@ fn build(app: &adw::Application) {
             // The start, and the cubes rising or sinking; the squares' size
             // eased toward the wheel's.
             let now_us = clock.frame_time();
+            static FRAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *FRAMES.get_or_init(|| std::env::var_os("ITEMGRID_FRAMES").is_some()) {
+                trace(format_args!("tick +{:.1} ms", (now_us - last_frame.get()) as f64 / 1000.0));
+            }
             let dt = (now_us - last_frame.replace(now_us)) as f32 / 1e6;
             let resized = ease_square(dt.clamp(0.0, 0.1));
             if resized {
                 ui.floor.queue_draw();
+                ui.floor_gl.queue_render();
                 ui.cable.queue_draw();
             }
             let pressing = ui.buttons.borrow_mut().step(dt.clamp(0.0, 0.1));
@@ -3109,12 +3143,54 @@ struct TableText {
     strength: f32,
 }
 
+/// The squares for the GPU (grid_gl) from the floor's view: the same
+/// lines and fading draw_floor's cairo draws.
+fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
+    use gtk::graphene;
+    let m = fv.matrix?;
+    let step = square() * fv.k;
+    let z = fv.table;
+    let v0 = m.transform_vec4(&graphene::Vec4::new(0.0, 0.0, z, 1.0));
+    let vx = m.transform_vec4(&graphene::Vec4::new(1.0, 0.0, 0.0, 0.0));
+    let vy = m.transform_vec4(&graphene::Vec4::new(0.0, 1.0, 0.0, 0.0));
+    // The table (x, y, 1) to the page (homogeneous, before the offset).
+    let h = [[vx.x() as f64, vy.x() as f64, v0.x() as f64], [vx.y() as f64, vy.y() as f64, v0.y() as f64], [vx.w() as f64, vy.w() as f64, v0.w() as f64]];
+    let det = h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1]) - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0]) + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let inv = [
+        [(h[1][1] * h[2][2] - h[1][2] * h[2][1]) / det, (h[0][2] * h[2][1] - h[0][1] * h[2][2]) / det, (h[0][1] * h[1][2] - h[0][2] * h[1][1]) / det],
+        [(h[1][2] * h[2][0] - h[1][0] * h[2][2]) / det, (h[0][0] * h[2][2] - h[0][2] * h[2][0]) / det, (h[0][2] * h[1][0] - h[0][0] * h[1][2]) / det],
+        [(h[1][0] * h[2][1] - h[1][1] * h[2][0]) / det, (h[0][1] * h[2][0] - h[0][0] * h[2][1]) / det, (h[0][0] * h[1][1] - h[0][1] * h[1][0]) / det],
+    ];
+    let night = night();
+    Some(grid_gl::Grid {
+        inv: inv.map(|r| r.map(|v| v as f32)),
+        w_row: h[2].map(|v| v as f32),
+        off: fv.off,
+        step,
+        shift: floor_shift(fv.k),
+        mid: fv.grid_mid,
+        reach: fv.reach,
+        cubes_at: fv.cubes_at,
+        grown: fv.grid * (fv.reach + 3.0 * step),
+        grid: fv.grid,
+        ink: if night { [1.0; 3] } else { [0.0; 3] },
+        ink_k: if night { 1.15 } else { 1.0 },
+        under: night.then_some([NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32]),
+    })
+}
+
 /// The table under the Duo across the page, in 2 cm squares, in the very
 /// view the phone at rest is drawn in - so it lies on it; faint, fading
 /// with the distance on the table.
 fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     use gtk::graphene;
-    if night() {
+    // The squares (and the night's table under them) on the GPU, if it
+    // can: grid_gl.
+    let gpu = grid_gl::on();
+    if night() && !gpu {
         cr.set_source_rgb(NIGHT_TABLE, NIGHT_TABLE, NIGHT_TABLE * 1.02);
         let _ = cr.paint();
     }
@@ -3147,43 +3223,79 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     let shift = floor_shift(k);
     // The lines nearest that point first in each direction.
     let (ix, iy) = (((mx - shift.0) / step).round() as i32, ((my - shift.1) / step).round() as i32);
-    // Finer while the squares grow out (their edge in coarse pieces stepped).
-    let pieces = if fv.grid < 1.0 { 160 } else { 40 };
-    cr.set_line_width(1.6);
-    // The pieces by how strong they are (a few dozen strokes, not a stroke
-    // a piece: thousands of them took a frame's time).
-    const LEVELS: usize = 32;
-    const TOP: f64 = 0.15;
-    let mut levels: Vec<Vec<((f64, f64), (f64, f64))>> = vec![Vec::new(); LEVELS];
-    for i in -n..=n {
-        for along_x in [true, false] {
-            // Rows at the shift in y, columns at the shift in x.
-            let t = if along_x { (i + iy) as f32 * step + shift.1 } else { (i + ix) as f32 * step + shift.0 };
-            let from = if along_x { mx } else { my } - reach;
-            for j in 0..pieces {
-                let u0 = from + 2.0 * reach * j as f32 / pieces as f32;
-                let u1 = from + 2.0 * reach * (j + 1) as f32 / pieces as f32;
-                let ((ax, ay), (bx, by)) = if along_x { ((u0, t), (u1, t)) } else { ((t, u0), (t, u1)) };
-                let a = alpha((ax + bx) / 2.0, (ay + by) / 2.0);
-                if a < 0.004 {
-                    continue;
+    // Else the lines whole, at full strength, one stroke; how strong each
+    // place on the table is, a mask over them (a pixel of it 6 of the
+    // page's, looked up on the table through the view turned back): a
+    // stroke a piece by strength took 12 ms of a frame to set in pixels.
+    if let Some(g) = grid_of(fv).filter(|_| !gpu) {
+        const MASK: i32 = 6;
+        let (mw, mh) = (_w / MASK + 2, _h / MASK + 2);
+        let inv = g.inv.map(|r| r.map(|v| v as f64));
+        let w_at = |x: f64, y: f64| g.w_row[0] as f64 * x + g.w_row[1] as f64 * y + g.w_row[2] as f64;
+        let Ok(mut mask) = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, mw, mh) else { return draw_cubes(fv, cr) };
+        let stride = mask.stride() as usize;
+        let mut strongest = 0.0f64;
+        if let Ok(mut data) = mask.data() {
+            for py in 0..mh {
+                for px in 0..mw {
+                    let (sx, sy) = ((px * MASK) as f64 - fv.off.0 as f64, (py * MASK) as f64 - fv.off.1 as f64);
+                    let q = [inv[0][0] * sx + inv[0][1] * sy + inv[0][2], inv[1][0] * sx + inv[1][1] * sy + inv[1][2], inv[2][0] * sx + inv[2][1] * sy + inv[2][2]];
+                    if q[2].abs() < 1e-12 {
+                        continue;
+                    }
+                    let (x, y) = (q[0] / q[2], q[1] / q[2]);
+                    // Behind the eye (or at the horizon): nothing.
+                    if w_at(x, y) <= 0.05 {
+                        continue;
+                    }
+                    let a = alpha(x as f32, y as f32);
+                    strongest = strongest.max(a);
+                    // The ink, premultiplied, this strong.
+                    let k = (a * g.ink_k as f64 * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let c = (g.ink[0] as f64 * k as f64).round() as u8;
+                    let at = py as usize * stride + px as usize * 4;
+                    data[at..at + 4].copy_from_slice(&((k as u32) << 24 | (c as u32) << 16 | (c as u32) << 8 | c as u32).to_ne_bytes());
                 }
-                let (Some(p0), Some(p1)) = (project(ax, ay), project(bx, by)) else { continue };
-                let level = ((a / TOP * LEVELS as f64) as usize).min(LEVELS - 1);
-                levels[level].push((p0, p1));
             }
         }
-    }
-    for (level, pieces) in levels.iter().enumerate() {
-        if pieces.is_empty() {
-            continue;
+        if strongest >= 0.004 {
+            // Each line from where it comes in reach to where it leaves (its
+            // ends brought in front of the eye).
+            for i in -n..=n {
+                for along_x in [true, false] {
+                    let t = if along_x { (i + iy) as f32 * step + shift.1 } else { (i + ix) as f32 * step + shift.0 };
+                    let dt = t - if along_x { my } else { mx };
+                    let half = (reach * reach - dt * dt).max(0.0).sqrt();
+                    if half <= 0.0 {
+                        continue;
+                    }
+                    let c = if along_x { mx } else { my };
+                    let at = |u: f32| if along_x { (u, t) } else { (t, u) };
+                    let (mut u0, mut u1) = (c - half, c + half);
+                    // w is straight along the line: cut where it is too small.
+                    let (w0, w1) = (w_at(at(u0).0 as f64, at(u0).1 as f64), w_at(at(u1).0 as f64, at(u1).1 as f64));
+                    if w0 <= 0.06 && w1 <= 0.06 {
+                        continue;
+                    }
+                    let cut = |w0: f64, w1: f64| ((0.06 - w0) / (w1 - w0)) as f32;
+                    if w0 <= 0.06 {
+                        u0 += (u1 - u0) * cut(w0, w1);
+                    } else if w1 <= 0.06 {
+                        u1 = u0 + (u1 - u0) * cut(w0, w1);
+                    }
+                    let (Some(p0), Some(p1)) = (project(at(u0).0, at(u0).1), project(at(u1).0, at(u1).1)) else { continue };
+                    cr.move_to(p0.0, p0.1);
+                    cr.line_to(p1.0, p1.1);
+                }
+            }
+            cr.set_line_width(1.6);
+            mask.mark_dirty();
+            let pattern = gtk::cairo::SurfacePattern::create(&mask);
+            pattern.set_filter(gtk::cairo::Filter::Bilinear);
+            pattern.set_matrix(gtk::cairo::Matrix::new(1.0 / MASK as f64, 0.0, 0.0, 1.0 / MASK as f64, 0.0, 0.0));
+            let _ = cr.set_source(&pattern);
+            let _ = cr.stroke();
         }
-        for (p0, p1) in pieces {
-            cr.move_to(p0.0, p0.1);
-            cr.line_to(p1.0, p1.1);
-        }
-        ink(cr, TOP * (level as f64 + 0.5) / LEVELS as f64);
-        let _ = cr.stroke();
     }
     draw_cubes(fv, cr);
     // The hole: seen through its opening - its floor dark, the walls that
@@ -3736,6 +3848,7 @@ fn show_night(ui: &Ui) {
     }
     adw::StyleManager::default().set_color_scheme(if on { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
     ui.floor.queue_draw();
+    ui.floor_gl.queue_render();
 }
 
 /// The night setting turned: auto, night, day, auto again.
@@ -4076,6 +4189,16 @@ fn duo_silhouette(body: Option<&gdk::Texture>, i: usize, bw: i32, bh: i32, pad: 
 /// raised one darkens as it turns from the light; the shadow lies under the
 /// right half, fading as the phone leaves the table.
 fn show_fold(ui: &Ui, angle: f64) {
+    static FRAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let timed = *FRAMES.get_or_init(|| std::env::var_os("ITEMGRID_FRAMES").is_some());
+    let started = std::time::Instant::now();
+    show_fold_now(ui, angle);
+    if timed {
+        trace(format_args!("show_fold in {:.2} ms", started.elapsed().as_secs_f64() * 1000.0));
+    }
+}
+
+fn show_fold_now(ui: &Ui, angle: f64) {
     use gtk::{graphene, gsk};
     const TILT: f32 = 50.0;
     let lift = (180.0 - angle).clamp(-178.0, 178.0) as f32;
@@ -4746,6 +4869,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
+            ui.floor_gl.queue_render();
         }
     }
     // The cord under the halves (past the plug it is outside them), over

@@ -520,7 +520,7 @@ struct Gpu {
 }
 
 /// GL's functions, from EGL (GTK draws through it) or else GLX.
-fn loader() -> impl Fn(&str) -> *const std::ffi::c_void {
+pub(crate) fn loader() -> impl Fn(&str) -> *const std::ffi::c_void {
     type GetProc = unsafe extern "C" fn(*const std::ffi::c_char) -> *const std::ffi::c_void;
     let lib: &'static libloading::Library = Box::leak(Box::new(unsafe {
         libloading::Library::new("libEGL.so.1").or_else(|_| libloading::Library::new("libGL.so.1")).expect("libEGL or libGL")
