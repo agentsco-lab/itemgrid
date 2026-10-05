@@ -45,6 +45,9 @@ const GRID: (f32, f32) = (0.55, 2.1);
 const EYE: (f32, f32) = (1.9, 3.6);
 /// The credit set letter by letter; the eye near it and back; it goes.
 const END: f32 = EYE.1;
+/// The buttons grow up out of the table this long after the eye stops (as
+/// the cubes go down).
+const BUTTONS_AFTER: f32 = 0.35;
 /// Seconds for the cubes to sink (or rise), the last starting a little
 /// after the first.
 const SINK_S: f32 = 1.1;
@@ -163,7 +166,16 @@ impl Intro {
         if !self.begun() {
             return 0.0;
         }
-        smooth((self.t() - EYE.1 - 1.0 - i as f32 * 0.08) / 0.4)
+        smooth((self.t() - EYE.1 - BUTTONS_AFTER - i as f32 * 0.08) / 0.5)
+    }
+
+    /// The word's cubes going down at the end (0 standing .. 1 in the
+    /// table), one after the other.
+    fn down(&self, i: usize) -> f32 {
+        if !self.begun() {
+            return 0.0;
+        }
+        smooth((self.t() - EYE.1 - i as f32 * 0.06) / 0.6)
     }
 
     /// The eye: 0 straight above .. 1 where the Duo is seen from.
@@ -181,10 +193,12 @@ impl Intro {
             // They stay when the phone comes (in the page's upper left, the
             // Duo in its middle; their fronts are the buttons).
             let there = 1.0;
-            // grid: on the table itself.
-            // Half a square high.
-            let height = if i < ON_CUBES { 0.5 * there * risen * (1.0 + self.hop(i)) } else { 0.0 };
-            (there, height)
+            // item/ half a square high until the eye stops, then down into
+            // the table (grid lies in it all along); a letter hops still
+            // as the phone is looked for.
+            let stand = if i < ON_CUBES { 0.5 * risen * (1.0 - self.down(i)) } else { 0.0 };
+            let hop = self.hop(i).max(0.0) * 0.5;
+            (there, (stand * (1.0 + self.hop(i)) + if stand <= 0.0 { hop } else { 0.0 }).max(0.0))
         })
     }
 
@@ -287,7 +301,7 @@ impl Intro {
         if !self.begun() {
             return false;
         }
-        if !self.done() || self.t() < EYE.1 + 1.0 + 5.0 * 0.08 + 0.45 {
+        if !self.done() || self.t() < EYE.1 + BUTTONS_AFTER + 5.0 * 0.08 + 0.7 {
             return true;
         }
         if !self.ended {

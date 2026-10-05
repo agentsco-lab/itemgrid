@@ -3700,7 +3700,7 @@ impl Buttons {
         let mut moved = false;
         for i in 0..5 {
             let pressed = self.pressed.is_some_and(|(p, at)| p == i && at.elapsed().as_secs_f32() < 0.12);
-            let to = if pressed { 0.0 } else if self.hover == Some(i) { 0.18 } else { 0.0 };
+            let to = if pressed { -0.3 } else if self.hover == Some(i) { 0.12 } else { 0.0 };
             if (to - self.lift[i]).abs() > 0.001 {
                 self.lift[i] += (to - self.lift[i]) * k;
                 moved = true;
@@ -3713,16 +3713,27 @@ impl Buttons {
     }
 }
 
-/// The button under a point of the page: a square of the buttons' row.
+/// The button under a point of the page: one of the buttons' boxes (its
+/// top or a side seen).
 fn button_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
+    use gtk::graphene;
+    let m = fv.matrix?;
     if fv.word <= 0.0 {
         return None;
     }
-    let t = table_under(fv, p)?;
     let side = square() * fv.k;
-    let (x, y) = fv.buttons_at;
-    let i = ((t.0 - x) / side).floor();
-    (t.1 >= y && t.1 < y + side && i >= 0.0 && (i as usize) < FLOOR_BUTTONS.len() && FLOOR_BUTTONS[i as usize].is_some() && fv.button_in[i as usize] > 0.5).then_some(i as usize)
+    let p3 = |x: f32, y: f32, z: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    (0..FLOOR_BUTTONS.len()).rev().find(|&i| {
+        if FLOOR_BUTTONS[i].is_none() || fv.button_in[i] <= 0.5 {
+            return false;
+        }
+        let x0 = fv.buttons_at.0 + i as f32 * side;
+        let (_, faces, top) = box_shape(&p3, (x0, fv.buttons_at.1), side, fv.table, fv.button_lift[i].max(0.0));
+        inside(&top, p) || faces.iter().any(|(q, _)| inside(q, p))
+    })
 }
 
 /// The buttons: their squares (raised a little under the pointer, as low
@@ -4582,10 +4593,12 @@ fn show_fold(ui: &Ui, angle: f64) {
             let end = on_squares(k, (x, cubes_at.1 - 0.5 * cur));
             (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
-        // Each button in a second after the eye stops: faded in, a little
-        // hop as it comes.
+        // Each button growing up out of the table as the word's cubes go
+        // down, one after the other.
         let button_in: [f32; 5] = std::array::from_fn(|i| intro.button(i));
-        let button_lift: [f32; 5] = std::array::from_fn(|i| (lift[i] + 0.25 * (button_in[i] * std::f32::consts::PI).sin()) * (1.0 - flat));
+        // The buttons grown up as cubes half a square high (and a little more
+        // under the pointer).
+        let button_lift: [f32; 5] = std::array::from_fn(|i| (0.5 * button_in[i] + lift[i]) * (1.0 - flat));
         // The credit under the word, a letter a square; the note there
         // after looking (not found), its head darker.
         let mut texts = Vec::new();
