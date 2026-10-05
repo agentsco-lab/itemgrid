@@ -19,6 +19,10 @@ use std::time::Instant;
 
 pub const WORD: [&str; 9] = ["i", "t", "e", "m", "/", "g", "r", "i", "d"];
 
+/// The word's letters on cubes: item/ (grid lies in the table's squares,
+/// flat).
+pub const ON_CUBES: usize = 5;
+
 /// The credit, a letter a square of the table (none for the space).
 pub const CREDIT: &str = "by AgentsCo";
 
@@ -177,7 +181,9 @@ impl Intro {
             // They stay when the phone comes (in the page's upper left, the
             // Duo in its middle; their fronts are the buttons).
             let there = 1.0;
-            (there, there * risen * (1.0 + self.hop(i)))
+            // grid: on the table itself.
+            let height = if i < ON_CUBES { there * risen * (1.0 + self.hop(i)) } else { 0.0 };
+            (there, height)
         })
     }
 
