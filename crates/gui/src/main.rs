@@ -2075,6 +2075,11 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     cr.save().ok();
     quad(cr, top);
     cr.clip();
+    // All dark first: where the walls and the floor meet, their smoothed
+    // edges showed the white table through.
+    quad(cr, top);
+    cr.set_source_rgb(0.03, 0.03, 0.035);
+    let _ = cr.fill();
     quad(cr, bot);
     cr.set_source_rgb(0.04, 0.04, 0.045);
     let _ = cr.fill();
@@ -2088,11 +2093,23 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
         let _ = cr.set_source(&g);
         let _ = cr.fill();
     };
-    // The far wall (facing the viewer), then the sides; the one facing the
-    // light a little lighter.
-    wall(cr, 0, 1, 0.9);
-    wall(cr, 0, 3, 0.8);
-    wall(cr, 1, 2, 0.86);
+    // The walls that face the viewer only (their corners, taken round from
+    // inside the hole, turn the far wall's way on the screen); the far one
+    // always does. Drawn, the others left seams at their edges.
+    let turn = |q: [(f64, f64); 4]| {
+        let mut a = 0.0;
+        for i in 0..4 {
+            let (p, n) = (q[i], q[(i + 1) % 4]);
+            a += p.0 * n.1 - n.0 * p.1;
+        }
+        a
+    };
+    let far = turn([top[0], top[1], bot[1], bot[0]]);
+    for (a, b, light) in [(0usize, 1usize, 0.9), (1, 2, 0.86), (2, 3, 0.8), (3, 0, 0.8)] {
+        if turn([top[a], top[b], bot[b], bot[a]]) * far > 0.0 {
+            wall(cr, a, b, light);
+        }
+    }
     cr.restore().ok();
     quad(cr, top);
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.3);
@@ -2255,6 +2272,9 @@ fn show_fold(ui: &Ui, angle: f64) {
     let room = h * DUO_ROOM as f32;
     let width = ui.duo.width().max(1) as f32;
     let [pitch, roll] = ui.tilt.get().0;
+    // CRADLE_TILT=pitch,roll: held so, whatever the phone says (to picture
+    // it).
+    let [pitch, roll] = std::env::var("CRADLE_TILT").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some([a.trim().parse().ok()?, b.trim().parse().ok()?]))).unwrap_or([pitch, roll]);
     // Held and tipped, the phone is over the table, not into it: raised
     // until its lowest corner is at the table (worked out below, once the
     // fold's pose is known).
@@ -2332,8 +2352,24 @@ fn show_fold(ui: &Ui, angle: f64) {
                     }
                 }
             }
+            // The plug in its port too, with its strain relief: tipped
+            // toward the viewer it went under the table, and the cord with
+            // it (out of sight).
+            if i == 1 && ui.cable.is_visible() {
+                let kk = DUO_PX_PER_MM as f32;
+                let tip = h + ((CABLE_PLUG.1 + CABLE_RELIEF - CABLE_IN) as f32) * kk;
+                for x in [CABLE_PORT_X - CABLE_PLUG.0 / 2.0, CABLE_PORT_X + CABLE_PLUG.0 / 2.0] {
+                    for z in [-DUO_THICK / 2.0 - CABLE_PLUG_T * kk / 2.0, -DUO_THICK / 2.0 + CABLE_PLUG_T * kk / 2.0] {
+                        low = low.min(m.transform_point3d(&graphene::Point3D::new(x as f32 * kk, tip, z)).z());
+                    }
+                }
+            }
         }
-        held.set(-DUO_THICK - low);
+        // Tipped, it is in the hand: higher over the table the more it is
+        // tipped (the sensors tell the tilt, not the height) - so the cord
+        // is seen hanging from it, not lying under it.
+        let lying = ((pitch as f32).to_radians().cos() * (roll as f32).to_radians().cos()).clamp(0.0, 1.0);
+        held.set(-DUO_THICK - low + 35.0 * DUO_PX_PER_MM as f32 * (1.0 - lying));
     }
     let place = |at: (f32, f32), i: usize, z: f32, persp: bool| {
         let t = view(at, persp).translate(&graphene::Point::new(mid, 0.0));

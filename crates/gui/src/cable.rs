@@ -350,15 +350,34 @@ impl Rope {
         }
         // The tube: white plastic - its rim in shade, its middle lit, a
         // highlight toward the light (up and left).
-        let tube = |cr: &gtk::cairo::Context, pts: &[V], shade: f64| {
+        // `dark`: in the hole, from the rim (where it is as lit as above) to
+        // its shade a little way down.
+        let tube = |cr: &gtk::cairo::Context, pts: &[V], shade: f64, dark: Option<((f64, f64), (f64, f64))>| {
             if pts.len() < 2 {
                 return;
             }
-            for (w, c, o) in [(1.0, 0.70, 0.0), (0.78, 0.84, -0.1), (0.52, 0.93, -0.18), (0.16, 1.0, -0.26)] {
+            // Its round shading in many thin layers - from the rim in shade
+            // to the lit middle and a highlight toward the light (up and
+            // left) - so the light turns over it smoothly (four layers
+            // showed as bands).
+            let layers = 14;
+            for n in 0..layers {
+                let t = n as f64 / (layers - 1) as f64;
+                let w = 1.0 - 0.9 * t;
+                let c = 0.68 + 0.32 * (t * std::f64::consts::FRAC_PI_2).sin();
+                let o = -0.28 * t;
                 let off = (o * wd, o * wd);
                 self.path(cr, &m, pts, off);
                 let c = c * shade;
-                fade(cr, (c, c + 0.004, c + 0.01), 1.0, off);
+                match dark {
+                    Some(((ax, ay), (bx, by))) => {
+                        let g = gtk::cairo::LinearGradient::new(ax + off.0, ay + off.1, bx + off.0, by + off.1);
+                        g.add_color_stop_rgb(0.0, c, c + 0.004, c + 0.01);
+                        g.add_color_stop_rgb(1.0, c * 0.06, c * 0.06, c * 0.065);
+                        let _ = cr.set_source(&g);
+                    }
+                    None => fade(cr, (c, c + 0.004, c + 0.01), 1.0, off),
+                }
                 cr.set_line_width(wd * w);
                 let _ = cr.stroke();
             }
@@ -391,10 +410,12 @@ impl Rope {
                 cr.clip();
                 // In the dark of the hole: dimmer the deeper (seen as it
                 // goes in, not as it lies at the bottom).
-                tube(cr, &lower, 0.16);
+                let rim = self.project(&m, lower[0]);
+                let deep = self.project(&m, [lower[0][0], lower[0][1], self.table - 0.45 * self.hole.map_or(0.0, |h| h.1)]);
+                tube(cr, &lower, 1.0, Some((rim, deep)));
                 cr.restore().ok();
             }
         }
-        tube(cr, &upper, 1.0);
+        tube(cr, &upper, 1.0, None);
     }
 }
