@@ -35,13 +35,16 @@ pub enum Reading {
     Posture(String),
     /// The lid's switch: shut or not.
     Lid(bool),
+    /// duo-motion's protocol version (its first line).
+    Version(u32),
     /// The phone's orientation from duo-motion: a quaternion (w, x, y, z),
-    /// the right half's frame to the world's (z up), yaw from its start.
+    /// the right half's frame to the world's (x to magnetic north, z up).
     Quat([f64; 4]),
-    /// Where magnetic north is in duo-motion's world, about its z (rad).
-    Compass(f64),
-    /// The phone looked at: the way its screen faces in that world (rad) -
-    /// where the one looking at it is.
+    /// Whether duo-motion heeds the field just now (else the gyroscope
+    /// alone carries the turn about the vertical).
+    North(bool),
+    /// The phone looked at: the way its screen faces about the world's z,
+    /// from north, counter-clockwise (rad) - where the one looking at it is.
     Look(f64),
 }
 
@@ -143,7 +146,8 @@ impl Follow {
 /// <[0.04, -0.01, 1.02]>, 'Posture': <'laptop'>), all it has.
 fn readings(line: &str) -> Vec<Reading> {
     let line = line.trim();
-    // duo-motion's: "q w x y z", "g x y z", "h deg", "l 0|1".
+    // duo-motion's: "v 2", "q w x y z", "n 0|1", "g x y z", "h deg", "l 0|1",
+    // "look rad".
     let nums = |rest: &str| rest.split_whitespace().filter_map(|x| x.parse::<f64>().ok()).collect::<Vec<f64>>();
     if let Some(rest) = line.strip_prefix("q ") {
         let v = nums(rest);
@@ -153,8 +157,11 @@ fn readings(line: &str) -> Vec<Reading> {
         let v = nums(rest);
         return if v.len() == 3 { vec![Reading::Gravity([v[0], v[1], v[2]])] } else { vec![] };
     }
-    if let Some(rest) = line.strip_prefix("c ") {
-        return nums(rest).first().map(|a| Reading::Compass(*a)).into_iter().collect();
+    if let Some(rest) = line.strip_prefix("v ") {
+        return rest.trim().parse().ok().map(Reading::Version).into_iter().collect();
+    }
+    if let Some(rest) = line.strip_prefix("n ") {
+        return vec![Reading::North(rest.trim() == "1")];
     }
     if let Some(rest) = line.strip_prefix("look ") {
         return nums(rest).first().map(|a| Reading::Look(*a)).into_iter().collect();

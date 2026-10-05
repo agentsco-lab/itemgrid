@@ -293,14 +293,16 @@ struct Ui {
     /// the yaw it started at (taken off: drawn from its usual side); and
     /// whether the window follows the phone through duo-motion.
     orient: std::cell::Cell<([f64; 4], [f64; 4], bool)>,
-    /// The turn about the vertical taken off duo-motion's world so the
-    /// viewer is in front of the drawing (rad); where the compass's north is
-    /// in that world; and the one at the computer's bearing from north, as
-    /// the last look told it (kept: ~/.config/cradle/user-heading).
+    /// The turn about the vertical taken off duo-motion's world (x to
+    /// magnetic north) so the viewer is in front of the drawing (rad); and
+    /// the one at the computer's bearing from north, as the last look told
+    /// it (kept: ~/.config/cradle/user-heading).
     yaw_ref: std::cell::Cell<Option<f64>>,
-    /// Where the reference goes (a look, the compass): eased there.
+    /// Where the reference goes (after a look): eased there.
     yaw_ref_to: std::cell::Cell<Option<f64>>,
-    north: std::cell::Cell<Option<f64>>,
+    /// duo-motion's world is north's (its protocol 2; 1 started its yaw
+    /// anywhere).
+    absolute: std::cell::Cell<bool>,
     user_heading: std::cell::Cell<Option<f64>>,
     motion_on: std::cell::Cell<bool>,
     /// The posture in words under the Duo; what it is made from: the
@@ -1010,7 +1012,7 @@ fn build(app: &adw::Application) {
         orient: std::cell::Cell::new(([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], false)),
         yaw_ref: std::cell::Cell::new(None),
         yaw_ref_to: std::cell::Cell::new(None),
-        north: std::cell::Cell::new(None),
+        absolute: std::cell::Cell::new(false),
         user_heading: std::cell::Cell::new(std::fs::read_to_string(user_heading_file()).ok().and_then(|s| s.trim().parse().ok())),
         motion_on: std::cell::Cell::new(false),
         pose: pose.clone(),
@@ -1465,7 +1467,7 @@ fn build(app: &adw::Application) {
                 let l = n.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-12);
                 ui.orient.set((n.map(|v| v / l), oq_to, true));
             }
-            // The reference toward where a look or the compass puts it,
+            // The reference toward where a look puts it,
             // slowly (about a second): no jump in the drawing.
             let mut rfar = false;
             if let (Some(y), Some(to)) = (ui.yaw_ref.get(), ui.yaw_ref_to.get()) {
@@ -2067,7 +2069,7 @@ fn follow_hinge(ui: &Rc<Ui>) {
     ui.motion_on.set(motion);
     ui.yaw_ref.set(None);
     ui.yaw_ref_to.set(None);
-    ui.north.set(None);
+    ui.absolute.set(false);
     trace(format_args!("follow: through {}", if motion { "duo-motion" } else { "sfduo-posture" }));
     let Ok((mut follow, stop)) = follow else { return };
     *ui.following.borrow_mut() = Some((host, stop.clone()));
@@ -2108,49 +2110,36 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     }
                     fold_to(&ui, shut(&ui, a));
                 }
-                cradle_core::posture::Reading::Compass(n) => {
-                    // Smoothed hard (a few seconds): it wanders near the
-                    // computer and in the hand.
-                    let n = match ui.north.get() {
-                        Some(o) => o + wrap(n - o) * 0.08,
-                        None => n,
-                    };
-                    ui.north.set(Some(n));
-                    // Between looks the compass holds the reference (the
-                    // gyroscope's yaw drifts) - only while the phone lies
-                    // still, where it reads truest; eased there in the tick.
-                    let [p, r] = ui.tilt.get().1;
-                    let lying = p.abs() < 8.0 && r.abs() < 8.0;
-                    if let Some(h) = ui.user_heading.get() {
-                        let want = h + n + std::f64::consts::FRAC_PI_2;
-                        if ui.yaw_ref.get().is_none() {
-                            ui.yaw_ref.set(Some(want));
-                            ui.yaw_ref_to.set(Some(want));
-                        } else if lying {
-                            ui.yaw_ref_to.set(Some(want));
-                        }
+                cradle_core::posture::Reading::Version(v) => {
+                    ui.absolute.set(v >= 2);
+                    // North's world: the one at the computer where they were
+                    // last seen, at once.
+                    if let Some(h) = ui.user_heading.get().filter(|_| v >= 2) {
+                        ui.yaw_ref.set(Some(h + std::f64::consts::FRAC_PI_2));
+                        ui.yaw_ref_to.set(Some(h + std::f64::consts::FRAC_PI_2));
                     }
                 }
+                cradle_core::posture::Reading::North(_) => {}
                 cradle_core::posture::Reading::Look(l) => {
                     // Looked at: the one at the computer is where its screen
                     // faced. The reference so that that way is toward the
-                    // viewer (-y in that world: the drawing's +y), and their
-                    // bearing from north kept for the next time.
-                    trace(format_args!("look {l:.3} (north {:?})", ui.north.get()));
-                    ui.yaw_ref_to.set(Some(l + std::f64::consts::FRAC_PI_2));
+                    // viewer (-y in that world: the drawing's +y), and, the
+                    // world being north's, their bearing kept for next time.
+                    let want = l + std::f64::consts::FRAC_PI_2;
+                    trace(format_args!("look {l:.3} (reference {:?})", ui.yaw_ref.get()));
+                    ui.yaw_ref_to.set(Some(want));
                     if ui.yaw_ref.get().is_none() {
-                        ui.yaw_ref.set(Some(l + std::f64::consts::FRAC_PI_2));
+                        ui.yaw_ref.set(Some(want));
                     }
-                    if let Some(n) = ui.north.get() {
-                        let h = wrap(l - n);
-                        ui.user_heading.set(Some(h));
+                    if ui.absolute.get() {
+                        ui.user_heading.set(Some(wrap(l)));
                         let _ = std::fs::create_dir_all(user_heading_file().parent().unwrap_or(std::path::Path::new(".")));
-                        let _ = std::fs::write(user_heading_file(), format!("{h}\n"));
+                        let _ = std::fs::write(user_heading_file(), format!("{}\n", wrap(l)));
                     }
                 }
                 cradle_core::posture::Reading::Quat(q) => {
-                    // The reference taken off: the compass's, else where it
-                    // was at the start.
+                    // The reference taken off: a look's, else where it was
+                    // at the start.
                     let yaw = |q: [f64; 4]| (2.0 * (q[0] * q[3] + q[1] * q[2])).atan2(1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]));
                     // No reference yet: drawn as it lay at the start.
                     if ui.yaw_ref.get().is_none() {
