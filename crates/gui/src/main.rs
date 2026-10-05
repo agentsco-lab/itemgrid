@@ -1139,6 +1139,7 @@ fn build(app: &adw::Application) {
                             "height": ui.window.height(),
                             "maximized": ui.window.is_maximized(),
                             "active": ui.window.is_active(),
+                            "fps": ui.duo.frame_clock().map(|c| c.fps()),
                         },
                         "intro": {
                             "seconds": intro.seconds(),
