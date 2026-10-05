@@ -429,6 +429,10 @@ struct Ui {
     /// it is there).
     page: RefCell<Option<(String, board::Board)>>,
     page_back: std::cell::Cell<f32>,
+    /// The section's board's size (squares across, lines) the eye is
+    /// drawn back for, eased: one section for another, the eye goes over
+    /// (it jumped).
+    page_dims: std::cell::Cell<Option<(f32, f32)>>,
     /// The screen saver on since (saver.rs), and how far the eye has gone
     /// over to drifting (eased).
     saver: std::cell::Cell<Option<std::time::Instant>>,
@@ -1213,6 +1217,7 @@ fn build(app: &adw::Application) {
         board: RefCell::default(),
         page: RefCell::default(),
         page_back: std::cell::Cell::new(0.0),
+        page_dims: std::cell::Cell::new(None),
         saver: std::cell::Cell::new(None),
         saver_mix: std::cell::Cell::new(0.0),
         cubes_rest: std::cell::Cell::new((0.0, 0.0)),
@@ -2177,13 +2182,32 @@ fn build(app: &adw::Application) {
                 }
                 let open = p.as_ref().is_some_and(|(_, b)| !b.closing());
                 let moving = p.as_ref().is_some_and(|(_, b)| b.moving());
+                let size = p.as_ref().filter(|(_, b)| !b.closing()).map(|(_, b)| (b.width() as f32, b.lines.len() as f32));
                 drop(p);
+                // The size eased to the open board's (taken at once while the
+                // eye is still in: it draws back for it anyway).
+                let sizing = match (size, ui.page_dims.get()) {
+                    (Some(to), Some(now)) if ui.page_back.get() > 0.0 && now != to => {
+                        let k = 1.0 - (-dt.clamp(0.0, 0.1) / 0.25).exp();
+                        let mut n = (now.0 + (to.0 - now.0) * k, now.1 + (to.1 - now.1) * k);
+                        if (n.0 - to.0).abs() < 0.01 && (n.1 - to.1).abs() < 0.01 {
+                            n = to;
+                        }
+                        ui.page_dims.set(Some(n));
+                        true
+                    }
+                    (Some(to), _) => {
+                        ui.page_dims.set(Some(to));
+                        false
+                    }
+                    _ => false,
+                };
                 let (now, to) = (ui.page_back.get(), if open { 1.0 } else { 0.0 });
                 let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 0.9).min((to - now).abs());
                 if step != 0.0 {
                     ui.page_back.set(now + step);
                 }
-                moving || step != 0.0
+                moving || sizing || step != 0.0
             };
             // The saver: the eye going over to drifting (and back), the
             // frames going on while it drifts.
@@ -4965,13 +4989,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // A section open: the eye drawn back (and over) to see the word, the
         // menu and the section whole.
         let page_view = {
-            let p = ui.page.borrow();
-            let (pc, pr) = p.as_ref().map_or((20, 10), |(_, b)| (b.width(), b.lines.len()));
-            let menu_rows = ui.board.borrow().as_ref().map_or(8, |b| b.lines.len());
+            let (pc, pr) = ui.page_dims.get().unwrap_or((20.0, 10.0));
+            let menu_rows = ui.board.borrow().as_ref().map_or(8, |b| b.lines.len()) as f32;
             let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8));
             let top = cubes_at.1 - 0.5 * cur;
-            let cols = (menu_cols + 2 + pc) as f32;
-            let rows = ((under - top) / cur + menu_rows.max(pr) as f32).ceil();
+            let cols = (menu_cols + 2) as f32 + pc;
+            let rows = (under - top) / cur + menu_rows.max(pr);
             let (w, hh) = (cols * cur, rows * cur);
             let mid = (left + w / 2.0, top + hh / 2.0);
             let to = (ui.floor.width() as f32 * 0.5 - off.0, ui.floor.height() as f32 * 0.5 - off.1);
