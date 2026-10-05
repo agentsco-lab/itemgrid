@@ -57,6 +57,9 @@ const CABLE_PLUG_T: f32 = 5.0;
 const CABLE_PLUG_LAYERS: usize = 7;
 const CABLE_ROOM: (f64, f64) = (90.0, 80.0);
 const CABLE_PAD: f64 = 4.0;
+/// The floor's squares (mm), and the depth of the hole the cord goes down.
+const FLOOR_SQUARE: f64 = 20.0;
+const HOLE_DEPTH: f64 = 30.0;
 /// How far the plug's housing goes into the edge (mm).
 const CABLE_IN: f64 = 0.7;
 /// The strain relief's length after the housing (mm).
@@ -1985,6 +1988,14 @@ fn flatten(snap: &gtk::Snapshot, w: f32, h: f32) -> gdk::Paintable {
     }
 }
 
+/// Where the floor's lines are (px from the phone's middle): a column of
+/// squares centred on the USB port, so the hole is right in front of it.
+fn floor_shift(k: f32) -> (f32, f32) {
+    let step = FLOOR_SQUARE as f32;
+    let x = (CABLE_PORT_X as f32 - step / 2.0).rem_euclid(step);
+    (x * k, 0.0)
+}
+
 /// The page's floor, as the phone's table at rest is seen.
 #[derive(Default)]
 struct FloorView {
@@ -1994,6 +2005,8 @@ struct FloorView {
     at: (f32, f32),
     k: f32,
     table: f32,
+    /// The hole the cord goes down (its square on the table, its depth).
+    hole: Option<([f32; 4], f32)>,
 }
 
 /// The table under the Duo across the page, in 2 cm squares, in the very
@@ -2003,7 +2016,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     use gtk::graphene;
     let Some(m) = fv.matrix else { return };
     let k = fv.k;
-    let step = 20.0 * k;
+    let step = FLOOR_SQUARE as f32 * k;
     let reach = 520.0 * k;
     let z = fv.table;
     let project = |x: f32, y: f32| -> Option<(f64, f64)> {
@@ -2017,12 +2030,14 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
         let d = (x * x + y * y).sqrt() / reach;
         0.15 * (1.0 - d).max(0.0).powf(1.3) as f64
     };
-    let n = (reach / step).ceil() as i32;
+    let n = (reach / step).ceil() as i32 + 1;
+    let shift = floor_shift(k);
     let pieces = 40;
     cr.set_line_width(1.0);
     for i in -n..=n {
-        let t = i as f32 * step;
         for along_x in [true, false] {
+            // Rows at the shift in y, columns at the shift in x.
+            let t = i as f32 * step + if along_x { shift.1 } else { shift.0 };
             for j in 0..pieces {
                 let u0 = -reach + 2.0 * reach * j as f32 / pieces as f32;
                 let u1 = -reach + 2.0 * reach * (j + 1) as f32 / pieces as f32;
@@ -2039,6 +2054,49 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
             }
         }
     }
+    // The hole: seen through its opening - its floor dark, the walls that
+    // face the viewer shaded darker downward, its rim.
+    let Some(([x0, y0, x1, y1], depth)) = fv.hole else { return };
+    let p3 = |x: f32, y: f32, zz: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, zz, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    let quad = |cr: &gtk::cairo::Context, q: [(f64, f64); 4]| {
+        cr.new_path();
+        cr.move_to(q[0].0, q[0].1);
+        for p in &q[1..] {
+            cr.line_to(p.0, p.1);
+        }
+        cr.close_path();
+    };
+    let (zt, zb) = (z, z - depth);
+    let top = [p3(x0, y0, zt), p3(x1, y0, zt), p3(x1, y1, zt), p3(x0, y1, zt)];
+    let bot = [p3(x0, y0, zb), p3(x1, y0, zb), p3(x1, y1, zb), p3(x0, y1, zb)];
+    cr.save().ok();
+    quad(cr, top);
+    cr.clip();
+    quad(cr, bot);
+    cr.set_source_rgb(0.25, 0.25, 0.26);
+    let _ = cr.fill();
+    // A wall: white at its top edge, greyer toward the bottom.
+    let wall = |cr: &gtk::cairo::Context, a: usize, b: usize, light: f64| {
+        quad(cr, [top[a], top[b], bot[b], bot[a]]);
+        let g = gtk::cairo::LinearGradient::new(0.0, top[a].1.min(top[b].1), 0.0, bot[a].1.max(bot[b].1));
+        g.add_color_stop_rgb(0.0, light, light, light);
+        g.add_color_stop_rgb(1.0, light * 0.6, light * 0.6, light * 0.61);
+        let _ = cr.set_source(&g);
+        let _ = cr.fill();
+    };
+    // The far wall (facing the viewer), then the sides; the one facing the
+    // light a little lighter.
+    wall(cr, 0, 1, 0.9);
+    wall(cr, 0, 3, 0.8);
+    wall(cr, 1, 2, 0.86);
+    cr.restore().ok();
+    quad(cr, top);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.3);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
 }
 
 /// One layer of the plug's housing (as the halves' edges are drawn: its
@@ -2196,6 +2254,10 @@ fn show_fold(ui: &Ui, angle: f64) {
     let room = h * DUO_ROOM as f32;
     let width = ui.duo.width().max(1) as f32;
     let [pitch, roll] = ui.tilt.get().0;
+    // Held and tipped, the phone is over the table, not into it: raised
+    // until its lowest corner is at the table (worked out below, once the
+    // fold's pose is known).
+    let held = std::cell::Cell::new(0.0f32);
     // The phone in the view, about its middle at `at`: tipped back on the
     // table, then as it is held - with the perspective for drawing, without
     // it for which way a half faces and how near it is.
@@ -2205,6 +2267,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         let [yaw, more] = ui.orbit.get().0;
         t.rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
             .rotate_3d(yaw, &graphene::Vec3::z_axis())
+            .translate_3d(&graphene::Point3D::new(0.0, 0.0, held.get()))
             .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
             .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
             .translate(&graphene::Point::new(-mid, -h / 2.0))
@@ -2252,6 +2315,25 @@ fn show_fold(ui: &Ui, angle: f64) {
     // The way that lowers the right half's outer edge (the tent's way).
     let rock = if local(gsk::Transform::new(), 1, rock_size, 0.0).to_matrix().transform_point3d(&graphene::Point3D::new(mid, 0.0, 0.0)).z() <= 0.0 { rock_size } else { -rock_size };
     let raise = (-DUO_THICK - lowest(rock)).max(0.0);
+    {
+        let tipped = gsk::Transform::new()
+            .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
+            .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
+            .translate(&graphene::Point::new(-mid, -h / 2.0))
+            .translate(&graphene::Point::new(mid, 0.0));
+        let mut low = -DUO_THICK;
+        for i in 0..2 {
+            let m = local(tipped.clone(), i, rock, raise).to_matrix();
+            for x in [0.0, mid] {
+                for y in [0.0, h] {
+                    for z in [0.0, -DUO_THICK] {
+                        low = low.min(m.transform_point3d(&graphene::Point3D::new(x, y, z)).z());
+                    }
+                }
+            }
+        }
+        held.set(-DUO_THICK - low);
+    }
     let place = |at: (f32, f32), i: usize, z: f32, persp: bool| {
         let t = view(at, persp).translate(&graphene::Point::new(mid, 0.0));
         local(t, i, rock, raise).translate_3d(&graphene::Point3D::new(-DUO_PAD, -DUO_PAD, z))
@@ -2366,24 +2448,23 @@ fn show_fold(ui: &Ui, angle: f64) {
         .rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
         .rotate_3d(yaw, &graphene::Vec3::z_axis());
     let in_table = gsk::Transform::new()
+        .translate_3d(&graphene::Point3D::new(0.0, 0.0, held.get()))
         .rotate_3d(-pitch as f32, &graphene::Vec3::x_axis())
         .rotate_3d(-roll as f32, &graphene::Vec3::y_axis())
         .translate(&graphene::Point::new(-mid, -h / 2.0));
     let pm = plug_frame(in_table.clone()).to_matrix();
-    // The table under the phone: where its back lies, or - held, tipped
-    // past it - under its lowest corner (in the hand, over the desk): the
-    // cord hangs down to it.
-    let mut table = -DUO_THICK;
-    for i in 0..2 {
-        let m = local(in_table.clone().translate(&graphene::Point::new(mid, 0.0)), i, rock, raise).to_matrix();
-        for x in [0.0, mid] {
-            for y in [0.0, h] {
-                for z in [0.0, -DUO_THICK] {
-                    table = table.min(m.transform_point3d(&graphene::Point3D::new(x, y, z)).z());
-                }
-            }
-        }
-    }
+    let table = -DUO_THICK;
+    // The hole the cord goes down: one of the floor's squares, ahead and to
+    // the right of the phone.
+    let step = FLOOR_SQUARE as f32 * k;
+    // Right in front of the plug, a few centimetres toward the viewer: the
+    // squares are laid so that one is centred on the port (FloorView's
+    // shift).
+    let shift = floor_shift(k);
+    let hj = ((h / 2.0 + 48.0 * k - shift.1) / step).floor();
+    let hx = CABLE_PORT_X as f32 * k;
+    let hole = [hx - step / 2.0, shift.1 + hj * step, hx + step / 2.0, shift.1 + (hj + 1.0) * step];
+    let depth = HOLE_DEPTH as f32 * k;
     let at_mm = |x: f64, y: f64| {
         let p = pm.transform_point3d(&graphene::Point3D::new(x as f32 * k, y as f32 * k, 0.0));
         [p.x(), p.y(), p.z()]
@@ -2400,7 +2481,8 @@ fn show_fold(ui: &Ui, angle: f64) {
         rope.table = table;
         rope.start = start;
         rope.dir = [d[0] / dl, d[1] / dl, d[2] / dl];
-        rope.end = [mid + 48.0 * k, h / 2.0 + 62.0 * k, table + 1.7 * k];
+        rope.hole = Some((hole, depth));
+        rope.end = [(hole[0] + hole[2]) / 2.0, (hole[1] + hole[3]) / 2.0, table - depth + 1.7 * k];
         rope.plug = [at_mm(x0, y0), at_mm(x0 + pw, y0), at_mm(x0 + pw, y0 + pl + CABLE_RELIEF), at_mm(x0, y0 + pl + CABLE_RELIEF)];
         rope.screen = Some(table_view.to_matrix());
     }
@@ -2416,7 +2498,7 @@ fn show_fold(ui: &Ui, angle: f64) {
         let off = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix.is_none();
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: Some((hole, depth)) };
         if changed {
             ui.floor.queue_draw();
         }

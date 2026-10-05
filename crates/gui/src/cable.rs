@@ -49,6 +49,9 @@ pub struct Rope {
     pub plug: [V; 4],
     /// The table's frame to the drawing's (with the perspective).
     pub screen: Option<graphene::Matrix>,
+    /// The hole in the table the far end goes down: its square (x0, y0, x1,
+    /// y1) and depth.
+    pub hole: Option<([f32; 4], f32)>,
     /// Where the drawing's origin is in the duo's (it reaches past it).
     pub offset: (f32, f32),
     /// Steps since anything moved: at rest, not worked out again.
@@ -67,7 +70,7 @@ impl Rope {
         // crumples on the table.
         // As much as the bends take (out of the plug toward the viewer, then
         // round toward the computer), hardly more.
-        let total = d * 1.12;
+        let total = d * 1.05 + 30.0 * self.k;
         self.seg = total / (LINKS - 1) as f32;
         // Laid as a smooth curve: out of the plug its way, then to the far
         // end (a quadratic through a point ahead of the plug).
@@ -122,8 +125,8 @@ impl Rope {
             s.pts[0] = s.start;
             s.pts[1] = add(s.start, mul(s.dir, s.seg));
             s.pts[LINKS - 1] = s.end;
-            // It goes on off to the right, along the table.
-            s.pts[LINKS - 2] = sub(s.end, [s.seg, 0.0, 0.0]);
+            // It goes straight down into the hole.
+            s.pts[LINKS - 2] = add(s.end, [0.0, 0.0, s.seg]);
         };
         pin(self);
         for _ in 0..PASSES {
@@ -159,8 +162,25 @@ impl Rope {
                     }
                 }
             }
-            // The table: on it, not through it; sliding there slows.
+            // The table: on it, not through it, but over the hole; sliding
+            // there slows. In the hole: within its walls.
             for i in 2..LINKS - 2 {
+                if let Some(([x0, y0, x1, y1], depth)) = self.hole {
+                    let p = self.pts[i];
+                    if p[0] > x0 + r && p[0] < x1 - r && p[1] > y0 + r && p[1] < y1 - r {
+                        if p[2] < self.table - depth + r {
+                            self.pts[i][2] = self.table - depth + r;
+                        }
+                        continue;
+                    }
+                    if p[2] < self.table {
+                        // Below the table's level outside the opening: back
+                        // within the walls.
+                        self.pts[i][0] = p[0].clamp(x0 + r, x1 - r);
+                        self.pts[i][1] = p[1].clamp(y0 + r, y1 - r);
+                        continue;
+                    }
+                }
                 if self.pts[i][2] < self.table + r {
                     self.pts[i][2] = self.table + r;
                     for a in 0..2 {
@@ -215,15 +235,13 @@ impl Rope {
         let (x0, y0) = self.project(&m, self.pts[0]);
         let (x1, y1) = self.project(&m, add(self.pts[0], [r, 0.0, 0.0]));
         let wd = (((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt() * 2.0).max(1.5);
-        // Faded along its far part: a gradient from halfway to the end.
-        let fade = |cr: &gtk::cairo::Context, rgb: (f64, f64, f64), a: f64, off: (f64, f64)| {
-            let (ax, ay) = self.project(&m, self.pts[LINKS / 2]);
-            let (bx, by) = self.project(&m, self.pts[LINKS - 2]);
-            let g = gtk::cairo::LinearGradient::new(ax + off.0, ay + off.1, bx + off.0, by + off.1);
-            g.add_color_stop_rgba(0.0, rgb.0, rgb.1, rgb.2, a);
-            g.add_color_stop_rgba(1.0, rgb.0, rgb.1, rgb.2, 0.0);
-            let _ = cr.set_source(&g);
+        // Plain, the far end no longer faded: it goes down the hole.
+        let fade = |cr: &gtk::cairo::Context, rgb: (f64, f64, f64), a: f64, _off: (f64, f64)| {
+            cr.set_source_rgba(rgb.0, rgb.1, rgb.2, a);
         };
+        // Where it goes below the table: from there it is seen only through
+        // the hole's opening, and in its shade.
+        let below = self.pts.iter().position(|p| p[2] < self.table - 0.5).unwrap_or(LINKS);
         // The shadow: where the light from above and a little in front puts
         // it - down and right of the cord on the table, further and fainter
         // as the cord rises.
@@ -256,20 +274,61 @@ impl Rope {
         let up = self.plug.iter().map(|c| c[2] - self.table).fold(f32::MAX, f32::min).max(0.0);
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (-(up / (6.0 * self.k))).exp() as f64);
         let _ = cr.fill();
+        let above = below.min(LINKS);
         for (w, a) in [(1.6, 0.4), (1.1, 0.7)] {
-            self.path(cr, &m, &shadow, (0.0, 0.0));
+            if above < 2 {
+                break;
+            }
+            self.path(cr, &m, &shadow[..above], (0.0, 0.0));
             fade(cr, (0.0, 0.0, 0.0), strength * a, (0.0, 0.0));
             cr.set_line_width(wd * w);
             let _ = cr.stroke();
         }
         // The tube: white plastic - its rim in shade, its middle lit, a
         // highlight toward the light (up and left).
-        for (w, c, o) in [(1.0, 0.70, 0.0), (0.78, 0.84, -0.1), (0.52, 0.93, -0.18), (0.16, 1.0, -0.26)] {
-            let off = (o * wd, o * wd);
-            self.path(cr, &m, &self.pts, off);
-            fade(cr, (c, c + 0.004, c + 0.01), 1.0, off);
-            cr.set_line_width(wd * w);
-            let _ = cr.stroke();
+        let tube = |cr: &gtk::cairo::Context, pts: &[V], shade: f64| {
+            if pts.len() < 2 {
+                return;
+            }
+            for (w, c, o) in [(1.0, 0.70, 0.0), (0.78, 0.84, -0.1), (0.52, 0.93, -0.18), (0.16, 1.0, -0.26)] {
+                let off = (o * wd, o * wd);
+                self.path(cr, &m, pts, off);
+                let c = c * shade;
+                fade(cr, (c, c + 0.004, c + 0.01), 1.0, off);
+                cr.set_line_width(wd * w);
+                let _ = cr.stroke();
+            }
+        };
+        // Where it crosses the table's level: both parts meet there, no gap.
+        let mut upper: Vec<V> = self.pts[..below.min(LINKS)].to_vec();
+        let mut lower: Vec<V> = Vec::new();
+        if below > 0 && below < LINKS {
+            let (a, b) = (self.pts[below - 1], self.pts[below]);
+            let t = ((a[2] - self.table) / (a[2] - b[2]).max(1e-4)).clamp(0.0, 1.0);
+            let cross = add(a, mul(sub(b, a), t));
+            upper.push(cross);
+            lower.push(cross);
+            lower.extend_from_slice(&self.pts[below..]);
         }
+        // In the hole, clipped to its opening.
+        if !lower.is_empty() {
+            if let Some(([x0, y0, x1, y1], _)) = self.hole {
+                cr.save().ok();
+                cr.new_path();
+                for (i, (x, y)) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].into_iter().enumerate() {
+                    let (px, py) = self.project(&m, [x, y, self.table]);
+                    if i == 0 {
+                        cr.move_to(px, py);
+                    } else {
+                        cr.line_to(px, py);
+                    }
+                }
+                cr.close_path();
+                cr.clip();
+                tube(cr, &lower, 0.85);
+                cr.restore().ok();
+            }
+        }
+        tube(cr, &upper, 1.0);
     }
 }
