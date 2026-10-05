@@ -357,9 +357,25 @@ fn bottom_edge(m: &mut Mesh, port_x: f32, k: f32) {
     for i in 0..ring.len() {
         m.tri(c([port_x, zc]), c(ring[i]), c(ring[(i + 1) % ring.len()]), DARK);
     }
-    // The speaker: a long slot.
-    let (x0, x1, h) = (port_x + 18.0, port_x + 33.0, 0.9);
-    m.quad(c([x0, zc - h / 2.0]), c([x1, zc - h / 2.0]), c([x1, zc + h / 2.0]), c([x0, zc + h / 2.0]), DARK);
+    // The speaker: a long slot along the top of the edge, right under the
+    // glass, following the edge's round there.
+    let (x0, x1) = (port_x + 18.0, port_x + 33.0);
+    let (z0, z1) = (-1.25, -0.35);
+    let on_round = |z: f32| {
+        // The rounding's ellipse: z = -EDGE_Z + EDGE_Z sin a, inset EDGE (1 - cos a).
+        let sa = ((z + EDGE_Z) / EDGE_Z).clamp(-1.0, 1.0);
+        let a = sa.asin();
+        let inset = EDGE - EDGE * a.cos();
+        let (u, v) = (a.cos() * EDGE_Z, a.sin() * EDGE);
+        let l = (u * u + v * v).sqrt().max(1e-6);
+        ((BODY_H - inset + 0.03) * k, [0.0, u / l, v / l])
+    };
+    let rows = 4;
+    for i in 0..rows {
+        let (za, zb) = (z0 + (z1 - z0) * i as f32 / rows as f32, z0 + (z1 - z0) * (i + 1) as f32 / rows as f32);
+        let ((ya, na), (yb, nb)) = (on_round(za), on_round(zb));
+        m.quad(([x0 * k, ya, za * k], na), ([x1 * k, ya, za * k], na), ([x1 * k, yb, zb * k], nb), ([x0 * k, yb, zb * k], nb), DARK);
+    }
 }
 
 /// The hinge, one assembly (the Duo's: its halves come off a central
