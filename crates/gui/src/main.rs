@@ -388,6 +388,13 @@ struct Ui {
     buttons: RefCell<Buttons>,
     /// The board on the table open now (the sections' menu), if any.
     board: RefCell<Option<board::Board>>,
+    /// A section set on the table beside the menu (its key, its board), and
+    /// how far the eye has drawn back to see it all (eased toward 1 while
+    /// it is there).
+    page: RefCell<Option<(String, board::Board)>>,
+    page_back: std::cell::Cell<f32>,
+    /// The sections' facts as words, from the last look (for their boards).
+    section_words: RefCell<std::collections::HashMap<&'static str, Vec<(&'static str, String)>>>,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -1128,6 +1135,9 @@ fn build(app: &adw::Application) {
         intro: RefCell::default(),
         buttons: RefCell::default(),
         board: RefCell::default(),
+        page: RefCell::default(),
+        page_back: std::cell::Cell::new(0.0),
+        section_words: RefCell::default(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1348,6 +1358,9 @@ fn build(app: &adw::Application) {
                         let mut b = ui.board.borrow_mut();
                         if b.as_ref().is_some_and(|b| !b.closing()) {
                             b.as_mut().unwrap().close();
+                            if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
+                                p.close();
+                            }
                         } else {
                             let lines = NAV
                                 .iter()
@@ -1388,7 +1401,31 @@ fn build(app: &adw::Application) {
                 let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
                 drop(fv);
                 let key = line.and_then(|l| ui.board.borrow().as_ref().map(|b| b.lines[l].key.clone()));
+                // A section set in words: on the table beside the menu (the
+                // menu kept, its line chosen).
+                let on_table = key.as_deref().and_then(|k| ui.section_words.borrow().get(k).cloned().map(|rows| (k.to_owned(), rows)));
+                let on_table = on_table.or_else(|| key.as_deref().filter(|k| ["about", "storage", "updates"].contains(k)).map(|k| (k.to_owned(), vec![("", "no duo yet".to_owned())])));
+                if let Some((key, rows)) = on_table {
+                    if let Some(b) = ui.board.borrow_mut().as_mut() {
+                        b.chosen = line;
+                    }
+                    let wide = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+                    let lines = rows
+                        .iter()
+                        .map(|(k, v)| {
+                            let k = k.to_lowercase();
+                            let v: String = v.chars().take(36).collect();
+                            board::Line { key: k.clone(), text: if k.is_empty() { v } else { format!("{k:wide$}  {v}") } }
+                        })
+                        .collect();
+                    trace(format_args!("board: {key} on the table"));
+                    *ui.page.borrow_mut() = Some((key, board::Board::open(lines)));
+                    return;
+                }
                 if let Some(b) = ui.board.borrow_mut().as_mut() {
+                    b.close();
+                }
+                if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
                     b.close();
                 }
                 pg2.set_cursor_from_name(None);
@@ -1906,7 +1943,23 @@ fn build(app: &adw::Application) {
                     b.as_ref().is_some_and(|b| b.moving())
                 }
             };
-            let pressing = pressing || boarding;
+            // The section's board too; the eye drawing back for it, or in.
+            let paging = {
+                let mut p = ui.page.borrow_mut();
+                if p.as_ref().is_some_and(|(_, b)| b.gone()) {
+                    *p = None;
+                }
+                let open = p.as_ref().is_some_and(|(_, b)| !b.closing());
+                let moving = p.as_ref().is_some_and(|(_, b)| b.moving());
+                drop(p);
+                let (now, to) = (ui.page_back.get(), if open { 1.0 } else { 0.0 });
+                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 0.9).min((to - now).abs());
+                if step != 0.0 {
+                    ui.page_back.set(now + step);
+                }
+                moving || step != 0.0
+            };
+            let pressing = pressing || boarding || paging;
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
@@ -3266,15 +3319,6 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
                 part(&flap, (twice(h0, f0), twice(h1, f1), f0), f.to);
             }
         }
-        // The split between the flaps, a hairline.
-        if f.from != ' ' || f.to != ' ' {
-            let (m0, m1) = (at(0.0, 0.5), at(1.0, 0.5));
-            cr.move_to(m0.0, m0.1);
-            cr.line_to(m1.0, m1.1);
-            ink(cr, 0.08 * st);
-            cr.set_line_width(1.0);
-            let _ = cr.stroke();
-        }
     }
 }
 
@@ -4138,7 +4182,40 @@ fn show_fold(ui: &Ui, angle: f64) {
             let from = on_page(&rest_m, e.look);
             Eye { on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), ..e }
         };
-        let mut e = mix(mix(above, rest, eye), near_note, intro.near_note());
+        // A section open: the eye drawn back (and over) to see the word, the
+        // menu and the section whole.
+        let page_view = {
+            let p = ui.page.borrow();
+            let (pc, pr) = p.as_ref().map_or((20, 10), |(_, b)| (b.width(), b.lines.len()));
+            let menu_rows = ui.board.borrow().as_ref().map_or(8, |b| b.lines.len());
+            let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8));
+            let top = cubes_at.1 - 0.5 * cur;
+            let cols = (menu_cols + 2 + pc) as f32;
+            let rows = ((under - top) / cur + menu_rows.max(pr) as f32).ceil();
+            let (w, hh) = (cols * cur, rows * cur);
+            let mid = (left + w / 2.0, top + hh / 2.0);
+            let to = (ui.floor.width() as f32 * 0.5 - off.0, ui.floor.height() as f32 * 0.5 - off.1);
+            // Its corners as an eye sees them: the bounds (the near rows are
+            // wider in the perspective than the far).
+            let bounds = |e: Eye| {
+                let m = matrix(e);
+                let c = [(left, top), (left + w, top), (left, top + hh), (left + w, top + hh)].map(|p| on_page(&m, p));
+                let (x0, x1) = c.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+                let (y0, y1) = c.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+                (x0, y0, x1, y1)
+            };
+            let e1 = Eye { look: mid, on: to, tilt: TILT, near: 1.0, far: 3.2 };
+            let (x0, y0, x1, y1) = bounds(e1);
+            // Drawn back only (never nearer than the usual view).
+            let near = (ui.floor.width() as f32 * 0.88 / (x1 - x0).max(1.0)).min(ui.floor.height() as f32 * 0.82 / (y1 - y0).max(1.0)).clamp(0.3, 1.0);
+            let e2 = Eye { near, ..e1 };
+            let (x0, y0, x1, y1) = bounds(e2);
+            // The whole of it in the page's middle.
+            Eye { on: (to.0 + to.0 - (x0 + x1) / 2.0, to.1 + to.1 - (y0 + y1) / 2.0), ..e2 }
+        };
+        let back = ui.page_back.get();
+        let back = back * back * (3.0 - 2.0 * back);
+        let mut e = mix(mix(mix(above, rest, eye), near_note, intro.near_note()), page_view, back);
         // Coming down, the word kept where it is on the page.
         if eye < 1.0 {
             let shown = on_page(&matrix(e), cubes_at);
@@ -4177,8 +4254,14 @@ fn show_fold(ui: &Ui, angle: f64) {
         // The open board (the sections' menu) under the word, a row apart
         // (where the note goes: one or the other).
         let board_at = on_squares(k, (left, under));
+        let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8));
         if let Some(b) = ui.board.borrow().as_ref() {
             tiles.extend(b.tiles(board_at, cur));
+        }
+        // A section's board beside the menu, two squares apart.
+        let page_at = (board_at.0 + (menu_cols + 2) as f32 * cur, board_at.1);
+        if let Some((_, b)) = ui.page.borrow().as_ref() {
+            tiles.extend(b.tiles(page_at, cur));
         }
         if let Some((text, strength)) = intro.note() {
             let mut lines = text.lines();
@@ -4297,6 +4380,12 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
         }
     }
     sections::fill(&ui.sections, s, hythe_core::club::known(&s.serial).map(|d| d.number), link, developer_mode());
+    {
+        let mut f = ui.section_words.borrow_mut();
+        f.insert("about", sections::about_rows(s, hythe_core::club::known(&s.serial).map(|d| d.number), link));
+        f.insert("storage", sections::storage_rows(s));
+        f.insert("updates", sections::updates_rows(s));
+    }
 
     let charge = s.battery.map(|b| format!("{b}%")).unwrap_or_else(|| "?".into());
     let bolt = if s.battery_status == "Charging" { "⚡ " } else { "" };

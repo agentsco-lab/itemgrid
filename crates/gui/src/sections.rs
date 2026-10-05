@@ -174,8 +174,8 @@ pub fn build() -> (Pages, Vec<(&'static str, gtk::Box)>) {
 }
 
 /// About, Storage's disks and Updates from a look at the phone.
-pub fn fill(p: &Pages, s: &Status, number: Option<String>, link: &str, developer: bool) {
-    clear(&p.about);
+/// About's facts, as words (the page's rows; the table's board).
+pub fn about_rows(s: &Status, number: Option<String>, link: &str) -> Vec<(&'static str, String)> {
     let up = format!("{} h {} min", s.uptime_s / 3600, s.uptime_s / 60 % 60);
     let mut rows = vec![("Name", format!("Surface Duo{}", number.map(|n| format!(" · {n}")).unwrap_or_default())), ("Serial number", s.serial.clone()), ("item", format!("{} (built {})", s.item, s.item_built)), ("System", s.os.clone()), ("Kernel", s.kernel.clone()), ("Port", s.port.clone()), ("Sensors (sensorfw)", s.sensorfw.clone())];
     if let Some(f) = s.fingers {
@@ -183,10 +183,34 @@ pub fn fill(p: &Pages, s: &Status, number: Option<String>, link: &str, developer
     }
     rows.push(("Up", up));
     rows.push(("Connected", link.to_owned()));
-    for (k, v) in rows {
-        if !v.is_empty() {
-            p.about.append(&fact(k, &v));
-        }
+    rows.retain(|(_, v)| !v.is_empty());
+    rows
+}
+
+/// Storage's disks, as words.
+pub fn storage_rows(s: &Status) -> Vec<(&'static str, String)> {
+    s.disks
+        .iter()
+        .map(|(mount, size, free)| {
+            let name = match mount.as_str() {
+                "/" => "System and files",
+                "/userdata" => "Data",
+                _ => "Disk",
+            };
+            (name, format!("{} free of {}", status::size_words(*free), status::size_words(*size)))
+        })
+        .collect()
+}
+
+/// Updates', as words.
+pub fn updates_rows(s: &Status) -> Vec<(&'static str, String)> {
+    vec![("item on the phone", format!("{} (built {})", s.item, s.item_built))]
+}
+
+pub fn fill(p: &Pages, s: &Status, number: Option<String>, link: &str, developer: bool) {
+    clear(&p.about);
+    for (k, v) in about_rows(s, number, link) {
+        p.about.append(&fact(k, &v));
     }
 
     clear(&p.disks);

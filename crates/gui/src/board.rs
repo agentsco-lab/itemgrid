@@ -70,11 +70,18 @@ pub struct Board {
     opened: Instant,
     closed: Option<Instant>,
     pub hover: Option<usize>,
+    /// A line chosen (kept darker).
+    pub chosen: Option<usize>,
 }
 
 impl Board {
     pub fn open(lines: Vec<Line>) -> Board {
-        Board { lines, opened: Instant::now(), closed: None, hover: None }
+        Board { lines, opened: Instant::now(), closed: None, hover: None, chosen: None }
+    }
+
+    /// The widest line, in squares.
+    pub fn width(&self) -> usize {
+        self.lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0)
     }
 
     pub fn close(&mut self) {
@@ -105,7 +112,7 @@ impl Board {
         let fade = self.closed.map_or(1.0, |c| 1.0 - smoother(c.elapsed().as_secs_f32() / FADE_S));
         let mut out = Vec::new();
         for (r, line) in self.lines.iter().enumerate() {
-            let grey = if self.hover == Some(r) { 0.12 } else { 0.42 };
+            let grey = if self.hover == Some(r) || self.chosen == Some(r) { 0.12 } else { 0.42 };
             for (c, ch) in line.text.chars().enumerate() {
                 if ch == ' ' {
                     continue;
