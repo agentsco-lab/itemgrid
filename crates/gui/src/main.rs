@@ -476,6 +476,22 @@ fn build(app: &adw::Application) {
     let scene3d: Rc<RefCell<duo3d::Scene>> = Rc::default();
     let gl3d = duo3d::area(scene3d.clone(), (bw as f64 * DUO_ROOM_W) as i32 + 2 * past, room + 2 * past, DUO_PX_PER_MM as f32);
     duo.put(&gl3d, -past as f64, -past as f64);
+    // The phone's screens on the 3D halves.
+    for i in 0..2 {
+        let (scene3d, gl3d) = (scene3d.clone(), gl3d.clone());
+        screens[i].connect_paintable_notify(move |p| {
+            let mut sc = scene3d.borrow_mut();
+            let tex = p.paintable().and_downcast::<gdk::Texture>();
+            // Picturing them (CRADLE_SCREENS): kept while the window, with
+            // no phone, clears them.
+            if tex.is_none() && std::env::var_os("CRADLE_SCREENS").is_some() {
+                return;
+            }
+            sc.screens[i] = tex;
+            sc.screens_changed[i] += 1;
+            gl3d.queue_render();
+        });
+    }
     rope.borrow_mut().gl_past = past as f32;
 
     let cable_plug: Vec<gtk::Picture> = (0..CABLE_PLUG_LAYERS)
@@ -1389,6 +1405,25 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
+    // CRADLE_SCREENS=file.png: the phone's two panels from a screenshot
+    // (Cradle's, both side by side), to picture them without the phone.
+    if let Some(path) = std::env::var_os("CRADLE_SCREENS") {
+        if let Ok(pb) = gtk::gdk_pixbuf::Pixbuf::from_file(&path) {
+            let w = pb.width() / 2;
+            #[allow(deprecated)]
+            let halves: Vec<gdk::Texture> = (0..2).map(|i| gdk::Texture::for_pixbuf(&pb.new_subpixbuf(i * w, 0, w, pb.height()))).collect();
+            // Again and again: without the phone, the window clears them.
+            let ui = ui.clone();
+            glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+                for i in 0..2 {
+                    if ui.screens[i].paintable().is_none() {
+                        ui.screens[i].set_paintable(Some(&halves[i]));
+                    }
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+    }
     // CRADLE_MENU=1: the sections' menu open at the start (to picture it).
     if std::env::var_os("CRADLE_MENU").is_some() {
         let pop = nav_pop.clone();
@@ -1639,6 +1674,25 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     }
     ui.live_badge.set_visible(false);
     ui.banner.set_revealed(false);
+    // Closed and gone, it is asleep - not restarting, not lost: lying shut
+    // on the table, saying so.
+    if *place == Place::Gone && ui.shut_away.get() {
+        ui.pages.set_visible_child_name("phone");
+        ui.tabs.set_visible_child_name("general");
+        ui.switcher.set_visible(false);
+        ui.linux_only.set_visible(false);
+        ui.mode.set_visible(false);
+        ui.duo_mode.set_visible(false);
+        ui.card.hide();
+        ui.home.set_visible(true);
+        ui.updates_row.set_visible(false);
+        ui.name_sub.set_label("Asleep");
+        ui.battery.set_label("");
+        say_status(ui, "away", "Your Duo is closed", "It is asleep. Open it to wake it: Cradle finds it again.");
+        ui.idle.set(true);
+        bottom_shown(ui);
+        return;
+    }
     if *place == Place::Gone && !seen_lately {
         // Not seen for a while: the drawn Duo waits, and says how to bring it.
         ui.pages.set_visible_child_name("phone");
@@ -1910,6 +1964,22 @@ fn follow_hinge(ui: &Rc<Ui>) {
                     *ui.pose_name.borrow_mut() = p;
                     if let Some(a) = raw {
                         fold_to(&ui, shut(&ui, a));
+                    }
+                }
+                // The lid's switch, at once: shut, drawn shut; opened, drawn
+                // opening (a laptop's angle) until the hinge's own reading
+                // comes - seconds later, once the display is lit.
+                cradle_core::posture::Reading::Lid(true) => {
+                    *ui.pose_name.borrow_mut() = "closed".into();
+                    fold_to(&ui, 0.0);
+                }
+                cradle_core::posture::Reading::Lid(false) => {
+                    if ui.pose_name.borrow().as_str() == "closed" {
+                        ui.pose_name.borrow_mut().clear();
+                    }
+                    ui.shut_away.set(false);
+                    if raw.is_none_or(|a| a < 30.0) {
+                        fold_to(&ui, 110.0);
                     }
                 }
             }
@@ -2616,8 +2686,9 @@ fn show_fold(ui: &Ui, angle: f64) {
             .to_matrix();
         let off = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix.is_none();
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: Some((hole, depth)) };
+        let changed = fv.off != off || fv.at != at || fv.matrix.is_none() || fv.hole.is_some() != ui.cable.is_visible();
+        // The hole only with the cable going down it.
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)) };
         if changed {
             ui.floor.queue_draw();
         }

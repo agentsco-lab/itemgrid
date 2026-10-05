@@ -181,9 +181,18 @@ impl Rope {
         // Pulled taut further than it reaches: more of it comes off the
         // desk - longer, as it lies (laid out again, it jumped into the same
         // shape at each turn of the phone, as if stuck to it).
-        let reach = len(sub(self.end, self.start)) / ((LINKS - 1) as f32 * 0.9);
+        let d = len(sub(self.end, self.start));
+        let reach = d / ((LINKS - 1) as f32 * 0.9);
         if reach > self.seg {
             self.seg = reach;
+        }
+        // And back: what more came out than lying there takes goes back
+        // into the hole, slowly (kept, it lay in a loop once the phone was
+        // down again).
+        let lying = (d * 1.05 + 30.0 * self.k) / (LINKS - 1) as f32;
+        if self.seg > lying {
+            self.seg = (self.seg * 0.995).max(lying);
+            self.quiet = 0;
         }
         let g = 9810.0 * self.k;
         let h = 1.0 / 120.0;

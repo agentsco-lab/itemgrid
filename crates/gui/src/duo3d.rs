@@ -55,6 +55,12 @@ const BACK: f32 = 2.0;
 const HINGE: f32 = 3.0;
 const ROD: f32 = 4.0;
 const DARK: f32 = 5.0;
+const SCREEN: f32 = 6.0;
+/// The screens (mm): each panel's size, the left edge of each in the body,
+/// and their top.
+const PANEL: (f32, f32) = (86.654, 115.539);
+const SCREEN_X: (f32, f32) = (4.1, 96.146);
+const SCREEN_TOP: f32 = 14.831;
 
 /// What the window gives to draw: each half's place in the view (its frame
 /// to the duo drawing's px, without the perspective), and the perspective
@@ -62,6 +68,10 @@ const DARK: f32 = 5.0;
 #[derive(Default)]
 pub struct Scene {
     pub halves: [Option<graphene::Matrix>; 2],
+    /// What each screen shows (the phone's pictures), and a count bumped
+    /// each time one changes.
+    pub screens: [Option<gtk::gdk::Texture>; 2],
+    pub screens_changed: [u64; 2],
     pub proj: Option<graphene::Matrix>,
     /// Where the eye is (the perspective's), in the halves' view.
     pub eye: [f32; 3],
@@ -75,7 +85,10 @@ struct Mesh {
 
 impl Mesh {
     fn vert(&mut self, p: [f32; 3], n: [f32; 3], m: f32) {
-        self.v.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2], m]);
+        self.v.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2], m, 0.0, 0.0]);
+    }
+    fn vert_uv(&mut self, p: [f32; 3], n: [f32; 3], m: f32, uv: [f32; 2]) {
+        self.v.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2], m, uv[0], uv[1]]);
     }
     fn tri(&mut self, a: ([f32; 3], [f32; 3]), b: ([f32; 3], [f32; 3]), c: ([f32; 3], [f32; 3]), m: f32) {
         self.vert(a.0, a.1, m);
@@ -319,6 +332,20 @@ fn block(mesh: &mut Mesh, lo: [f32; 3], hi: [f32; 3], m: f32, k: f32) {
     f(c(x1, y0, z0), c(x1, y1, z0), c(x1, y1, z1), c(x1, y0, z1), [1.0, 0.0, 0.0], mesh);
 }
 
+/// Half `i`'s screen: its panel on the glass, a hair over it, its picture
+/// mapped corner to corner.
+fn screen(i: usize, k: f32) -> Mesh {
+    let mut m = Mesh::default();
+    let x0 = if i == 0 { SCREEN_X.0 } else { SCREEN_X.1 - MID };
+    let (x1, y0, y1, z) = (x0 + PANEL.0, SCREEN_TOP, SCREEN_TOP + PANEL.1, 0.02);
+    let n = [0.0, 0.0, 1.0];
+    let c = |x: f32, y: f32| [x * k, y * k, z * k];
+    for (p, uv) in [(c(x0, y0), [0.0, 0.0]), (c(x1, y0), [1.0, 0.0]), (c(x1, y1), [1.0, 1.0]), (c(x0, y0), [0.0, 0.0]), (c(x1, y1), [1.0, 1.0]), (c(x0, y1), [0.0, 1.0])] {
+        m.vert_uv(p, n, SCREEN, uv);
+    }
+    m
+}
+
 /// Half `i` (0 left, 1 right) whole, in its picture's frame, in px (`k` px
 /// a mm).
 fn half(i: usize, k: f32) -> Mesh {
@@ -343,16 +370,19 @@ const VERTEX: &str = r#"
 in vec3 a_pos;
 in vec3 a_nor;
 in float a_mat;
+in vec2 a_uv;
 uniform mat4 u_mv;
 uniform mat4 u_p;
 out vec3 v_pos;
 out vec3 v_nor;
 out float v_mat;
+out vec2 v_uv;
 void main() {
     vec4 p = u_mv * vec4(a_pos, 1.0);
     v_pos = p.xyz;
     v_nor = mat3(u_mv) * a_nor;
     v_mat = a_mat;
+    v_uv = a_uv;
     gl_Position = u_p * p;
 }
 "#;
@@ -363,7 +393,9 @@ const FRAGMENT: &str = r#"
 in vec3 v_pos;
 in vec3 v_nor;
 in float v_mat;
+in vec2 v_uv;
 uniform vec3 u_eye;
+uniform sampler2D u_tex;
 out vec4 o;
 void main() {
     vec3 n = normalize(v_nor);
@@ -388,7 +420,10 @@ void main() {
     float up = clamp(-r.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 room = mix(vec3(0.05), vec3(0.95), smoothstep(0.35, 0.95, up));
     float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-    if (m == 0) {
+    if (m == 6) {
+        // A screen: its own light, under the glass's reflection.
+        c = texture(u_tex, v_uv).rgb * 0.96 + room * mix(0.03, 0.45, fres);
+    } else if (m == 0) {
         c += room * mix(0.08, 0.6, fres);
     } else if (m == 2) {
         c = mix(c, room, 0.06 + 0.25 * fres);
@@ -401,6 +436,10 @@ struct Gpu {
     gl: glow::Context,
     prog: glow::Program,
     halves: [(glow::VertexArray, glow::Buffer, i32); 2],
+    screens: [(glow::VertexArray, glow::Buffer, i32); 2],
+    /// The screens' pictures on the GPU, and which change each is.
+    textures: [Option<glow::Texture>; 2],
+    uploaded: [u64; 2],
     /// The multisampled target, and its size.
     msaa: Option<(glow::Framebuffer, glow::Renderbuffer, glow::Renderbuffer, i32, i32)>,
 }
@@ -441,6 +480,7 @@ impl Gpu {
             gl.bind_attrib_location(prog, 0, "a_pos");
             gl.bind_attrib_location(prog, 1, "a_nor");
             gl.bind_attrib_location(prog, 2, "a_mat");
+            gl.bind_attrib_location(prog, 3, "a_uv");
             gl.link_program(prog);
             if !gl.get_program_link_status(prog) {
                 return Err(gl.get_program_info_log(prog));
@@ -455,18 +495,21 @@ impl Gpu {
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
                 let bytes: &[u8] = std::slice::from_raw_parts(m.v.as_ptr() as *const u8, m.v.len() * 4);
                 gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
-                let stride = 7 * 4;
+                let stride = 9 * 4;
                 gl.enable_vertex_attrib_array(0);
                 gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
                 gl.enable_vertex_attrib_array(1);
                 gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, stride, 12);
                 gl.enable_vertex_attrib_array(2);
                 gl.vertex_attrib_pointer_f32(2, 1, glow::FLOAT, false, stride, 24);
+                gl.enable_vertex_attrib_array(3);
+                gl.vertex_attrib_pointer_f32(3, 2, glow::FLOAT, false, stride, 28);
                 gl.bind_vertex_array(None);
-                Ok((vao, vbo, (m.v.len() / 7) as i32))
+                Ok((vao, vbo, (m.v.len() / 9) as i32))
             };
             let halves = [upload(&half(0, k))?, upload(&half(1, k))?];
-            Ok(Gpu { gl, prog, halves, msaa: None })
+            let screens = [upload(&screen(0, k))?, upload(&screen(1, k))?];
+            Ok(Gpu { gl, prog, halves, screens, textures: [None, None], uploaded: [0, 0], msaa: None })
         }
     }
 
@@ -514,6 +557,44 @@ impl Gpu {
                 gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
                 gl.bind_vertex_array(Some(*vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, *count);
+            }
+            // The screens, over their glass: their pictures uploaded when
+            // they changed (mipmapped: they are drawn far smaller).
+            for i in 0..2 {
+                if self.uploaded[i] != scene.screens_changed[i] {
+                    self.uploaded[i] = scene.screens_changed[i];
+                    if let Some(t) = self.textures[i].take() {
+                        gl.delete_texture(t);
+                    }
+                    if let Some(tex) = &scene.screens[i] {
+                        let mut d = gtk::gdk::TextureDownloader::new(tex);
+                        d.set_format(gtk::gdk::MemoryFormat::R8g8b8a8Premultiplied);
+                        let (bytes, stride) = d.download_bytes();
+                        if let Ok(t) = gl.create_texture() {
+                            gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, (stride / 4) as i32);
+                            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, tex.width(), tex.height(), 0, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&bytes)));
+                            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+                            gl.generate_mipmap(glow::TEXTURE_2D);
+                            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+                            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+                            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+                            self.textures[i] = Some(t);
+                        }
+                    }
+                }
+                let (Some(t), Some(mv)) = (self.textures[i], scene.halves[i]) else { continue };
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                gl.uniform_1_i32(gl.get_uniform_location(self.prog, "u_tex").as_ref(), 0);
+                gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
+                gl.enable(glow::POLYGON_OFFSET_FILL);
+                gl.polygon_offset(-1.0, -4.0);
+                let (vao, _, count) = self.screens[i];
+                gl.bind_vertex_array(Some(vao));
+                gl.draw_arrays(glow::TRIANGLES, 0, count);
+                gl.disable(glow::POLYGON_OFFSET_FILL);
             }
             gl.bind_vertex_array(None);
             // Onto GTK's framebuffer, resolved.

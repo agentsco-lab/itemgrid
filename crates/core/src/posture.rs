@@ -11,11 +11,16 @@ use std::sync::{Arc, Mutex};
 // the window is gone the heartbeat cannot be written, and the monitor is
 // stopped (killing ssh here leaves the far side running: it would only
 // notice at its next write, which the dark never brings).
+// The lid's switch too (logind's LidClosed, on the system bus): told at
+// once, where the hinge is only read with the display lit - opened, its
+// angle came seconds later, or not at all before the display was on.
 const FOLLOW: &str = "busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Angle; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Gravity 2>/dev/null; busctl --user get-property org.sfduo.Posture /org/sfduo/Posture org.sfduo.Posture Posture
+busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager LidClosed 2>/dev/null
 gdbus monitor --session --dest org.sfduo.Posture --object-path /org/sfduo/Posture & m=$!
+gdbus monitor --system --dest org.freedesktop.login1 --object-path /org/freedesktop/login1 | grep --line-buffered LidClosed & l=$!
 trap '' PIPE
 while kill -0 $m 2>/dev/null; do sleep 10; echo . || break; done
-kill $m 2>/dev/null";
+kill $m $l 2>/dev/null";
 
 /// What the phone says of itself as it moves.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +33,8 @@ pub enum Reading {
     Gravity([f64; 3]),
     /// The posture by the hinge: closed, laptop, flat, folded or between.
     Posture(String),
+    /// The lid's switch: shut or not.
+    Lid(bool),
 }
 
 /// The readings, one after another.
@@ -84,6 +91,9 @@ fn readings(line: &str) -> Vec<Reading> {
     if let Some(rest) = line.strip_prefix("d ") {
         return rest.trim().parse().ok().map(Reading::Angle).into_iter().collect();
     }
+    if let Some(rest) = line.strip_prefix("b ") {
+        return vec![Reading::Lid(rest.trim() == "true")];
+    }
     if let Some(rest) = line.strip_prefix("s \"") {
         return vec![Reading::Posture(rest.trim_end_matches('"').to_owned())];
     }
@@ -106,6 +116,9 @@ fn readings(line: &str) -> Vec<Reading> {
             out.push(g);
         }
     }
+    if let Some(rest) = after("'LidClosed': <") {
+        out.push(Reading::Lid(rest.starts_with("true")));
+    }
     if let Some(rest) = after("'Posture': <'") {
         if let Some(e) = rest.find('\'') {
             out.push(Reading::Posture(rest[..e].to_owned()));
@@ -127,6 +140,8 @@ mod tests {
         assert_eq!(reading("s \"laptop\""), Some(Reading::Posture("laptop".into())));
         assert_eq!(reading("/org/sfduo/Posture: org.freedesktop.DBus.Properties.PropertiesChanged ('org.sfduo.Posture', {'Posture': <'closed'>}, @as [])"), Some(Reading::Posture("closed".into())));
         assert_eq!(reading("Monitoring signals on object"), None);
+        assert_eq!(reading("b true"), Some(Reading::Lid(true)));
+        assert_eq!(reading("/org/freedesktop/login1: org.freedesktop.DBus.Properties.PropertiesChanged ('org.freedesktop.login1.Manager', {'LidClosed': <false>}, @as [])"), Some(Reading::Lid(false)));
         assert_eq!(readings("('org.sfduo.Posture', {'Angle': <88.0>, 'Posture': <'laptop'>}, @as [])"), vec![Reading::Angle(88.0), Reading::Posture("laptop".into())]);
     }
 }
