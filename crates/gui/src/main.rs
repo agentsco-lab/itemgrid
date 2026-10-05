@@ -1271,6 +1271,7 @@ fn build(app: &adw::Application) {
                             "maximized": ui.window.is_maximized(),
                             "active": ui.window.is_active(),
                             "fps": ui.duo.frame_clock().map(|c| c.fps()),
+                            "zoom": ui.zoom.get().0,
                         },
                         "intro": {
                             "seconds": intro.seconds(),
@@ -1336,7 +1337,8 @@ fn build(app: &adw::Application) {
             // The wheel: the eye nearer or further, as a lens (a tenth a
             // notch), eased there.
             if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
-                let to = (ui.zoom.get().1 * 1.1f32.powf(-dy as f32)).clamp(0.4, 2.5);
+                // No nearer than the usual view; back as far as the squares go.
+                let to = (ui.zoom.get().1 * 1.1f32.powf(-dy as f32)).clamp(0.4, 1.0);
                 ui.zoom.set((ui.zoom.get().0, to));
                 return glib::Propagation::Stop;
             }
