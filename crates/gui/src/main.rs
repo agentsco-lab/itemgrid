@@ -4170,7 +4170,7 @@ fn show_fold(ui: &Ui, angle: f64) {
             .map(|(i, ch)| {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
-                let f = intro.credit_flip(i, ch, ((grown - d) / (8.0 * cur)).clamp(0.0, 1.0));
+                let f = intro.credit_flip(i, ch, ((grown - d) / (14.0 * cur)).clamp(0.0, 1.0));
                 board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64) }
             })
             .collect();

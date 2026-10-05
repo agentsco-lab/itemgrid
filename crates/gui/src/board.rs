@@ -60,9 +60,9 @@ pub struct Line {
 
 /// Seconds: a square's turning up; after the line before, after the letter
 /// before; the fading when closed.
-const TURN_S: f32 = 0.45;
-const LINE_AFTER: f32 = 0.06;
-const LETTER_AFTER: f32 = 0.03;
+const TURN_S: f32 = 1.3;
+const LINE_AFTER: f32 = 0.1;
+const LETTER_AFTER: f32 = 0.05;
 const FADE_S: f32 = 0.3;
 
 pub struct Board {
