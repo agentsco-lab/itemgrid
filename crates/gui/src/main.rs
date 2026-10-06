@@ -540,6 +540,9 @@ struct Ui {
     section_words: RefCell<std::collections::HashMap<&'static str, Vec<(&'static str, String)>>>,
     /// The updates' details (when built, its commit) shown.
     details_open: std::cell::Cell<bool>,
+    /// A question on the table before a job (repair, update): its board
+    /// beside the menu.
+    asking: RefCell<Option<Ask>>,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -1330,6 +1333,7 @@ fn build(app: &adw::Application) {
         zoom: std::cell::Cell::new((1.0, 1.0)),
         section_words: RefCell::default(),
         details_open: std::cell::Cell::new(false),
+        asking: RefCell::new(None),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1597,6 +1601,16 @@ fn build(app: &adw::Application) {
         }
         *ui.last_seen.borrow_mut() = Some(seen);
     }
+    // A question on the table: its number typed, Enter, Escape.
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed({
+        let weak = Rc::downgrade(&ui);
+        move |_, key, _, _| {
+            let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
+            if ask_key(&ui, key) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+        }
+    });
+    ui.window.add_controller(keys);
     // The table's buttons: raised under the pointer, the hand there.
         let motion = gtk::EventControllerMotion::new();
         let (weak, pg) = (Rc::downgrade(&ui), page.clone());
@@ -1686,12 +1700,17 @@ fn build(app: &adw::Application) {
                         "set:wallpaper" => wallpaper(&ui),
                         // The updates' details: opened or closed (their lines
                         // turning up, or gone).
+                        k if k.starts_with("do:") || k.starts_with("ask:") => {
+                            board_action(&ui, k);
+                            return;
+                        }
                         "more:updates" => {
                             ui.details_open.set(!ui.details_open.get());
                             let lines = updates_lines(&ui);
                             if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
                                 let now = std::time::Instant::now();
-                                b.lines.truncate(2.min(lines.len()));
+                                let head = lines.iter().position(|l| l.key == "more:updates").map_or(2, |i| i + 1);
+                                b.lines.truncate(head.min(lines.len()));
                                 for (i, mut l) in lines.into_iter().enumerate() {
                                     if i < b.lines.len() {
                                         if b.lines[i].text != l.text {
@@ -1725,6 +1744,7 @@ fn build(app: &adw::Application) {
                 let own = match key.as_deref() {
                     Some("settings") => Some(settings_lines(&ui)),
                     Some("itemgrid") => Some(vec![board::Line::new("", format!("itemgrid  {}", env!("CARGO_PKG_VERSION")))]),
+                    Some("repair") => Some(repair_lines(&ui)),
                     _ => None,
                 };
                 if let (Some(lines), Some(key)) = (own, key.clone()) {
@@ -4443,12 +4463,241 @@ fn updates_lines(ui: &Ui) -> Vec<board::Line> {
         first.accent = Some((6, 6 + version.chars().count(), (0.10, 0.60, 0.34)));
     }
     let open = ui.details_open.get();
-    let mut lines = vec![first, board::Line::new("more:updates", if open { "⌄ details" } else { "› details" })];
+    let mut lines = vec![first];
+    // Newer in item's tree here: built from it and put on the phone.
+    if newer.is_some_and(|n| n > 0) {
+        lines.push(board::Line::new("do:update", "› update"));
+    }
+    lines.push(board::Line::new("more:updates", if open { "⌄ details" } else { "› details" }));
     if open {
         let details: Vec<(&str, String)> = ["built", "commit"].into_iter().filter_map(|k| get(k).map(|v| (k, v))).collect();
         lines.extend(table_lines(&details));
     }
     lines
+}
+
+/// What can be done about the phone (repair): reinstalled, or back to
+/// Android - both on the cable only (off it, said so, not to be clicked).
+fn repair_lines(ui: &Ui) -> Vec<board::Line> {
+    let cable = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable);
+    if cable {
+        vec![board::Line::new("do:reinstall", "› reinstall"), board::Line::new("do:android", "› android")]
+    } else {
+        vec![board::Line::new("", "reinstall"), board::Line::new("", "android"), board::Line::new("", "plug in the cable")]
+    }
+}
+
+/// A question on the table before a job: what it is, what it does (short
+/// lines), its choices, the phone's number to type for what cannot be
+/// undone, and what goes on (with the choice) once asked.
+struct Ask {
+    title: String,
+    info: Vec<String>,
+    choices: Vec<(&'static str, String)>,
+    chosen: usize,
+    word: Option<String>,
+    typed: String,
+    /// Read yet (a plan read off the phone first: "checking").
+    ready: bool,
+    go: Option<Rc<dyn Fn(&Rc<Ui>, &'static str)>>,
+}
+
+impl Ask {
+    fn new(title: &str, info: Vec<String>) -> Ask {
+        Ask { title: title.into(), info, choices: Vec::new(), chosen: 0, word: None, typed: String::new(), ready: true, go: None }
+    }
+
+    fn can_go(&self) -> bool {
+        self.ready && self.go.is_some() && self.word.as_ref().is_none_or(|w| *w == self.typed)
+    }
+
+    fn lines(&self) -> Vec<board::Line> {
+        let mut lines = vec![board::Line::new("", self.title.clone())];
+        lines.extend(self.info.iter().map(|i| board::Line::new("", i.clone())));
+        for (i, (_, label)) in self.choices.iter().enumerate() {
+            lines.push(board::Line::new(format!("ask:choice:{i}"), format!("{} {label}", if i == self.chosen { "●" } else { "○" })));
+        }
+        if let (true, Some(w)) = (self.ready && self.go.is_some(), &self.word) {
+            lines.push(board::Line::new("", format!("type {w}")));
+            let typed: String = self.typed.chars().chain(std::iter::repeat('_')).take(w.chars().count()).collect();
+            lines.push(board::Line::new("", typed));
+        }
+        if self.can_go() {
+            let mut go = board::Line::new("ask:go", "› go");
+            go.accent = Some((2, 4, (0.72, 0.16, 0.14)));
+            lines.push(go);
+        }
+        lines.push(board::Line::new("ask:cancel", "› cancel"));
+        lines
+    }
+}
+
+/// Words wrapped to the table's narrow column (19 squares).
+fn wrapped(text: &str) -> Vec<String> {
+    table_lines(&[("", text.to_lowercase())]).into_iter().map(|l| l.text).collect()
+}
+
+/// The question on its board beside the menu (laid anew; the lines that
+/// changed turning up again).
+fn show_ask(ui: &Rc<Ui>) {
+    let Some(lines) = ui.asking.borrow().as_ref().map(Ask::lines) else { return };
+    let mut page = ui.page.borrow_mut();
+    match page.as_mut() {
+        Some((key, b)) if key == "ask" && !b.closing() => {
+            let now = std::time::Instant::now();
+            b.lines.truncate(lines.len());
+            for (i, mut l) in lines.into_iter().enumerate() {
+                if i < b.lines.len() {
+                    if b.lines[i].text != l.text || b.lines[i].key != l.key {
+                        let text = l.text.clone();
+                        b.lines[i].key = l.key;
+                        b.lines[i].accent = l.accent;
+                        b.set_line(i, text);
+                    }
+                } else {
+                    l.since = Some(now);
+                    b.lines.push(l);
+                }
+            }
+        }
+        _ => *page = Some(("ask".to_owned(), board::Board::open(lines))),
+    }
+    drop(page);
+    show_fold(ui, ui.fold.get().0);
+}
+
+fn open_ask(ui: &Rc<Ui>, ask: Ask) {
+    *ui.asking.borrow_mut() = Some(ask);
+    *ui.page.borrow_mut() = None;
+    show_ask(ui);
+}
+
+fn close_ask(ui: &Rc<Ui>) {
+    ui.asking.borrow_mut().take();
+    if let Some((key, p)) = ui.page.borrow_mut().as_mut() {
+        if key == "ask" {
+            p.close();
+        }
+    }
+    show_fold(ui, ui.fold.get().0);
+}
+
+/// A line of a board clicked that asks for a job ("do:"), or answers its
+/// question ("ask:").
+fn board_action(ui: &Rc<Ui>, key: &str) {
+    match key {
+        "do:update" => {
+            let mut ask = Ask::new("update item", vec!["the newest from here".into(), "the phone restarts".into(), "about 3 min".into()]);
+            ask.go = Some(Rc::new(|ui, _| run_job(ui, Job::Update)));
+            open_ask(ui, ask);
+        }
+        "do:reinstall" => {
+            let word = itemgrid_core::android::confirm_word(&ui.serial.borrow());
+            let ask = match itemgrid_core::install::releases().pop() {
+                None => Ask::new("reinstall item", wrapped("no release image on this computer yet")),
+                Some(release) => {
+                    let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
+                    let mut ask = Ask::new("reinstall item", vec![format!("item {version}"), "the phone is erased".into(), "keep the cable in".into()]);
+                    ask.choices = vec![("erase", "erase all 10 min".into()), ("keep", "keep files 15 min".into())];
+                    ask.word = Some(word);
+                    ask.go = Some(Rc::new(move |ui, choice| {
+                        let mode = if choice == "keep" { itemgrid_core::install::Mode::KeepFiles } else { itemgrid_core::install::Mode::Erase };
+                        run_job(ui, Job::Install(Box::new(release.clone()), mode));
+                    }));
+                    ask
+                }
+            };
+            open_ask(ui, ask);
+        }
+        "do:android" => {
+            let Some(host) = ui.state.borrow().host.clone() else { return };
+            let mut checking = Ask::new("back to android", vec!["checking…".into()]);
+            checking.ready = false;
+            open_ask(ui, checking);
+            let ui = ui.clone();
+            glib::spawn_future_local(async move {
+                let h = host.clone();
+                let read = gio::spawn_blocking(move || {
+                    let plan = itemgrid_core::android::plan(&h)?;
+                    let serial = itemgrid_core::backup::serial(&h)?;
+                    Ok::<_, String>((plan, itemgrid_core::android::confirm_word(&serial)))
+                })
+                .await
+                .unwrap_or_else(|_| Err("the work stopped".into()));
+                // Asked about something else meanwhile: let be.
+                if ui.asking.borrow().as_ref().is_none_or(|a| a.title != "back to android") {
+                    return;
+                }
+                let ask = match read {
+                    Err(e) => Ask::new("back to android", wrapped(&format!("cannot just now: {e}"))),
+                    Ok((plan, _)) if !plan.stops.is_empty() => Ask::new("back to android", plan.stops.iter().flat_map(|s| wrapped(s)).take(6).collect()),
+                    Ok((plan, word)) => {
+                        let mut info = vec!["stock android back".to_owned(), "linux's data erased".to_owned(), format!("about {} min", if plan.full_fresh { 15 } else { 35 }), "keep the cable in".to_owned()];
+                        if !plan.losses.is_empty() {
+                            info.extend(wrapped(&format!("lost: {}", plan.losses.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "))));
+                        }
+                        let mut ask = Ask::new("back to android", info);
+                        ask.word = Some(word);
+                        ask.go = Some(Rc::new(move |ui, _| run_job(ui, Job::AndroidGo(Box::new(plan.clone())))));
+                        ask
+                    }
+                };
+                *ui.asking.borrow_mut() = Some(ask);
+                show_ask(&ui);
+            });
+        }
+        "ask:go" => {
+            let go = ui.asking.borrow().as_ref().filter(|a| a.can_go()).and_then(|a| a.go.clone().map(|g| (g, a.choices.get(a.chosen).map_or("", |c| c.0))));
+            if let Some((go, choice)) = go {
+                close_ask(ui);
+                if let Some(b) = ui.board.borrow_mut().as_mut() {
+                    b.close();
+                }
+                go(ui, choice);
+            }
+        }
+        "ask:cancel" => close_ask(ui),
+        k => {
+            if let Some(i) = k.strip_prefix("ask:choice:").and_then(|i| i.parse::<usize>().ok()) {
+                if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                    a.chosen = i.min(a.choices.len().saturating_sub(1));
+                }
+                show_ask(ui);
+            }
+        }
+    }
+}
+
+/// A key while a question is on the table: the number typed, Enter to go,
+/// Escape to let it be. Whether it was the question's.
+fn ask_key(ui: &Rc<Ui>, key: gdk::Key) -> bool {
+    let open = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == "ask" && !b.closing());
+    if !open || ui.asking.borrow().is_none() {
+        return false;
+    }
+    match key {
+        gdk::Key::Escape => close_ask(ui),
+        gdk::Key::Return | gdk::Key::KP_Enter => board_action(ui, "ask:go"),
+        gdk::Key::BackSpace => {
+            if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                a.typed.pop();
+            }
+            show_ask(ui);
+        }
+        k => {
+            let Some(ch) = k.to_unicode().filter(|c| c.is_ascii_alphanumeric()) else { return false };
+            {
+                let mut asking = ui.asking.borrow_mut();
+                let Some(a) = asking.as_mut() else { return false };
+                let Some(w) = a.word.clone() else { return false };
+                if a.typed.chars().count() < w.chars().count() {
+                    a.typed.push(ch);
+                }
+            }
+            show_ask(ui);
+        }
+    }
+    true
 }
 
 /// The phone's sections not on the menu for now (the owner, 2026-10-06:
@@ -5687,7 +5936,39 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // system, its charge, how it is linked (or, on the cable, held), and
         // what is wrong if anything is. Under what is seen of it: shut, its
         // right half.
-        if intro.duo() > 0.0 && ui.state.borrow().host.is_some() {
+        // A job going on (or just over): told on the table where the phone's
+        // words are - what it is, its stage, how long is left; then done or
+        // stopped (a minute).
+        let job_lines: Option<Vec<String>> = ui.state.borrow().job.as_ref().and_then(|j| {
+            let over = j.took.map(|t| j.started.elapsed().as_secs().saturating_sub(t));
+            if over.is_some_and(|o| o > 60) {
+                return None;
+            }
+            let mut lines = wrapped(journey::title(j.kind));
+            match &j.ended {
+                None => {
+                    let stages = journey::stages(j.kind);
+                    if !stages.is_empty() {
+                        let at = journey::locate(&stages, &j.lines).min(stages.len() - 1);
+                        lines.extend(wrapped(stages[at].title));
+                        let left = (journey::left(&stages, at, 0.0) / 60.0).ceil();
+                        lines.push(if left <= 1.0 { "about a minute left".to_owned() } else { format!("about {left} min left") });
+                    }
+                }
+                Some(None) => lines.push("done".to_owned()),
+                Some(Some(e)) => {
+                    lines.push("stopped".to_owned());
+                    lines.extend(wrapped(e).into_iter().take(3));
+                }
+            }
+            Some(lines)
+        });
+        if let Some(lines) = &job_lines {
+            let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
+            let (head, rest) = lines.split_at(1);
+            texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: 1.0 });
+            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: 1.0 });
+        } else if intro.duo() > 0.0 && ui.state.borrow().host.is_some() {
             let low = |s: glib::GString| s.to_lowercase();
             // "Surface Duo · 00001": its club number.
             let name = low(ui.name.label());
