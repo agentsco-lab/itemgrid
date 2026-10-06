@@ -11,7 +11,7 @@ step not-found zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 s
 step phone zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000
 step phone-open zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000
 step cable zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000
-step menu zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000
+step menu zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000 show 0.00 1.00 1.00 1.00 1.00 1.00
 step section zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.90 ease smoother words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000 show 0.00 1.00 1.00 1.00 1.00 1.00
 step menu-bare zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000
 step section-bare zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.90 ease smoother words 0 8 duo 11 4 word 0 0 buttons 0 0 menu 0 1 credit -8 6 duo-scale 1.000
