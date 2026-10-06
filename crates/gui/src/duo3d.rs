@@ -705,9 +705,13 @@ pub fn area(scene: Rc<RefCell<Scene>>, w: i32, h: i32, k: f32) -> gtk::GLArea {
                 return;
             }
             let es = a.context().is_some_and(|c| c.api() == gtk::gdk::GLAPI::GLES);
+            let t = std::time::Instant::now();
             match Gpu::new(es, k) {
                 Ok(g) => *gpu.borrow_mut() = Some(g),
                 Err(e) => eprintln!("itemgrid: 3D: {e}"),
+            }
+            if std::env::var_os("ITEMGRID_FRAMES").is_some() {
+                eprintln!("3D: made ready in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
             }
         }
     });

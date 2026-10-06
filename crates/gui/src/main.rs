@@ -2517,6 +2517,14 @@ fn look(ui: &Rc<Ui>) {
 }
 
 fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::Status, String>>) {
+    let shown = std::time::Instant::now();
+    show_now(ui, place, guest, status);
+    if std::env::var_os("ITEMGRID_FRAMES").is_some() {
+        trace(format_args!("look shown in {:.1} ms", shown.elapsed().as_secs_f64() * 1000.0));
+    }
+}
+
+fn show_now(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::Status, String>>) {
     trace(format_args!("look: {} {}", match &place { Place::Linux(h) => format!("linux {h}"), Place::Gone => "gone".into(), _ => "other".into() }, status.as_ref().map_or("-".to_string(), |s| s.as_ref().map(|s| format!("locked {:?} hinge {:?}", s.locked, s.hinge)).unwrap_or_else(|e| e.clone()))));
     let was = ui.state.borrow().host.clone();
     let now = std::time::Instant::now();
@@ -2594,9 +2602,15 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
                 s.set_paintable(gdk::Paintable::NONE);
             }
         }
+        let t = std::time::Instant::now();
         count_storage(ui);
+        let t1 = t.elapsed().as_secs_f64() * 1000.0;
         show_backups(ui);
+        let t2 = t.elapsed().as_secs_f64() * 1000.0;
         show_slots(ui);
+        if std::env::var_os("ITEMGRID_FRAMES").is_some() {
+            trace(format_args!("arrived: storage {t1:.1} ms, backups {:.1} ms, slots {:.1} ms", t2 - t1, t.elapsed().as_secs_f64() * 1000.0 - t2));
+        }
     }
 }
 
@@ -4577,6 +4591,16 @@ fn show_fold(ui: &Ui, angle: f64) {
 fn show_fold_now(ui: &Ui, angle: f64) {
     use gtk::{graphene, gsk};
     const TILT: f32 = 50.0;
+    // The Duo is placed below in its own view (at rest the table's); the
+    // table's eye, worked out after it (the wheel's lens, the eye over it,
+    // the wallpaper's), may be another: what the Duo's parts are set to is
+    // kept and turned into the table's view at the end (`duo_fix`) - so it
+    // lies on the table whatever the eye does (it hung in the air).
+    let placed: RefCell<Vec<(gtk::Widget, gsk::Transform)>> = RefCell::new(Vec::new());
+    let put = |w: &gtk::Widget, t: gsk::Transform| placed.borrow_mut().push((w.clone(), t));
+    let duo_fix: std::cell::Cell<Option<graphene::Matrix>> = std::cell::Cell::new(None);
+    let gl_proj: Option<(gsk::Transform, gsk::Transform)>;
+    let cord_screen: Option<gsk::Transform>;
     let lift = (180.0 - angle).clamp(-180.0, 180.0) as f32;
     let (mid, h) = ui.duo_size;
     let room = h * DUO_ROOM as f32;
@@ -4741,6 +4765,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
     }
     let at = seen.map_or(first, |b| (first.0 + width / 2.0 - (b.x() + b.width() / 2.0), first.1 + room / 2.0 - (b.y() + b.height() / 2.0)));
+    let duo_at = at;
     let mut depth = [0.0f32; 2];
     for (i, half) in ui.halves.iter().enumerate() {
         let m = place(at, i, 0.0, false).to_matrix();
@@ -4749,18 +4774,18 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let facing = n.z() - o.z() > 0.0;
         depth[i] = p(DUO_PAD + mid / 2.0, DUO_PAD + h / 2.0, -DUO_THICK / 2.0).z();
         let front = place(at, i, 0.0, true);
-        ui.duo.set_child_transform(&half.front, Some(&front));
-        ui.duo.set_child_transform(&half.shade, Some(&front));
-        ui.duo.set_child_transform(&half.back, Some(&place(at, i, -DUO_THICK, true)));
+        put(&half.front.upcast_ref(), front.clone());
+        put(&half.shade.upcast_ref(), front.clone());
+        put(&half.back.upcast_ref(), place(at, i, -DUO_THICK, true));
         let layers = half.edge.len().max(2) as f32 - 1.0;
         for (k, e) in half.edge.iter().enumerate() {
-            ui.duo.set_child_transform(e, Some(&place(at, i, -DUO_THICK * k as f32 / layers, true)));
+            put(e.upcast_ref(), place(at, i, -DUO_THICK * k as f32 / layers, true));
         }
         half.front.set_visible(facing);
         half.shade.set_visible(facing);
         half.glare.set_visible(facing);
         half.back.set_visible(!facing);
-        ui.duo.set_child_transform(&half.glare, Some(&front));
+        put(&half.glare.upcast_ref(), front.clone());
         // The light from above, a little left and in front: the glare as
         // the screen mirrors it toward the viewer.
         let normal = graphene::Vec3::new(n.x() - o.x(), n.y() - o.y(), n.z() - o.z()).normalize();
@@ -4820,7 +4845,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         .translate_3d(&graphene::Point3D::new(mid + spine_c.0, 0.0, spine_c.1))
         .rotate_3d(face, &graphene::Vec3::y_axis())
         .translate(&graphene::Point::new(-hw / 2.0, 0.0));
-    ui.duo.set_child_transform(&ui.spine, Some(&hinge));
+    put(&ui.spine.upcast_ref(), hinge.clone());
     // The cable from the right half's bottom edge, in its plane, under the
     // halves (the plug goes into the port), after the shadows; a leaning
     // half (the tent) holds it in the air: faded there.
@@ -4880,6 +4905,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         rope.end = [(hole[0] + hole[2]) / 2.0, (hole[1] + hole[3]) / 2.0, table - depth + 1.7 * k];
         rope.plug = [at_mm(x0, y0), at_mm(x0 + pw, y0), at_mm(x0 + pw, y0 + pl + CABLE_RELIEF), at_mm(x0, y0 + pl + CABLE_RELIEF)];
         rope.screen = Some(table_view.to_matrix());
+        cord_screen = Some(table_view.clone());
     }
     ui.cable.queue_draw();
     // The Duo in 3D: each half's place (the pictures' frame), and the
@@ -4899,7 +4925,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             .perspective(3.2 * h)
             .translate(&graphene::Point::new(-at.0, -at.1));
         let mut sc = ui.scene3d.borrow_mut();
-        sc.proj = Some(ndc.transform(Some(&persp)).to_matrix());
+        sc.proj = Some(ndc.clone().transform(Some(&persp)).to_matrix());
+        gl_proj = Some((ndc, persp));
         sc.eye = [at.0, at.1, 3.2 * h];
         for i in 0..2 {
             sc.halves[i] = Some(local(view(at, false).translate(&graphene::Point::new(mid, 0.0)), i, rock, raise).to_matrix());
@@ -5193,6 +5220,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
         let grid_mid = e.look;
         let rest = matrix(e);
+        // The Duo's view (at its rest: its middle at the table's origin,
+        // seen from `at`) into this eye's.
+        let duo_rest = gsk::Transform::new().translate(&graphene::Point::new(duo_at.0, duo_at.1)).perspective(3.2 * h).rotate_3d(TILT, &graphene::Vec3::x_axis()).to_matrix();
+        if let Some(inv) = duo_rest.inverse() {
+            duo_fix.set(Some(gsk::Transform::new().matrix(&rest).matrix(&inv).to_matrix()));
+        }
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
@@ -5262,7 +5295,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
     let n = ui.cable_plug.len().max(2) as f32 - 1.0;
     for (i, p) in ui.cable_plug.iter().enumerate() {
         let z = (i as f32 / n - 0.5) * CABLE_PLUG_T * k;
-        ui.duo.set_child_transform(p, Some(&cable_at(z)));
+        put(p.upcast_ref(), cable_at(z));
         p.insert_after(&ui.duo, Some(&after));
         after = p.clone().upcast();
     }
@@ -5278,7 +5311,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK))
         .scale(right_c, 1.0)
         .translate(&graphene::Point::new(-DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0));
-    ui.duo.set_child_transform(&ui.halves[1].floor, Some(&right));
+    put(&ui.halves[1].floor.upcast_ref(), right.clone());
     ui.halves[1].floor.set_opacity(0.55 * lying * lying * (0.4 + 0.6 * right_c as f64));
     let rise = lift.max(0.0).min(90.0).to_radians();
     let narrow = view(at, true)
@@ -5294,13 +5327,32 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             .translate_3d(&graphene::Point3D::new(mid, 0.0, -DUO_THICK))
             .scale(c.abs().max(0.08), 1.0)
             .translate(&graphene::Point::new(-mid - DUO_FLOOR_PAD + 4.0, -DUO_FLOOR_PAD + 10.0));
-        ui.duo.set_child_transform(&ui.halves[0].floor, Some(&from_edge));
+        put(&ui.halves[0].floor.upcast_ref(), from_edge.clone());
         ui.halves[0].floor.set_visible(c > 0.05);
         ui.halves[0].floor.set_opacity(0.55 * lying * lying * (0.4 + 0.6 * c.max(0.0) as f64));
     } else {
-        ui.duo.set_child_transform(&ui.halves[0].floor, Some(&narrow));
+        put(&ui.halves[0].floor.upcast_ref(), narrow.clone());
         ui.halves[0].floor.set_visible(lift > -5.0 && lift < 120.0);
         ui.halves[0].floor.set_opacity(0.55 * lying * lying * (1.0 - 0.75 * rise.sin() as f64));
+    }
+    // The Duo's parts in the table's view (see `placed`).
+    let fix = duo_fix.get().map(|m| gsk::Transform::new().matrix(&m));
+    for (w, t) in placed.into_inner() {
+        let t = match &fix {
+            Some(fx) => fx.clone().transform(Some(&t)),
+            None => t,
+        };
+        ui.duo.set_child_transform(&w, Some(&t));
+    }
+    if let Some(fx) = &fix {
+        if let Some((ndc, persp)) = gl_proj {
+            ui.scene3d.borrow_mut().proj = Some(ndc.transform(Some(fx)).transform(Some(&persp)).to_matrix());
+            ui.gl3d.queue_render();
+        }
+        if let Some(cord) = cord_screen {
+            ui.rope.borrow_mut().screen = Some(fx.clone().transform(Some(&cord)).to_matrix());
+            ui.cable.queue_draw();
+        }
     }
 }
 
