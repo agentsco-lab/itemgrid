@@ -206,7 +206,9 @@ pub fn storage_rows(s: &Status) -> Vec<(&'static str, String)> {
 pub fn updates_rows(s: &Status) -> Vec<(&'static str, String)> {
     // On the table a letter a square: short lines. "0.2.1-git20261005113731.a146ffe":
     // the version, when it was built, its commit.
-    let (version, rest) = s.item.split_once("-git").unwrap_or((s.item.as_str(), ""));
+    // (Debian writes it "0.2.1~git...": before any release; "-git", "+git"
+    // too.)
+    let (version, rest) = ["~git", "-git", "+git"].iter().find_map(|sep| s.item.split_once(sep)).unwrap_or((s.item.as_str(), ""));
     let (stamp, commit) = rest.split_once('.').unwrap_or((rest, ""));
     let built = (stamp.len() >= 12)
         .then(|| {
@@ -603,7 +605,9 @@ pub fn add_pictures(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: To
 mod tests {
     #[test]
     fn the_updates_rows_are_short() {
-        let s = itemgrid_core::status::Status { item: "0.2.1-git20261005113731.a146ffe".into(), item_built: "2026-10-05 11:40".into(), ..Default::default() };
-        assert_eq!(super::updates_rows(&s), vec![("item", "0.2.1".to_owned()), ("built", "5 oct 11:37".to_owned()), ("commit", "a146ffe".to_owned())]);
+        for item in ["0.2.1~git20261005113731.a146ffe", "0.2.1-git20261005113731.a146ffe"] {
+            let s = itemgrid_core::status::Status { item: item.into(), item_built: "2026-10-05 11:40".into(), ..Default::default() };
+            assert_eq!(super::updates_rows(&s), vec![("item", "0.2.1".to_owned()), ("built", "5 oct 11:37".to_owned()), ("commit", "a146ffe".to_owned())]);
+        }
     }
 }
