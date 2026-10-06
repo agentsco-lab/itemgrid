@@ -2905,6 +2905,12 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
             None => run_job(&ui, job.clone()),
         });
     };
+    // Android not letting the computer in yet: drawn shut and still till
+    // USB debugging is on.
+    if matches!(place, Place::Quiet(_)) {
+        fold_to(ui, 0.0);
+        tilt_to(ui, [0.0, 0.0, 1.0]);
+    }
     const BACK_BODY: &str = "Linux's system and data go back from the newest whole-system backup, each part checked on the phone - about 35 minutes. Android's data on the phone goes.";
     let (icon, duo, title, text, moving) = match place {
         Place::Fastboot(s) => {
@@ -4565,7 +4571,7 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
 
 /// Android without USB debugging: how to let item/grid reach it - under
 /// the phone (the menu closed).
-const DEBUGGING_STEPS: [&str; 6] = ["turn on usb debugging", "about phone › build", "number: tap 7 times", "system › developer", "options › usb debugging", "then allow this computer"];
+const DEBUGGING_STEPS: [&str; 5] = ["turn on usb debugging", "tap build number 7 times", "developer options", "› usb debugging on", "then allow on the phone"];
 
 /// The way back to the phone's stock Android ("stock" on the menu) - on
 /// the cable only (off it, said so, not to be clicked).
