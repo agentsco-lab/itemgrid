@@ -2366,7 +2366,8 @@ fn build(app: &adw::Application) {
                 let marked = {
                     let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
                     let intro = ui.intro.borrow();
-                    let to = [intro.searching(), intro.note().is_some(), wifi && ui.wifi_open.get(), ui.cable.is_visible()];
+                    let cable = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable);
+                    let to = [intro.searching(), intro.note().is_some(), wifi && ui.wifi_open.get(), cable];
                     drop(intro);
                     let now = ui.marks_raw.get();
                     let next: [f32; 4] = std::array::from_fn(|k| {
@@ -5702,7 +5703,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 _ => String::new(),
             };
             let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
-            let link = if wifi { "on wi-fi".to_owned() } else { low(ui.pose.label()).split(" · ").next().unwrap_or("").to_owned() };
+            let link = if wifi { "on wi-fi".to_owned() } else { "on cable".to_owned() };
             let title = low(ui.status_title.label());
             let wrong = if title.contains("fine") { String::new() } else { title.strip_prefix("your duo is ").or(title.strip_prefix("your duo ")).unwrap_or(&title).to_owned() };
             let lines: Vec<String> = [name, system, charge, link, wrong].into_iter().filter(|l| !l.is_empty()).collect();
@@ -5844,9 +5845,11 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
         ui.scene3d.borrow_mut().sticker = droidian;
         ui.gl3d.queue_render();
     }
-    ui.cable.set_visible(link == "cable");
+    // The cable not drawn (the owner, 2026-10-06): the phone's words say
+    // it is on it.
+    ui.cable.set_visible(false);
     for p in &ui.cable_plug {
-        p.set_visible(link == "cable");
+        p.set_visible(false);
     }
     // Over Wi-Fi drawn shut, lying on the table, still: it comes to life on
     // the cable.
