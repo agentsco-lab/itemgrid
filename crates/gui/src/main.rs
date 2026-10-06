@@ -497,6 +497,8 @@ struct Ui {
     /// What can be done with the phone where it is, under its words (on
     /// stock Android: item installed) - a line to click.
     act: RefCell<Option<board::Board>>,
+    /// The menu opened for the phone's line's question only: put away with it.
+    menu_for_ask: std::cell::Cell<bool>,
     page_back: std::cell::Cell<f32>,
     /// The section's board's size (squares across, lines) the eye is
     /// drawn back for, eased: one section for another, the eye goes over
@@ -1322,6 +1324,7 @@ fn build(app: &adw::Application) {
         board: RefCell::default(),
         page: RefCell::default(),
         act: RefCell::default(),
+        menu_for_ask: std::cell::Cell::new(false),
         page_back: std::cell::Cell::new(0.0),
         page_dims: std::cell::Cell::new(None),
         saver: std::cell::Cell::new(None),
@@ -1713,6 +1716,7 @@ fn build(app: &adw::Application) {
                 }
                 *ui.board.borrow_mut() = Some(board::Board::open(menu_lines(&ui)));
                 ui.intro.borrow_mut().clear_note();
+                ui.menu_for_ask.set(true);
                 board_action(&ui, &key);
                 return;
             }
@@ -1806,6 +1810,11 @@ fn build(app: &adw::Application) {
                     let lines = if key == "updates" { updates_lines(&ui) } else { table_lines(&rows) };
                     trace(format_args!("board: {key} on the table"));
                     *ui.page.borrow_mut() = Some((key, board::Board::open(lines)));
+                    return;
+                }
+                // A question open: a click off it lets it be (cancel or
+                // Escape put it away), the menu with it.
+                if ui.asking.borrow().is_some() && key.is_none() {
                     return;
                 }
                 if let Some(b) = ui.board.borrow_mut().as_mut() {
@@ -4749,6 +4758,12 @@ fn open_ask(ui: &Rc<Ui>, ask: Ask) {
 
 fn close_ask(ui: &Rc<Ui>) {
     ui.asking.borrow_mut().take();
+    // Asked from the phone's line: back to the phone, the menu away too.
+    if ui.menu_for_ask.replace(false) {
+        if let Some(b) = ui.board.borrow_mut().as_mut() {
+            b.close();
+        }
+    }
     if let Some((key, p)) = ui.page.borrow_mut().as_mut() {
         if key == "ask" {
             p.close();
@@ -6248,6 +6263,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The phone's line: open while wanted (no menu, no question), else
         // put away.
         let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
+        // A question whose board went (closed with the menu): done with.
+        let asked_on = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == "ask" && !b.closing());
+        if !asked_on && ui.asking.borrow().as_ref().is_some_and(|a| a.ready) {
+            ui.asking.borrow_mut().take();
+            ui.menu_for_ask.set(false);
+        }
         let wanted = act_wanted && !menu_open && ui.asking.borrow().is_none();
         if wanted != ui.act.borrow().as_ref().is_some_and(|b| !b.closing()) {
             trace(format_args!("act: wanted {wanted} (stock {act_wanted}, menu {menu_open}, asking {}) at {act_at:?}", ui.asking.borrow().is_some()));
