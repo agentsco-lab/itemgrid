@@ -64,8 +64,6 @@ pub struct Intro {
     note: Option<(String, Instant)>,
     /// A square of the table clicked (its middle, px) and when.
     tapped: Option<((f32, f32), Instant)>,
-    /// How near the eye is to the note (eased toward 1 while it shows).
-    near_note: f32,
     /// The steps' ways in (the layout's).
     pub timing: [Trans; crate::scene::STEPS.len()],
 }
@@ -83,7 +81,7 @@ impl Default for Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(30.0));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, timing: TRANS }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, timing: TRANS }
     }
 }
 
@@ -155,11 +153,6 @@ impl Intro {
     /// at all .. 1 all of them.
     pub fn grid(&self) -> f32 {
         self.on(1)
-    }
-
-    /// The eye near the note (not found): 0 .. 1.
-    pub fn near_note(&self) -> f32 {
-        smoother(self.near_note)
     }
 
     /// The credit's square `i` (its letter `ch`) as the squares' growing
@@ -330,16 +323,7 @@ impl Intro {
             || self.tapped.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAP_S + 0.05)
             || self.search.is_some_and(|(since, _)| since.elapsed().as_secs_f32() < 30.0 && (self.searching() || since.elapsed().as_secs_f32() < SEARCH_MIN_S + 0.4))
             || self.note.as_ref().is_some_and(|(_, at)| Instant::now().saturating_duration_since(*at).as_secs_f32() < 0.5);
-        // Toward the note while it shows (as it comes), away when it goes:
-        // a second each way.
         let sink_to = self.sink_to;
-        let to = if self.note().is_some() && sink_to < 0.5 { 1.0 } else { 0.0 };
-        let near_moving = (to - self.near_note).abs() > 1e-4;
-        if near_moving {
-            let d = to - self.near_note;
-            self.near_note += d.signum() * dt.min(d.abs());
-        }
-        let moving = moving || near_moving;
         let d = sink_to - self.sink;
         if d.abs() < 1e-4 {
             self.sink = sink_to;

@@ -5305,26 +5305,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let word_on = on_page(&matrix(rest), cubes_at);
         let above = Eye { look: cubes_at, on: word_on, tilt: 0.0, near: 1.0, far: 3.2 };
         let cur = square() * k;
-        // Words on the table (a letter a square, from the word's left,
-        // a square below it): the eye near enough for them to fill a good
-        // part of the page's width, them toward its middle.
-        let page = (page_w * 0.42 - off.0, page_h * 0.42 - off.1);
+        // The row under the word (a letter a square, from its left).
         let (left, under) = on_squares(k, (cubes_at.0 - WORD_HALF * cur, cubes_at.1 + 1.5 * cur));
         let rest_m = matrix(rest);
-        // Words from `at` (a square's far left corner): the eye on them,
-        // near enough for them to fill `fill` of the page's width, them at
-        // `place` on the page (parts of its width and height), at `tilt`.
-        let framing = |at: (f32, f32), cols: usize, rows: usize, fill: f32, place: (f32, f32), tilt: f32, far: f32| {
-            let (w, h) = (cols as f32 * cur, rows as f32 * cur);
-            let mid = (at.0 + w / 2.0, at.1 + h / 2.0);
-            let to = (page_w * place.0 - off.0, page_h * place.1 - off.1);
-            // Their width as this eye sees them unscaled, then scaled to fill.
-            let m = matrix(Eye { look: mid, on: to, tilt, near: 1.0, far });
-            let (a, b) = (on_page(&m, (at.0, mid.1)), on_page(&m, (at.0 + w, mid.1)));
-            let near = (page_w * fill / (b.0 - a.0).abs().max(1.0)).clamp(0.6, 3.0);
-            Eye { look: mid, on: to, tilt, near, far }
-        };
-        let block = |lines: &[&str]| (lines.iter().map(|l| l.chars().count()).max().unwrap_or(1), lines.len());
         // The credit where it is seen from straight above as the squares
         // grow out (to the right of the word and below it): the table's
         // square under that point of the page then.
@@ -5334,45 +5317,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let (sx, sy) = floor_shift(k);
             (sx + ((p.0 - sx) / cur).floor() * cur + place.credit.0 * cur, sy + ((p.1 - sy) / cur).floor() * cur + place.credit.1 * cur)
         };
-        let note_lines: Vec<String> = intro.note().map(|(t, _)| t.lines().map(str::to_owned).collect()).unwrap_or_default();
-        let (nc, nr) = block(&note_lines.iter().map(String::as_str).collect::<Vec<_>>());
-        let near_note = {
-            let e = framing((left, under), nc.max(1), nr.max(1), 0.5, (0.42, 0.42), TILT * 0.8, 3.2);
-            let from = on_page(&rest_m, e.look);
-            Eye { on: (lerp(from.0, page.0, 0.6), lerp(from.1, page.1, 0.6)), ..e }
-        };
-        // A section open: the eye drawn back (and over) to see the word, the
-        // menu and the section whole.
-        let page_view = {
-            let (pc, pr) = ui.page_dims.get().unwrap_or((20.0, 10.0));
-            let menu_rows = ui.board.borrow().as_ref().map_or(8, |b| b.lines.len()) as f32;
-            let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8));
-            let top = cubes_at.1 - 0.5 * cur;
-            let cols = (menu_cols + 2) as f32 + pc;
-            let rows = (under - top) / cur + menu_rows.max(pr);
-            let (w, hh) = (cols * cur, rows * cur);
-            let mid = (left + w / 2.0, top + hh / 2.0);
-            let to = (page_w * 0.5 - off.0, page_h * 0.5 - off.1);
-            // Its corners as an eye sees them: the bounds (the near rows are
-            // wider in the perspective than the far).
-            let bounds = |e: Eye| {
-                let m = matrix(e);
-                let c = [(left, top), (left + w, top), (left, top + hh), (left + w, top + hh)].map(|p| on_page(&m, p));
-                let (x0, x1) = c.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
-                let (y0, y1) = c.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
-                (x0, y0, x1, y1)
-            };
-            let e1 = Eye { look: mid, on: to, tilt: TILT, near: 1.0, far: 3.2 };
-            let (x0, y0, x1, y1) = bounds(e1);
-            // Drawn back only (never nearer than the usual view).
-            let near = (page_w * 0.88 / (x1 - x0).max(1.0)).min(page_h * 0.82 / (y1 - y0).max(1.0)).clamp(0.3, 1.0);
-            let e2 = Eye { near, ..e1 };
-            let (x0, y0, x1, y1) = bounds(e2);
-            // The whole of it in the page's middle.
-            Eye { on: (to.0 + to.0 - (x0 + x1) / 2.0, to.1 + to.1 - (y0 + y1) / 2.0), ..e2 }
-        };
-        let back = intro.timing[scene::SECTION].eased(ui.page_back.get());
-        let mut e = mix(mix(mix(above, rest, eye), near_note, intro.near_note()), page_view, back);
+        // The eye: from straight above the word down to where the Duo is
+        // seen from - and there it stays (the camera's home): what comes
+        // after comes on the table, not by the eye (a section drawn back
+        // below, the word's corner kept).
+        let mut e = mix(above, rest, eye);
         // The saver: the eye drifting slowly over the table, round the word.
         let drift = ui.saver_mix.get();
         // The page's size against the usual window's: the saver's scene as
@@ -5515,6 +5464,39 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The step's eye moved over the table.
         let kept_k = 1.0 - ui.saver_mix.get();
         e.look = (e.look.0 + shot.pan.0 * cur * kept_k, e.look.1 + shot.pan.1 * cur * kept_k);
+        // A section open: the eye drawn back only as far as the word, the
+        // menu and the section need to be seen whole - about the word's
+        // corner, which stays where it is on the page (the anchor); closed,
+        // back the same way.
+        let back = intro.timing[scene::SECTION].eased(ui.page_back.get());
+        if back > 0.0 {
+            let seen = |e: &Eye| {
+                gsk::Transform::new()
+                    .translate(&graphene::Point::new(e.on.0, e.on.1))
+                    .scale(e.near, e.near)
+                    .perspective(e.far * h)
+                    .rotate_3d(e.tilt, &graphene::Vec3::x_axis())
+                    .rotate_3d(turn, &graphene::Vec3::z_axis())
+                    .translate_3d(&graphene::Point3D::new(-e.look.0, -e.look.1, 0.0))
+                    .to_matrix()
+            };
+            let (pc, pr) = ui.page_dims.get().unwrap_or((20.0, 10.0));
+            let menu_rows = ui.board.borrow().as_ref().map_or(8, |b| b.lines.len()) as f32;
+            let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8)) as f32;
+            let top = cubes_at.1 - 0.5 * cur;
+            let right = (left + (place.menu.0 + menu_cols + 2.0 + pc) * cur).max(buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur);
+            let bottom = under + (place.menu.1 + menu_rows.max(pr)) * cur;
+            let m = seen(&e);
+            let anchor = on_page(&m, (left, top));
+            let corners = [(left, top), (right, top), (left, bottom), (right, bottom)].map(|p| on_page(&m, p));
+            let far_x = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max);
+            let far_y = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
+            // As far back as the page's right and bottom (a margin) need.
+            let fit = ((page_w * 0.97 - off.0 - anchor.0) / (far_x - anchor.0).max(1.0)).min((page_h * 0.95 - off.1 - anchor.1) / (far_y - anchor.1).max(1.0)).clamp(0.3, 1.0);
+            let f = 1.0 + (fit - 1.0) * back;
+            e.on = (anchor.0 + (e.on.0 - anchor.0) * f, anchor.1 + (e.on.1 - anchor.1) * f);
+            e.near *= f;
+        }
         // From the frame's px into the page's (the Duo's room's): scaled.
         e.on = (e.on.0 * frame_s, e.on.1 * frame_s);
         e.near *= frame_s;
