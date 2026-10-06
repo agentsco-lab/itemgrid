@@ -185,7 +185,9 @@ fn ink(cr: &gtk::cairo::Context, alpha: f64) {
 
 /// A letter's colour: by night the light one for the dark one.
 fn letter_rgba(c: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
-    if night() {
+    // (A colour - red, green - stays itself: only greys turn.)
+    let spread = c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2);
+    if night() && spread < 0.15 {
         (1.04 - c.0, 1.04 - c.1, 1.04 - c.2, c.3)
     } else {
         c
@@ -4545,20 +4547,50 @@ impl Ask {
         self.ready && self.go.is_some() && self.word.as_ref().is_none_or(|w| *w == self.typed)
     }
 
+    /// The question's board: its title dark; a blank; what it does, grey;
+    /// a blank; its choices (the one taken dark, ● ○); the phone's number
+    /// to type (its digits faint, darkening as they are typed - a wrong one
+    /// red); then go (only when typed) and cancel.
     fn lines(&self) -> Vec<board::Line> {
-        let mut lines = vec![board::Line::new("", self.title.clone())];
+        const DARK: (f64, f64, f64) = (0.10, 0.10, 0.11);
+        const WRONG: (f64, f64, f64) = (0.72, 0.16, 0.14);
+        let dark = |key: String, text: String| {
+            let mut l = board::Line::new(key, text.clone());
+            l.accent = Some((0, text.chars().count(), DARK));
+            l
+        };
+        let mut lines = vec![dark(String::new(), self.title.clone()), board::Line::new("", "")];
         lines.extend(self.info.iter().map(|i| board::Line::new("", i.clone())));
-        for (i, (_, label)) in self.choices.iter().enumerate() {
-            lines.push(board::Line::new(format!("ask:choice:{i}"), format!("{} {label}", if i == self.chosen { "●" } else { "○" })));
+        if !self.choices.is_empty() {
+            lines.push(board::Line::new("", ""));
+            for (i, (_, label)) in self.choices.iter().enumerate() {
+                let key = format!("ask:choice:{i}");
+                if i == self.chosen {
+                    lines.push(dark(key, format!("● {label}")));
+                } else {
+                    lines.push(board::Line::new(key, format!("○ {label}")));
+                }
+            }
         }
         if let (true, Some(w)) = (self.ready && self.go.is_some(), &self.word) {
-            lines.push(board::Line::new("", format!("type {w}")));
-            let typed: String = self.typed.chars().chain(std::iter::repeat('_')).take(w.chars().count()).collect();
-            lines.push(board::Line::new("", typed));
+            lines.push(board::Line::new("", ""));
+            lines.push(board::Line::new("", "to go on, type"));
+            lines.push(board::Line::new("", "this phone's number:"));
+            // The number, what is typed over it: right so far dark, wrong red.
+            let n = w.chars().count();
+            let typed: Vec<char> = self.typed.chars().collect();
+            let text: String = (0..n).map(|i| typed.get(i).copied().unwrap_or_else(|| w.chars().nth(i).unwrap_or('_'))).collect();
+            let mut num = board::Line::new("", text);
+            if !typed.is_empty() {
+                let right = w.starts_with(&self.typed);
+                num.accent = Some((0, typed.len(), if right { DARK } else { WRONG }));
+            }
+            lines.push(num);
         }
+        lines.push(board::Line::new("", ""));
         if self.can_go() {
             let mut go = board::Line::new("ask:go", "› go");
-            go.accent = Some((2, 4, (0.72, 0.16, 0.14)));
+            go.accent = Some((2, 4, WRONG));
             lines.push(go);
         }
         lines.push(board::Line::new("ask:cancel", "› cancel"));
@@ -4621,7 +4653,7 @@ fn close_ask(ui: &Rc<Ui>) {
 fn board_action(ui: &Rc<Ui>, key: &str) {
     match key {
         "do:update" => {
-            let mut ask = Ask::new("update item", vec!["the newest from here".into(), "the phone restarts".into(), "about 3 min".into()]);
+            let mut ask = Ask::new("update item", vec!["the newest from here".into(), "keeps your files".into(), "the phone restarts".into(), "about 3 min".into()]);
             ask.go = Some(Rc::new(|ui, _| run_job(ui, Job::Update)));
             open_ask(ui, ask);
         }
@@ -4631,8 +4663,8 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                 None => Ask::new("reinstall item", wrapped("no release image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
-                    let mut ask = Ask::new("reinstall item", vec![format!("item {version}"), "the phone is erased".into(), "keep the cable in".into()]);
-                    ask.choices = vec![("erase", "erase all 10 min".into()), ("keep", "keep files 15 min".into())];
+                    let mut ask = Ask::new("reinstall item", vec!["erases the phone".into(), format!("new item {version}"), "keep the cable in".into()]);
+                    ask.choices = vec![("erase", "erase all · 10 min".into()), ("keep", "keep files · 15 min".into())];
                     ask.word = Some(word);
                     ask.go = Some(Rc::new(move |ui, choice| {
                         let mode = if choice == "keep" { itemgrid_core::install::Mode::KeepFiles } else { itemgrid_core::install::Mode::Erase };
@@ -4666,8 +4698,8 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                     Err(e) => Ask::new("back to android", wrapped(&format!("cannot just now: {e}"))),
                     Ok((plan, _)) if !plan.stops.is_empty() => Ask::new("back to android", plan.stops.iter().flat_map(|s| wrapped(s)).take(6).collect()),
                     Ok((plan, word)) => {
-                        let mut ask = Ask::new("back to android", vec!["the phone as it came".into(), "item and all in it go".into(), "about 10 min".into(), "keep the cable in".into()]);
-                        ask.choices = vec![("plain", "just go".into()), ("copy", "copy my files 1 min".into())];
+                        let mut ask = Ask::new("back to android", vec!["erases item and".into(), "everything in it".into(), "android as it came".into(), "about 10 min".into(), "keep the cable in".into()]);
+                        ask.choices = vec![("plain", "just go".into()), ("copy", "copy files · 1 min".into())];
                         ask.word = Some(word);
                         ask.go = Some(Rc::new(move |ui, choice| run_job(ui, Job::AndroidClean(Box::new(plan.clone()), choice == "copy"))));
                         ask
@@ -4684,7 +4716,7 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                 None => Ask::new("install item", wrapped("no release with a boot image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
-                    let mut ask = Ask::new("install item", vec![format!("item {version}"), "android is erased".into(), "about 15 min".into(), "keep the cable in".into()]);
+                    let mut ask = Ask::new("install item", vec!["erases android".into(), format!("puts item {version}"), "about 15 min".into(), "keep the cable in".into()]);
                     ask.word = Some(word);
                     ask.go = Some(Rc::new(move |ui, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));
                     ask
