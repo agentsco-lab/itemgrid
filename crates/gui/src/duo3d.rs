@@ -57,11 +57,16 @@ const DARK: f32 = 5.0;
 const SCREEN: f32 = 6.0;
 const CHROME: f32 = 8.0;
 const MIRROR: f32 = 7.0;
+const STICKER_MAT: f32 = 9.0;
 /// The Microsoft logo on the left half's back, mirror-polished: four
 /// squares (mm) with a gap, at the back's middle (half as big again as it
 /// was: shut, the back is all that shows of it).
 const LOGO_SQUARE: f32 = 8.4;
 const LOGO_GAP: f32 = 1.05;
+/// Running Droidian: its swirl on a clear sticker over the logo (mm, a
+/// square; the picture's swirl fills most of it).
+const STICKER: f32 = 26.0;
+const STICKER_PNG: &[u8] = include_bytes!("../data/droidian-sticker.png");
 /// The screens (mm): each panel's size, the left edge of each in the body,
 /// and their top.
 const PANEL: (f32, f32) = (86.654, 115.539);
@@ -85,6 +90,8 @@ pub struct Scene {
     pub proj: Option<graphene::Matrix>,
     /// Where the eye is (the perspective's), in the halves' view.
     pub eye: [f32; 3],
+    /// The phone runs Droidian: its sticker on the back.
+    pub sticker: bool,
 }
 
 /// A mesh's vertices: position (px), normal, material.
@@ -307,6 +314,22 @@ fn logo(mesh: &mut Mesh, k: f32) {
     }
 }
 
+/// The sticker on the left half's back, over the logo: a square of clear
+/// film a little further out than it, its picture mapped as seen from
+/// behind (the back is looked at from outside: x mirrored).
+fn sticker(k: f32) -> Mesh {
+    let mut m = Mesh::default();
+    let (cx, cy) = (HALF_W / 2.0, BODY_H / 2.0);
+    let z = (-THICK - 0.06) * k;
+    let n = [0.0, 0.0, -1.0];
+    let h = STICKER / 2.0;
+    let c = |x: f32, y: f32| [(cx + x) * k, (cy + y) * k, z];
+    for (p, uv) in [(c(-h, -h), [1.0, 0.0]), (c(h, -h), [0.0, 0.0]), (c(h, h), [0.0, 1.0]), (c(-h, -h), [1.0, 0.0]), (c(h, h), [0.0, 1.0]), (c(-h, h), [1.0, 1.0])] {
+        m.vert_uv(p, n, STICKER_MAT, uv);
+    }
+    m
+}
+
 /// A bar along the spine: its section a rounded rectangle `long` across by
 /// `thick` (its ends half-round), about (`cx`, `cz`), from `y0` to `y1`, its
 /// ends closed.
@@ -491,6 +514,21 @@ void main() {
     float up = clamp(-r.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 room = mix(vec3(0.05), vec3(0.95), smoothstep(0.35, 0.95, up));
     float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+    if (m == 9) {
+        // The sticker: its print, lit, on a clear film - the film only a
+        // sheen of the room (its corners round), the print matte with a
+        // little gloss of the film over it.
+        vec4 s = texture(u_tex, v_uv);
+        vec2 q = abs(v_uv - 0.5) - (0.5 - 0.08);
+        float film = 1.0 - smoothstep(0.0, 0.01, length(max(q, 0.0)) - 0.08);
+        vec3 ink = s.a > 0.0 ? s.rgb / s.a : vec3(0.0);
+        vec3 lit = ink * (0.55 * mix(0.55, 1.0, sky) + 0.55 * diff);
+        float gloss = pow(max(dot(n, h), 0.0), 140.0) * 0.9;
+        float a = max(s.a, 0.10 * fres + 0.04) * film;
+        vec3 col = mix(room * 0.6, lit, s.a / max(a, 1e-4)) + vec3(gloss);
+        o = vec4(col * a, a);
+        return;
+    }
     if (m == 8) {
         // Chrome: nearly all the room mirrored, a hard bright highlight.
         c = vec3(0.04) + room * 0.9 + vec3(pow(max(dot(n, h), 0.0), 120.0) * 2.0);
@@ -517,6 +555,9 @@ struct Gpu {
     halves: [(glow::VertexArray, glow::Buffer, i32); 2],
     screens: [(glow::VertexArray, glow::Buffer, i32); 2],
     spine: (glow::VertexArray, glow::Buffer, i32),
+    /// The sticker's mesh and picture.
+    sticker: (glow::VertexArray, glow::Buffer, i32),
+    sticker_tex: Option<glow::Texture>,
     /// The screens' pictures on the GPU, and which change each is.
     textures: [Option<glow::Texture>; 2],
     uploaded: [u64; 2],
@@ -590,7 +631,9 @@ impl Gpu {
             let halves = [upload(&half(0, k))?, upload(&half(1, k))?];
             let screens = [upload(&screen(0, k))?, upload(&screen(1, k))?];
             let spine = upload(&spine(k))?;
-            Ok(Gpu { gl, prog, halves, screens, spine, textures: [None, None], uploaded: [0, 0], msaa: None })
+            let sticker_mesh = upload(&sticker(k))?;
+            let sticker_tex = upload_png(&gl, STICKER_PNG);
+            Ok(Gpu { gl, prog, halves, screens, spine, sticker: sticker_mesh, sticker_tex, textures: [None, None], uploaded: [0, 0], msaa: None })
         }
     }
 
@@ -682,6 +725,23 @@ impl Gpu {
                 gl.draw_arrays(glow::TRIANGLES, 0, count);
                 gl.disable(glow::POLYGON_OFFSET_FILL);
             }
+            // The sticker over the logo, blended (its print and film).
+            if let (true, Some(t), Some(mv)) = (scene.sticker, self.sticker_tex, scene.halves[0]) {
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                gl.uniform_1_i32(gl.get_uniform_location(self.prog, "u_tex").as_ref(), 0);
+                gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
+                gl.enable(glow::BLEND);
+                gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+                gl.depth_mask(false);
+                gl.enable(glow::POLYGON_OFFSET_FILL);
+                gl.polygon_offset(-1.0, -8.0);
+                gl.bind_vertex_array(Some(self.sticker.0));
+                gl.draw_arrays(glow::TRIANGLES, 0, self.sticker.2);
+                gl.disable(glow::POLYGON_OFFSET_FILL);
+                gl.depth_mask(true);
+                gl.disable(glow::BLEND);
+            }
             gl.bind_vertex_array(None);
             // Onto GTK's framebuffer, resolved.
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fb));
@@ -689,6 +749,27 @@ impl Gpu {
             gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
             gl.bind_framebuffer(glow::FRAMEBUFFER, target);
         }
+    }
+}
+
+/// A PNG's picture as a texture (mipmapped: drawn small).
+fn upload_png(gl: &glow::Context, png: &[u8]) -> Option<glow::Texture> {
+    let tex = gtk::gdk::Texture::from_bytes(&glib::Bytes::from(png)).ok()?;
+    let mut d = gtk::gdk::TextureDownloader::new(&tex);
+    d.set_format(gtk::gdk::MemoryFormat::R8g8b8a8Premultiplied);
+    let (bytes, stride) = d.download_bytes();
+    unsafe {
+        let t = gl.create_texture().ok()?;
+        gl.bind_texture(glow::TEXTURE_2D, Some(t));
+        gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, (stride / 4) as i32);
+        gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, tex.width(), tex.height(), 0, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(Some(&bytes)));
+        gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+        gl.generate_mipmap(glow::TEXTURE_2D);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        Some(t)
     }
 }
 

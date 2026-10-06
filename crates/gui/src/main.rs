@@ -5730,6 +5730,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
+    // Running Droidian: its sticker on the drawn Duo's back.
+    let droidian = s.os.to_lowercase().contains("droidian");
+    if ui.scene3d.borrow().sticker != droidian {
+        ui.scene3d.borrow_mut().sticker = droidian;
+        ui.gl3d.queue_render();
+    }
     ui.cable.set_visible(link == "cable");
     for p in &ui.cable_plug {
         p.set_visible(link == "cable");
