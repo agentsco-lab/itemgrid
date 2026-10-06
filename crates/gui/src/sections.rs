@@ -204,7 +204,25 @@ pub fn storage_rows(s: &Status) -> Vec<(&'static str, String)> {
 
 /// Updates', as words.
 pub fn updates_rows(s: &Status) -> Vec<(&'static str, String)> {
-    vec![("item on the phone", format!("{} (built {})", s.item, s.item_built))]
+    // On the table a letter a square: short lines. "0.2.1-git20261005113731.a146ffe":
+    // the version, when it was built, its commit.
+    let (version, rest) = s.item.split_once("-git").unwrap_or((s.item.as_str(), ""));
+    let (stamp, commit) = rest.split_once('.').unwrap_or((rest, ""));
+    let built = (stamp.len() >= 12)
+        .then(|| {
+            let month = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].get(stamp[4..6].parse::<usize>().ok()?.checked_sub(1)?)?;
+            Some(format!("{} {month} {}:{}", stamp[6..8].trim_start_matches('0'), &stamp[8..10], &stamp[10..12]))
+        })
+        .flatten()
+        .unwrap_or_else(|| s.item_built.clone());
+    let mut rows = vec![("item", version.to_owned())];
+    if !built.is_empty() {
+        rows.push(("built", built));
+    }
+    if !commit.is_empty() {
+        rows.push(("commit", commit.chars().take(7).collect()));
+    }
+    rows
 }
 
 pub fn fill(p: &Pages, s: &Status, number: Option<String>, link: &str, developer: bool) {
@@ -579,4 +597,13 @@ pub fn add_pictures(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: To
             load_look(&p, host, toast);
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_updates_rows_are_short() {
+        let s = itemgrid_core::status::Status { item: "0.2.1-git20261005113731.a146ffe".into(), item_built: "2026-10-05 11:40".into(), ..Default::default() };
+        assert_eq!(super::updates_rows(&s), vec![("item", "0.2.1".to_owned()), ("built", "5 oct 11:37".to_owned()), ("commit", "a146ffe".to_owned())]);
+    }
 }

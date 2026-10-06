@@ -1714,15 +1714,7 @@ fn build(app: &adw::Application) {
                     if let Some(b) = ui.board.borrow_mut().as_mut() {
                         b.chosen = line;
                     }
-                    let wide = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
-                    let lines = rows
-                        .iter()
-                        .map(|(k, v)| {
-                            let k = k.to_lowercase();
-                            let v: String = v.chars().take(36).collect();
-                            board::Line::new(k.clone(), if k.is_empty() { v } else { format!("{k:wide$}  {v}") })
-                        })
-                        .collect();
+                    let lines = table_lines(&rows);
                     trace(format_args!("board: {key} on the table"));
                     *ui.page.borrow_mut() = Some((key, board::Board::open(lines)));
                     return;
@@ -4368,6 +4360,44 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
 
 /// The menu's lines: without the phone only item/grid's own (its
 /// settings, about it); with it, the phone's sections, then those.
+/// A section's facts as lines for the table, a letter a square: "name
+/// value" when short enough; else the name, then the value under it,
+/// wrapped at its words (the table's column stays narrow: the eye draws
+/// back little).
+fn table_lines(rows: &[(&str, String)]) -> Vec<board::Line> {
+    const WIDE: usize = 19;
+    let name_w = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    let mut lines = Vec::new();
+    for (k, v) in rows {
+        let k = k.to_lowercase();
+        let one = if k.is_empty() { v.clone() } else { format!("{k:name_w$}  {v}") };
+        if one.chars().count() <= WIDE {
+            lines.push(board::Line::new(k.clone(), one));
+            continue;
+        }
+        if !k.is_empty() {
+            lines.push(board::Line::new(k.clone(), k.clone()));
+        }
+        let mut cur = String::new();
+        for word in v.split_whitespace() {
+            for piece in word.chars().collect::<Vec<_>>().chunks(WIDE) {
+                let piece: String = piece.iter().collect();
+                if !cur.is_empty() && cur.chars().count() + 1 + piece.chars().count() > WIDE {
+                    lines.push(board::Line::new(k.clone(), std::mem::take(&mut cur)));
+                }
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
+                cur.push_str(&piece);
+            }
+        }
+        if !cur.is_empty() {
+            lines.push(board::Line::new(k.clone(), cur));
+        }
+    }
+    lines
+}
+
 /// The phone's sections not on the menu for now (the owner, 2026-10-06:
 /// not needed yet).
 const MENU_LATER: [&str; 6] = ["overview", "agent", "look", "battery", "storage", "about"];
@@ -5512,7 +5542,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let far_x = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max);
             let far_y = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
             // As far back as the page's right and bottom (a margin) need.
-            let fit = ((page_w * 0.97 - off.0 - anchor.0) / (far_x - anchor.0).max(1.0)).min((page_h * 0.95 - off.1 - anchor.1) / (far_y - anchor.1).max(1.0)).clamp(0.3, 1.0);
+            // (Little: the section's words are laid narrow instead.)
+            let fit = ((page_w * 0.97 - off.0 - anchor.0) / (far_x - anchor.0).max(1.0)).min((page_h * 0.95 - off.1 - anchor.1) / (far_y - anchor.1).max(1.0)).clamp(0.85, 1.0);
             let f = 1.0 + (fit - 1.0) * back;
             e.on = (anchor.0 + (e.on.0 - anchor.0) * f, anchor.1 + (e.on.1 - anchor.1) * f);
             e.near *= f;
