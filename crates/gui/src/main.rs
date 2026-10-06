@@ -4693,6 +4693,14 @@ fn read_layout() -> Layout {
             _ => {}
         }
     }
+    // The one lens of before (for all): each step's now.
+    if let Some(z) = l.zoom.take() {
+        if l.shots.iter().all(|s| s.zoom == 1.0) {
+            for s in &mut l.shots {
+                s.zoom = z;
+            }
+        }
+    }
     l
 }
 
