@@ -18,12 +18,14 @@ use std::time::Instant;
 use adw::prelude::*;
 use gtk::gdk;
 
-use super::{board, close_boards, menu_lines, set_style, settings_lines, show_fold, square, table_under, trace, Ui, DUO_PX_PER_MM};
-use crate::scene::{self, Layout, Shot, EASES, FONTS, INKS, PAPERS, PARTS, STEPS, WIDTHS};
+use super::{board, close_boards, menu_lines_for, section_page, set_style, show_fold, square, table_under, trace, Ui, DUO_PX_PER_MM};
+use crate::scene::{self, Layout, Shot, EASES, FONTS, HEIGHTS, INKS, ORDER, PAPERS, PARTS, SECTIONS, STEPS, WIDTHS};
 
 /// The frame's own size: laid out at this, shown scaled to the page (or to
 /// what the editor leaves of it).
 pub const REF: (f32, f32) = (1000.0, 800.0);
+/// As the wallpaper: a screen's (16:9).
+pub const REF_WALL: (f32, f32) = (1600.0, 900.0);
 /// The editor's bar and panel (px), and the room round the frame.
 const BAR_H: f32 = 92.0;
 const PANEL_W: f32 = 300.0;
@@ -58,13 +60,24 @@ pub struct Editor {
     zoom: gtk::SpinButton,
     pan: [gtk::SpinButton; 2],
     top: gtk::SpinButton,
+    tilt: gtk::SpinButton,
+    turn: gtk::SpinButton,
     reset_eye: gtk::Button,
+    section_row: gtk::Box,
+    section: gtk::DropDown,
     part_title: gtk::Label,
     part_box: gtk::Box,
     part_at: [gtk::SpinButton; 2],
     size_row: gtk::Box,
     size: gtk::SpinButton,
+    shown: gtk::Switch,
+    bright: gtk::SpinButton,
+    height_row: gtk::Box,
+    height: gtk::SpinButton,
     looks: Vec<gtk::DropDown>,
+    /// The cable as the app had it before editing (the frames have their
+    /// own).
+    cable_was: Cell<Option<bool>>,
     /// The step shown (held there; none: as it goes), the part chosen and
     /// the one under the pointer.
     pub preview: Cell<Option<usize>>,
@@ -113,11 +126,13 @@ pub fn build() -> Editor {
     let time_row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).height_request(46).build();
     bar.append(&steps_row);
     bar.append(&time_row);
-    let steps: Vec<gtk::ToggleButton> = STEPS
+    // The steps as the line of time has them (ORDER): button k is step
+    // ORDER[k].
+    let steps: Vec<gtk::ToggleButton> = ORDER
         .iter()
         .enumerate()
-        .map(|(i, name)| {
-            let b = gtk::ToggleButton::builder().label(format!("{} {name}", i + 1)).css_classes(["flat"]).valign(gtk::Align::Center).build();
+        .map(|(k, &i)| {
+            let b = gtk::ToggleButton::builder().label(format!("{} {}", k + 1, STEPS[i])).css_classes(["flat", "step"]).valign(gtk::Align::Center).build();
             steps_row.append(&b);
             b
         })
@@ -139,9 +154,8 @@ pub fn build() -> Editor {
     time_row.append(&play);
     time_row.append(&scrub);
     time_row.append(&speed);
-    steps_row.append(&gtk::Box::builder().hexpand(true).build());
     for w in [undo_button.upcast_ref::<gtk::Widget>(), redo_button.upcast_ref(), state.upcast_ref(), cancel.upcast_ref(), ok.upcast_ref()] {
-        steps_row.append(w);
+        time_row.append(w);
     }
 
     let panel = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).css_classes(["editor-panel-in"]).build();
@@ -155,7 +169,15 @@ pub fn build() -> Editor {
     panel.append(&row("zoom", &[zoom.upcast_ref()]));
     panel.append(&row("moved", &[pan[0].upcast_ref(), pan[1].upcast_ref()]));
     panel.append(&row("from above", &[top.upcast_ref()]));
+    let tilt = spin(-60.0, 60.0, 1.0, 0);
+    let turn = spin(-180.0, 180.0, 1.0, 0);
+    panel.append(&row("tipped °", &[tilt.upcast_ref()]));
+    panel.append(&row("turned °", &[turn.upcast_ref()]));
     panel.append(&reset_eye);
+    let section = gtk::DropDown::from_strings(&SECTIONS.map(|k| if k == "itemgrid" { "about item/grid" } else { k }));
+    section.set_hexpand(true);
+    let section_row = row("section", &[section.upcast_ref()]);
+    panel.append(&section_row);
     panel.append(&heading("way in"));
     let delay = spin(0.0, 10.0, 0.05, 2);
     let secs = spin(0.01, 10.0, 0.05, 2);
@@ -173,6 +195,13 @@ pub fn build() -> Editor {
     let part_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     part_box.append(&row("place", &[part_at[0].upcast_ref(), part_at[1].upcast_ref()]));
     part_box.append(&size_row);
+    let shown = gtk::Switch::builder().halign(gtk::Align::Start).valign(gtk::Align::Center).build();
+    let bright = spin(0.0, 2.0, 0.05, 2);
+    let height = spin(0.0, 3.0, 0.05, 2);
+    let height_row = row("height", &[height.upcast_ref()]);
+    part_box.append(&row("shown", &[shown.upcast_ref()]));
+    part_box.append(&row("strength", &[bright.upcast_ref()]));
+    part_box.append(&height_row);
     panel.append(&part_box);
     panel.append(&heading("looks · all steps"));
     let looks: Vec<gtk::DropDown> = [
@@ -209,6 +238,16 @@ pub fn build() -> Editor {
         .visible(false)
         .css_classes(["editor-panel"])
         .build();
+    // The wheel over the panel scrolls it (it turned the number under the
+    // pointer instead).
+    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let adj = panel.vadjustment();
+    scroll.connect_scroll(move |_, _, dy| {
+        adj.set_value(adj.value() + dy * 48.0);
+        gtk::glib::Propagation::Stop
+    });
+    panel.add_controller(scroll);
     Editor {
         bar,
         panel,
@@ -228,13 +267,22 @@ pub fn build() -> Editor {
         zoom,
         pan,
         top,
+        tilt,
+        turn,
         reset_eye,
+        section_row,
+        section,
         part_title,
         part_box,
         part_at,
         size_row,
         size,
+        shown,
+        bright,
+        height_row,
+        height,
         looks,
+        cable_was: Cell::new(None),
         preview: Cell::new(None),
         t: Cell::new(0.0),
         playing: Cell::new(false),
@@ -252,6 +300,7 @@ pub fn build() -> Editor {
 pub const CSS: &str = "
 .editor-bar { background: alpha(white, 0.97); border-bottom: 1px solid alpha(black, 0.10); padding: 0 10px; }
 .editor-bar button { padding: 2px 8px; min-height: 0; }
+.editor-bar button.step { padding: 2px 5px; font-size: 8.5pt; }
 .editor-bar button:checked { background: alpha(black, 0.10); }
 .editor-panel { background: alpha(white, 0.97); border-left: 1px solid alpha(black, 0.10); }
 .editor-panel-in { padding: 14px 16px; }
@@ -262,12 +311,12 @@ window.night .editor-bar, window.night .editor-panel { background: alpha(#2a2a2e
 pub fn connect(ui: &std::rc::Rc<Ui>) {
     let ed = &ui.ed;
     let weak = |ui: &std::rc::Rc<Ui>| std::rc::Rc::downgrade(ui);
-    for (i, b) in ed.steps.iter().enumerate() {
+    for (k, b) in ed.steps.iter().enumerate() {
         let w = weak(ui);
         b.connect_clicked(move |_| {
             if let Some(ui) = w.upgrade() {
                 if !ui.ed.syncing.get() {
-                    show_step(&ui, Some(i));
+                    show_step(&ui, Some(ORDER[k]));
                 }
             }
         });
@@ -357,6 +406,48 @@ pub fn connect(ui: &std::rc::Rc<Ui>) {
     eye_spin(&ed.pan[0], |s, v| s.pan.0 = v);
     eye_spin(&ed.pan[1], |s, v| s.pan.1 = v);
     eye_spin(&ed.top, |s, v| s.top = v);
+    eye_spin(&ed.tilt, |s, v| s.tilt = v);
+    eye_spin(&ed.turn, |s, v| s.turn = v);
+    let w = weak(ui);
+    ed.section.connect_selected_notify(move |d| {
+        let Some(ui) = w.upgrade() else { return };
+        if ui.ed.syncing.get() {
+            return;
+        }
+        let k = (d.selected() as usize).min(SECTIONS.len() - 1);
+        change(&ui, "section", |l, _| l.section = k);
+        // The section open shown anew.
+        if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
+            p.close();
+        }
+        *ui.page.borrow_mut() = None;
+        go_to(&ui, ui.ed.t.get());
+    });
+    // The part chosen: shown, its strength, its height.
+    let part_num = |s: &gtk::SpinButton, kind: &'static str, set: fn(&mut scene::Place, usize, f32)| {
+        let w = weak(ui);
+        s.connect_value_changed(move |s| {
+            let Some(ui) = w.upgrade() else { return };
+            if ui.ed.syncing.get() {
+                return;
+            }
+            let Some(part) = ui.ed.selected.get() else { return };
+            let v = s.value() as f32;
+            change(&ui, kind, |l, i| set(&mut l.steps[i].place, part, v));
+        });
+    };
+    part_num(&ed.bright, "strength", |p, k, v| p.bright[k] = v);
+    part_num(&ed.height, "height", |p, k, v| p.height[k] = v);
+    let w = weak(ui);
+    ed.shown.connect_active_notify(move |sw| {
+        let Some(ui) = w.upgrade() else { return };
+        if ui.ed.syncing.get() {
+            return;
+        }
+        let Some(part) = ui.ed.selected.get() else { return };
+        let v = if sw.is_active() { 1.0 } else { 0.0 };
+        change(&ui, "shown", |l, i| l.steps[i].place.show[part] = v);
+    });
     for axis in 0..2 {
         let w = weak(ui);
         ed.part_at[axis].connect_value_changed(move |s| {
@@ -417,6 +508,9 @@ pub fn set_on(ui: &std::rc::Rc<Ui>, on: bool) {
     ed.hover.set(None);
     trace(format_args!("layout: {}", if on { "editing" } else { "fixed" }));
     if on {
+        if ed.cable_was.get().is_none() {
+            ed.cable_was.set(Some(ui.cable.is_visible()));
+        }
         show_step(ui, Some(ed.preview.get().unwrap_or(0)));
     } else {
         // The app as it goes again: the start over, the phone as it is.
@@ -425,7 +519,12 @@ pub fn set_on(ui: &std::rc::Rc<Ui>, on: bool) {
         let mut intro = ui.intro.borrow_mut();
         intro.hold = None;
         intro.force_sink = None;
+        intro.wave_hold = None;
+        intro.note_hold = None;
         drop(intro);
+        if let Some(c) = ed.cable_was.take() {
+            set_cable(ui, c);
+        }
         close_boards(ui);
         show_fold(ui, ui.fold.get().0);
     }
@@ -461,13 +560,14 @@ pub fn current_step(ui: &Ui) -> usize {
 /// Whether part `i` is seen at the step shown: only those are outlined,
 /// chosen and dragged.
 pub fn part_shown(ui: &Ui, i: usize) -> bool {
+    use scene::*;
     let step = current_step(ui);
     match i {
-        0 => step >= 4,
-        1 => step == 4,
+        0 => [PHONE, PHONE_OPEN, CABLE, MENU, SECTION, WALLPAPER].contains(&step),
+        1 => [PHONE, PHONE_OPEN, CABLE, WALLPAPER].contains(&step),
         2 => true,
         3 => step >= 3,
-        4 => step >= 5,
+        4 => [MENU, SECTION, MENU_BARE, SECTION_BARE].contains(&step),
         _ => step == 1,
     }
 }
@@ -592,11 +692,12 @@ pub fn show(ui: &Ui) {
     ed.syncing.set(true);
     let l = ui.layout.get();
     let shown = ed.preview.get();
-    for (i, b) in ed.steps.iter().enumerate() {
+    for (k, b) in ed.steps.iter().enumerate() {
+        let i = ORDER[k];
         if b.is_active() != (shown == Some(i)) {
             b.set_active(shown == Some(i));
         }
-        b.set_label(&format!("{}{} {}", if l.fixed[i] { "✓ " } else { "" }, i + 1, STEPS[i]));
+        b.set_label(&format!("{}{} {}", if l.fixed[i] { "✓ " } else { "" }, k + 1, STEPS[i]));
     }
     let i = current_step(ui);
     let kept = l.same(&ed.saved.get());
@@ -605,12 +706,13 @@ pub fn show(ui: &Ui) {
     ed.cancel.set_sensitive(!kept);
     ed.undo_button.set_sensitive(!ed.undo.borrow().is_empty());
     ed.redo_button.set_sensitive(!ed.redo.borrow().is_empty());
-    ed.step_title.set_label(&format!("{} · {}{}", i + 1, STEPS[i], if l.fixed[i] { "  ✓" } else { "" }));
+    let k = ORDER.iter().position(|&s| s == i).unwrap_or(0);
+    ed.step_title.set_label(&format!("{} · {}{}", k + 1, STEPS[i], if l.fixed[i] { "  ✓" } else { "" }));
     let script = l.script();
     ed.scrub.set_range(0.0, script.end as f64);
     ed.scrub.clear_marks();
-    for (k, r) in script.reached.iter().enumerate() {
-        ed.scrub.add_mark(*r as f64, gtk::PositionType::Bottom, Some(&format!("{}", k + 1)));
+    for (k, &s) in ORDER.iter().enumerate() {
+        ed.scrub.add_mark(script.reached[s] as f64, gtk::PositionType::Bottom, Some(&format!("{}", k + 1)));
     }
     ed.scrub.set_value(ed.t.get() as f64);
     ed.play.set_label(if ed.playing.get() { "❚❚" } else { "▶" });
@@ -623,6 +725,10 @@ pub fn show(ui: &Ui) {
     ed.pan[0].set_value(shot.pan.0 as f64);
     ed.pan[1].set_value(shot.pan.1 as f64);
     ed.top.set_value(shot.top as f64);
+    ed.tilt.set_value(shot.tilt as f64);
+    ed.turn.set_value(shot.turn as f64);
+    ed.section_row.set_visible([scene::SECTION, scene::SECTION_BARE].contains(&i));
+    ed.section.set_selected(l.section as u32);
     match ed.selected.get().filter(|&p| part_shown(ui, p)) {
         Some(p) => {
             ed.part_title.set_label(&format!("{} - at this step", PARTS[p]));
@@ -632,6 +738,12 @@ pub fn show(ui: &Ui) {
             ed.part_at[1].set_value(at.1 as f64);
             ed.size_row.set_visible(p == 1);
             ed.size.set_value(l.steps[i].place.duo_scale as f64);
+            let place = l.steps[i].place;
+            ed.shown.set_active(place.show[p] >= 0.5);
+            ed.bright.set_value(place.bright[p] as f64);
+            ed.height_row.set_visible(p == 2 || p == 3);
+            ed.height.set_value(place.height[p] as f64);
+            let _ = HEIGHTS;
         }
         None => {
             ed.part_title.set_label("none chosen - click a part in the frame");
@@ -654,35 +766,54 @@ pub fn show_step(ui: &Ui, i: Option<usize>) {
     go_to(ui, i.map_or(0.0, |i| script.reached[i]));
 }
 
-/// The line of time at `t`: the start held at its seconds, the phone, the
-/// menu and a section as far on as the script has them there.
+/// The line of time at `t`: the start held at its seconds; the wave, the
+/// note; the phone found, opened, on the cable; the menu and a section
+/// (with the phone's lines or with none); the wallpaper - each as far on
+/// as the script has it there.
 fn go_to(ui: &Ui, t: f32) {
     let l = ui.layout.get();
     let script = l.script();
     let t = t.clamp(0.0, script.end);
     ui.ed.t.set(t);
-    let at = script.at(&l.timing(), t);
+    let timing = l.timing();
+    let at = script.at(&timing, t);
+    let m = at.raw;
     {
         let mut intro = ui.intro.borrow_mut();
         intro.clear_note();
         intro.hold = Some(at.start_s);
-        intro.force_sink = Some(at.phone);
-        intro.sink = at.phone;
-        intro.sink_to = at.phone;
+        intro.force_sink = Some(m.phone);
+        intro.sink = m.phone;
+        intro.sink_to = m.phone;
+        intro.wave_hold = at.wave;
+        intro.note_hold = at.note.then(|| timing[scene::NOT_FOUND].eased(m.not_found));
     }
-    ui.duo_away.set(at.menu);
-    ui.page_back.set(at.section);
-    // The boards open as the script has them.
-    let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
-    if at.menu_open && !menu_open {
-        *ui.board.borrow_mut() = Some(board::Board::open(menu_lines(ui)));
+    ui.marks_raw.set([m.search, m.not_found, m.open, m.cable]);
+    ui.duo_away.set(m.menu);
+    ui.page_back.set(m.section);
+    ui.wallpaper_mix.set(m.wall);
+    // The sample phone: shut, opened flat, on the cable (opened).
+    let open = timing[scene::PHONE_OPEN].eased(m.open).max(timing[scene::CABLE].eased(m.cable));
+    ui.fold.set((180.0 * open as f64, 180.0 * open as f64));
+    set_cable(ui, m.cable > 0.5);
+    // The boards open as the script has them: the phone's menu or the bare
+    // one, the section chosen (with no phone, only item/grid's own).
+    let lines = menu_lines_for(at.phone_boards);
+    let menu_ok = ui.board.borrow().as_ref().is_some_and(|b| !b.closing() && b.lines.len() == lines.len());
+    if at.menu_open && !menu_ok {
+        *ui.board.borrow_mut() = Some(board::Board::open(lines));
+        *ui.page.borrow_mut() = None;
     }
-    let settings_open = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == "settings" && !b.closing());
-    if at.section_open && !settings_open {
+    let mut key = SECTIONS[l.section.min(SECTIONS.len() - 1)];
+    if !at.phone_boards && !["settings", "itemgrid"].contains(&key) {
+        key = "settings";
+    }
+    let page_ok = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == key && !b.closing());
+    if at.section_open && !page_ok {
         if let Some(b) = ui.board.borrow_mut().as_mut() {
-            b.chosen = b.lines.iter().position(|l| l.key == "settings");
+            b.chosen = b.lines.iter().position(|l| l.key == key);
         }
-        *ui.page.borrow_mut() = Some(("settings".to_owned(), board::Board::open(settings_lines(ui))));
+        *ui.page.borrow_mut() = Some((key.to_owned(), board::Board::open(section_page(ui, key))));
     }
     if !at.section_open {
         if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
@@ -706,6 +837,16 @@ fn go_to(ui: &Ui, t: f32) {
         ui.ed.syncing.set(false);
     }
     show_fold(ui, ui.fold.get().0);
+}
+
+/// The cable drawn or not.
+fn set_cable(ui: &Ui, on: bool) {
+    if ui.cable.is_visible() != on {
+        ui.cable.set_visible(on);
+        for p in &ui.cable_plug {
+            p.set_visible(on);
+        }
+    }
 }
 
 /// Play from here (from the beginning at the end), or pause.
@@ -747,8 +888,6 @@ pub fn tick(ui: &Ui, dt: f32) -> bool {
 /// (whatever the phone there is does; tilt_to and fold_to wait while
 /// editing).
 fn hold_sample(ui: &Ui) {
-    let (fold, _) = ui.fold.get();
-    ui.fold.set((fold, 0.0));
     let (tilt, _) = ui.tilt.get();
     ui.tilt.set((tilt, [0.0, 0.0]));
     let o = ui.orient.get();
@@ -903,8 +1042,9 @@ pub fn key(ui: &Ui, key: gdk::Key, state: gdk::ModifierType) -> bool {
 }
 
 fn step_by(ui: &Ui, by: i32) -> bool {
-    let i = (current_step(ui) as i32 + by).clamp(0, STEPS.len() as i32 - 1) as usize;
-    show_step(ui, Some(i));
+    let k = ORDER.iter().position(|&s| s == current_step(ui)).unwrap_or(0) as i32;
+    let k = (k + by).clamp(0, ORDER.len() as i32 - 1) as usize;
+    show_step(ui, Some(ORDER[k]));
     true
 }
 

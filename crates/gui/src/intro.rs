@@ -42,7 +42,7 @@ pub struct Flip {
 /// growing out, the eye coming down, the cubes down and the buttons up):
 /// the layout's (scene.rs; the editor sets them), as it came by itself
 /// until it is given them.
-use crate::scene::{Trans, START_STEPS, TRANS};
+use crate::scene::{Trans, PHONE, START_STEPS, TRANS};
 
 /// The buttons' step as it was laid out (its parts' times inside it, in
 /// its seconds): the buttons this long after the cubes begin to go down.
@@ -72,7 +72,14 @@ pub struct Intro {
     pub force_sink: Option<f32>,
     /// The steps' ways in (the layout's).
     pub timing: [Trans; crate::scene::STEPS.len()],
+    /// The editor's: the wave held at these seconds; the note (not found)
+    /// held this strong.
+    pub wave_hold: Option<f32>,
+    pub note_hold: Option<f32>,
 }
+
+/// The note when the phone is not found.
+pub const NOT_FOUND: &str = "plug in usb\nor wi-fi on";
 
 /// The wave goes on at least so long (a look over the cable alone is over
 /// in a moment, and the cubes would only twitch).
@@ -87,7 +94,7 @@ impl Default for Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(30.0));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, hold: None, force_sink: None, timing: TRANS }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, hold: None, force_sink: None, timing: TRANS, wave_hold: None, note_hold: None }
     }
 }
 
@@ -261,6 +268,9 @@ impl Intro {
 
     /// The wave still going (looking, or not yet long enough).
     pub fn searching(&self) -> bool {
+        if self.wave_hold.is_some() {
+            return true;
+        }
         match self.search {
             Some((since, None)) => since.elapsed().as_secs_f32() < 30.0,
             Some((since, Some(_))) => since.elapsed().as_secs_f32() < SEARCH_MIN_S,
@@ -292,9 +302,9 @@ impl Intro {
                 lift -= 0.25 * (t * std::f32::consts::PI).sin();
             }
         }
-        if let Some((since, _)) = self.search {
-            if self.searching() {
-                let t = since.elapsed().as_secs_f32();
+        let wave_t = self.wave_hold.or_else(|| self.search.filter(|_| self.searching()).map(|(since, _)| since.elapsed().as_secs_f32()));
+        {
+            if let Some(t) = wave_t {
                 // Softly in at the start; along the word, a hop a cube.
                 let phase = t * 1.6 - i as f32 * 0.14;
                 let hop = (phase * std::f32::consts::TAU).sin().max(0.0).powi(2);
@@ -306,6 +316,9 @@ impl Intro {
 
     /// The note under the word (not found) and its strength.
     pub fn note(&self) -> Option<(&str, f32)> {
+        if let Some(strength) = self.note_hold {
+            return Some((NOT_FOUND, strength));
+        }
         let (text, at) = self.note.as_ref()?;
         let t = Instant::now().saturating_duration_since(*at).as_secs_f32();
         (Instant::now() >= *at).then_some((text.as_str(), smooth(t / 0.4)))
@@ -313,7 +326,7 @@ impl Intro {
 
     /// The Duo: seen as the last cube goes down, gone as the first rises.
     pub fn duo(&self) -> f32 {
-        self.timing[4].eased(self.sink)
+        self.timing[PHONE].eased(self.sink)
     }
 
     /// A frame on: the cubes toward where they go (once the start is
@@ -352,7 +365,7 @@ impl Intro {
             self.sink = sink_to;
             return moving;
         }
-        self.sink += d.signum() * (dt / self.timing[4].all()).min(d.abs());
+        self.sink += d.signum() * (dt / self.timing[PHONE].all()).min(d.abs());
         true
     }
 }

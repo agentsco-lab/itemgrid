@@ -528,6 +528,10 @@ struct Ui {
     /// The step the frame is at now (scene.rs), and the layout editor
     /// (editor.rs).
     step_now: std::cell::Cell<usize>,
+    /// The steps after the start that the app has no way of its own for:
+    /// looked for, not found, opened (on Wi-Fi), on the cable - each's way
+    /// (0..1, not yet eased) as it goes.
+    marks_raw: std::cell::Cell<[f32; 4]>,
     ed: editor::Editor,
     /// The Duo put away while the menu is open (eased 0 .. 1).
     duo_away: std::cell::Cell<f32>,
@@ -1081,6 +1085,7 @@ fn build(app: &adw::Application) {
             static FRAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             let t = std::time::Instant::now();
             draw_floor(&fv.borrow(), cr, w, h);
+            draw_outlines(&fv.borrow(), cr);
             if let Some(frame) = fv.borrow().frame {
                 editor::draw_frame(cr, frame, (w as f64, h as f64));
             }
@@ -1330,6 +1335,7 @@ fn build(app: &adw::Application) {
         layout_edit: std::cell::Cell::new(false),
         layout_boxes: std::cell::Cell::new([[0.0; 4]; 6]),
         step_now: std::cell::Cell::new(0),
+        marks_raw: std::cell::Cell::new([0.0; 4]),
         ed,
         duo_away: std::cell::Cell::new(0.0),
         duo_drawn_at: std::cell::Cell::new(None),
@@ -2395,16 +2401,33 @@ fn build(app: &adw::Application) {
                 let scripted = ui.layout_edit.get();
                 let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
                 let (a, a_to) = (ui.duo_away.get(), if menu_open { 1.0 } else { 0.0 });
-                let a_step = if scripted { 0.0 } else { (a_to - a).signum() * (dt.clamp(0.0, 0.1) / timing[5].all()).min((a_to - a).abs()) };
+                let a_step = if scripted { 0.0 } else { (a_to - a).signum() * (dt.clamp(0.0, 0.1) / timing[scene::MENU].all()).min((a_to - a).abs()) };
                 if a_step != 0.0 {
                     ui.duo_away.set(a + a_step);
                 }
+                // Looked for, not found, opened, on the cable: as they are.
+                let marked = if scripted {
+                    false
+                } else {
+                    let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
+                    let intro = ui.intro.borrow();
+                    let to = [intro.searching(), intro.note().is_some(), wifi && ui.wifi_open.get(), ui.cable.is_visible()];
+                    drop(intro);
+                    let now = ui.marks_raw.get();
+                    let next: [f32; 4] = std::array::from_fn(|k| {
+                        let to = if to[k] { 1.0 } else { 0.0 };
+                        let all = timing[[scene::SEARCH, scene::NOT_FOUND, scene::PHONE_OPEN, scene::CABLE][k]].all();
+                        now[k] + (to - now[k]).signum() * (dt.clamp(0.0, 0.1) / all).min((to - now[k]).abs())
+                    });
+                    ui.marks_raw.set(next);
+                    next != now
+                };
                 let (now, to) = (ui.page_back.get(), if open { 1.0 } else { 0.0 });
-                let step = if scripted { 0.0 } else { (to - now).signum() * (dt.clamp(0.0, 0.1) / timing[6].all()).min((to - now).abs()) };
+                let step = if scripted { 0.0 } else { (to - now).signum() * (dt.clamp(0.0, 0.1) / timing[scene::SECTION].all()).min((to - now).abs()) };
                 if step != 0.0 {
                     ui.page_back.set(now + step);
                 }
-                moving || sizing || step != 0.0 || a_step != 0.0
+                moving || sizing || step != 0.0 || a_step != 0.0 || marked
             };
             // The saver: the eye going over to drifting (and back), the
             // frames going on while it drifts.
@@ -2435,7 +2458,7 @@ fn build(app: &adw::Application) {
             // to the monitor or comes back.
             let walling = {
                 let (now, to) = (ui.wallpaper_mix.get(), if ui.wallpaper.get().is_some() { 1.0 } else { 0.0 });
-                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / WALL_S).min((to - now).abs());
+                let step = if ui.layout_edit.get() { 0.0 } else { (to - now).signum() * (dt.clamp(0.0, 0.1) / WALL_S).min((to - now).abs()) };
                 ui.wallpaper_mix.set(now + step);
                 step != 0.0
             };
@@ -3440,6 +3463,8 @@ struct FloorView {
     edit_boxes: Option<Vec<([f32; 4], bool)>>,
     /// The frame's rect on the page (editing: outlined, the rest dimmed).
     frame: Option<[f32; 4]>,
+    /// The word's and the buttons' strength as the step has them.
+    part_alpha: [f32; 6],
     /// The sheet outlined (the editor's guide while dragging).
     sheet_drawn: bool,
     grid_mid: (f32, f32),
@@ -3642,26 +3667,6 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
             }
         }
     }
-    // Layout editing: what can be dragged, outlined darker.
-    for ([l, t, r, b], chosen) in fv.edit_boxes.iter().flatten().copied() {
-        // (The part chosen solid, the one under the pointer dashed.)
-        if let (Some(a), Some(bb), Some(c), Some(d)) = (project(l, t), project(r, t), project(r, b), project(l, b)) {
-            cr.move_to(a.0, a.1);
-            cr.line_to(bb.0, bb.1);
-            cr.line_to(c.0, c.1);
-            cr.line_to(d.0, d.1);
-            cr.close_path();
-            cr.set_line_width(2.0);
-            if chosen {
-                cr.set_source_rgba(0.21, 0.52, 0.89, 0.9);
-            } else {
-                cr.set_dash(&[6.0, 4.0], 0.0);
-                ink(cr, 0.55);
-            }
-            let _ = cr.stroke();
-            cr.set_dash(&[], 0.0);
-        }
-    }
     draw_cubes(fv, cr);
     // The hole: seen through its opening - its floor dark, the walls that
     // face the viewer shaded darker downward, its rim.
@@ -3851,6 +3856,35 @@ fn inside(q: &[(f64, f64)], p: (f64, f64)) -> bool {
     odd
 }
 
+/// Layout editing: the part chosen (solid) and the one under the pointer
+/// (dashed) outlined - over all else (the cubes standing hid it).
+fn draw_outlines(fv: &FloorView, cr: &gtk::cairo::Context) {
+    use gtk::graphene;
+    let Some(m) = fv.matrix else { return };
+    let project = |x: f32, y: f32| -> Option<(f64, f64)> {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, fv.table, 1.0));
+        (v.w() > 0.05).then(|| ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64))
+    };
+    for ([l, t, r, b], chosen) in fv.edit_boxes.iter().flatten().copied() {
+        if let (Some(a), Some(bb), Some(c), Some(d)) = (project(l, t), project(r, t), project(r, b), project(l, b)) {
+            cr.move_to(a.0, a.1);
+            cr.line_to(bb.0, bb.1);
+            cr.line_to(c.0, c.1);
+            cr.line_to(d.0, d.1);
+            cr.close_path();
+            cr.set_line_width(2.0);
+            if chosen {
+                cr.set_source_rgba(0.21, 0.52, 0.89, 0.9);
+            } else {
+                cr.set_dash(&[6.0, 4.0], 0.0);
+                ink(cr, 0.55);
+            }
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+        }
+    }
+}
+
 /// The cube under a point of the page, the nearest one drawn over others.
 fn cube_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
     if fv.word <= 0.0 {
@@ -3907,7 +3941,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
 
     }
     let _ = cr.pop_group_to_source();
-    let _ = cr.paint_with_alpha(fv.word as f64);
+    let _ = cr.paint_with_alpha((fv.word * fv.part_alpha[2]).min(1.0) as f64);
     draw_texts(fv, cr);
     draw_flips(fv, cr);
     draw_buttons(fv, cr);
@@ -4480,6 +4514,40 @@ fn menu_lines(ui: &Ui) -> Vec<board::Line> {
     lines
 }
 
+/// A section's board lines (the editor's section steps; a click on the
+/// menu sets them so): item/grid's own, or the phone's facts in words (none
+/// yet: so said).
+fn section_page(ui: &Ui, key: &str) -> Vec<board::Line> {
+    match key {
+        "settings" => return settings_lines(ui),
+        "itemgrid" => return vec![board::Line::new("", format!("itemgrid  {}", env!("CARGO_PKG_VERSION")))],
+        _ => {}
+    }
+    let rows = ui.section_words.borrow().get(key).cloned().unwrap_or_else(|| vec![("", "no duo yet".to_owned())]);
+    let wide = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    rows.iter()
+        .map(|(k, v)| {
+            let k = k.to_lowercase();
+            let v: String = v.chars().take(36).collect();
+            board::Line::new(k.clone(), if k.is_empty() { v } else { format!("{k:wide$}  {v}") })
+        })
+        .collect()
+}
+
+/// The menu's lines with the phone or with none.
+fn menu_lines_for(phone: bool) -> Vec<board::Line> {
+    let mut lines: Vec<board::Line> = if phone {
+        NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
+    } else {
+        Vec::new()
+    };
+    lines.push(board::Line::new("settings", "settings"));
+    if !phone {
+        lines.push(board::Line::new("itemgrid", "about"));
+    }
+    lines
+}
+
 /// The menu and the section on the table closed.
 fn close_boards(ui: &Ui) {
     if let Some(b) = ui.board.borrow_mut().as_mut() {
@@ -4709,7 +4777,7 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
         let strong = if fv.hover_button == Some(i) { 0.9 } else { 0.5 };
         draw_sign(cr, *b, top[0], top[1], top[3], strong);
         let _ = cr.pop_group_to_source();
-        let _ = cr.paint_with_alpha((fv.word * fv.button_in[i]) as f64);
+        let _ = cr.paint_with_alpha((fv.word * fv.button_in[i] * fv.part_alpha[3]).min(1.0) as f64);
     }
 }
 
@@ -5284,11 +5352,13 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // below in the frame's px (`page`: its size; `off` the Duo's room's
         // corner in them), the eye scaled into the page's at the end.
         let room_rect = editor::frame_room(ui);
-        let frame_s = (room_rect[2] / editor::REF.0).min(room_rect[3] / editor::REF.1).max(0.05);
-        let frame_at = (room_rect[0] + (room_rect[2] - editor::REF.0 * frame_s) / 2.0, room_rect[1] + (room_rect[3] - editor::REF.1 * frame_s) / 2.0);
+        // As the wallpaper, a screen's frame (16:9).
+        let wall_e = ui.layout.get().steps[scene::WALLPAPER].trans.ease.at(ui.wallpaper_mix.get());
+        let frame_size = (editor::REF.0 + (editor::REF_WALL.0 - editor::REF.0) * wall_e, editor::REF.1 + (editor::REF_WALL.1 - editor::REF.1) * wall_e);
+        let frame_s = (room_rect[2] / frame_size.0).min(room_rect[3] / frame_size.1).max(0.05);
+        let frame_at = (room_rect[0] + (room_rect[2] - frame_size.0 * frame_s) / 2.0, room_rect[1] + (room_rect[3] - frame_size.1 * frame_s) / 2.0);
         let off = ((off_page.0 - frame_at.0) / frame_s, (off_page.1 - frame_at.1) / frame_s);
-        let page_w = editor::REF.0;
-        let page_h = editor::REF.1;
+        let (page_w, page_h) = frame_size;
         let intro = ui.intro.borrow();
         let eye = intro.eye();
         // As the wallpaper the eye nearly straight above (the word and the
@@ -5302,7 +5372,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         };
         // The eye's middle: the frame's as the 1000×800 window had it (the
         // Duo's room's middle there).
-        let middle = (FRAME_MIDDLE.0 - off.0, FRAME_MIDDLE.1 - off.1);
+        let middle = (FRAME_MIDDLE.0 * page_w / editor::REF.0 - off.0, FRAME_MIDDLE.1 * page_h / editor::REF.1 - off.1);
         if std::env::var_os("ITEMGRID_SHEET").is_some() {
             trace(format_args!("frame: room middle on the page {:?} page {}x{} frame at {frame_at:?} scale {frame_s}", (holder.min(width) / 2.0 + off_page.0, room / 2.0 + off_page.1), ui.floor.width(), ui.floor.height()));
         }
@@ -5354,9 +5424,23 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let layout = ui.layout.get();
         // The step the frame is at: each step's places and eye, one into the
         // next as the start and what comes after go on (scene.rs).
-        let away = intro.timing[5].eased(ui.duo_away.get());
-        let back_now = intro.timing[6].eased(ui.page_back.get());
-        let (step, step_now) = layout.at([intro.grid(), eye, intro.button(0), intro.duo(), away, back_now]);
+        let away = intro.timing[scene::MENU].eased(ui.duo_away.get());
+        let back_now = intro.timing[scene::SECTION].eased(ui.page_back.get());
+        let marks = {
+            let raw = ui.marks_raw.get();
+            let t = &intro.timing;
+            scene::Marks {
+                search: t[scene::SEARCH].eased(raw[0]),
+                not_found: t[scene::NOT_FOUND].eased(raw[1]),
+                phone: intro.duo(),
+                open: t[scene::PHONE_OPEN].eased(raw[2]),
+                cable: t[scene::CABLE].eased(raw[3]),
+                menu: away,
+                section: back_now,
+                wall: wall_e,
+            }
+        };
+        let (step, step_now) = layout.at([intro.grid(), eye, intro.button(0)], marks);
         let (place, shot) = (step.place, step.shot);
         if ui.step_now.replace(step_now) != step_now && ui.layout_edit.get() {
             editor::show(ui);
@@ -5477,7 +5561,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // The whole of it in the page's middle.
             Eye { on: (to.0 + to.0 - (x0 + x1) / 2.0, to.1 + to.1 - (y0 + y1) / 2.0), ..e2 }
         };
-        let back = intro.timing[6].eased(ui.page_back.get());
+        let back = intro.timing[scene::SECTION].eased(ui.page_back.get());
         let mut e = mix(mix(mix(above, rest, eye), near_note, intro.near_note()), page_view, back);
         // The saver: the eye drifting slowly over the table, round the word.
         let drift = ui.saver_mix.get();
@@ -5614,6 +5698,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             (b.0 - a.0).abs() / 2.0
         };
         e.on.0 -= half * (1.0 - flat);
+        // The step's eye tipped and turned (not as the saver drifts).
+        let kept_s = 1.0 - ui.saver_mix.get();
+        e.tilt = (e.tilt + shot.tilt * kept_s).clamp(0.0, 85.0);
+        let turn = shot.turn * kept_s;
         // The step's eye moved over the table.
         let kept_k = 1.0 - ui.saver_mix.get();
         e.look = (e.look.0 + shot.pan.0 * cur * kept_k, e.look.1 + shot.pan.1 * cur * kept_k);
@@ -5625,7 +5713,15 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let eye_x = e.look.0;
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
         let grid_mid = e.look;
-        let rest = matrix(e);
+        // (Turned round the point it looks at.)
+        let rest = gsk::Transform::new()
+            .translate(&graphene::Point::new(e.on.0, e.on.1))
+            .scale(e.near, e.near)
+            .perspective(e.far * h)
+            .rotate_3d(e.tilt, &graphene::Vec3::x_axis())
+            .rotate_3d(turn, &graphene::Vec3::z_axis())
+            .translate_3d(&graphene::Point3D::new(-e.look.0, -e.look.1, 0.0))
+            .to_matrix();
         // The Duo's view (at its rest: its middle at the table's origin,
         // seen from `at`) into this eye's.
         let duo_rest = gsk::Transform::new().translate(&graphene::Point::new(duo_at.0, duo_at.1)).perspective(3.2 * h).rotate_3d(TILT, &graphene::Vec3::x_axis()).to_matrix();
@@ -5653,11 +5749,13 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
         let hover_button = ui.buttons.borrow().hover;
-        let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat)).max(0.0)));
+        let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat) * place.height[2]).max(0.0)));
+        // Each part as the step has it: shown, how strong.
+        let part_alpha: [f32; 6] = std::array::from_fn(|k| (place.show[k] * place.bright[k]).clamp(0.0, 2.0));
         // Each button coming in on the table as the word's cubes go down,
         // one after the other; they lie there, squares as the word's.
         let button_in: [f32; BUTTONS] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
-        let button_lift = [0.0f32; BUTTONS];
+        let button_lift = [place.height[3].max(0.0); BUTTONS];
         // The credit under the word, a letter a square; the note there
         // after looking (not found): what to do.
         let mut texts = Vec::new();
@@ -5672,7 +5770,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
                 let f = intro.credit_flip(i, ch, ((grown - d) / (14.0 * cur)).clamp(0.0, 1.0));
-                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, 0.8 * f.strength as f64) }
+                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, (0.8 * f.strength * part_alpha[5]).min(1.0) as f64) }
             })
             .collect();
         // The open board (the sections' menu) under the word, a row apart
@@ -5681,7 +5779,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let board_at = (board_at.0 + place.menu.0 * cur, board_at.1 + place.menu.1 * cur);
         let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8));
         if let Some(b) = ui.board.borrow().as_ref() {
-            tiles.extend(b.tiles(board_at, cur));
+            tiles.extend(b.tiles(board_at, cur).into_iter().map(|t| board::Tile { rgba: (t.rgba.0, t.rgba.1, t.rgba.2, (t.rgba.3 * part_alpha[4] as f64).min(1.0)), ..t }));
         }
         // A section's board beside the menu, two squares apart.
         let page_at = (board_at.0 + (menu_cols + 2) as f32 * cur, board_at.1);
@@ -5698,7 +5796,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             ui.layout_boxes.set(b);
         }
         if let Some((_, b)) = ui.page.borrow().as_ref() {
-            tiles.extend(b.tiles(page_at, cur));
+            tiles.extend(b.tiles(page_at, cur).into_iter().map(|t| board::Tile { rgba: (t.rgba.0, t.rgba.1, t.rgba.2, (t.rgba.3 * part_alpha[4] as f64).min(1.0)), ..t }));
         }
         // The phone's words under it, a letter a square of the table (never
         // smaller: the words are made short instead) - its number, its
@@ -5743,8 +5841,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             b[0] = [x, top, x + wide, top + rows * cur];
             ui.layout_boxes.set(b);
             let (head, rest) = lines.split_at(1);
-            texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
-            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
+            let strength = (intro.duo() * part_alpha[0]).min(1.0);
+            texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
+            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
         }
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
@@ -5752,9 +5851,14 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
         // Put away while the menu is open (it was over the boards).
-        let away = intro.timing[5].eased(ui.duo_away.get());
-        let shown = intro.duo() * (1.0 - away);
+        let away = intro.timing[scene::MENU].eased(ui.duo_away.get());
+        let shown = intro.duo() * (1.0 - away) * place.show[1];
         ui.duo.set_opacity(shown as f64);
+        // Its cable with it (left on the table, under the menu).
+        ui.cable.set_opacity(shown as f64);
+        for p in &ui.cable_plug {
+            p.set_opacity(shown as f64);
+        }
         // Away, the clicks go through it to the boards.
         if let Some(holder) = ui.duo.parent() {
             let target = !ui.layout_edit.get() && away < 0.5;
@@ -5770,11 +5874,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         drop(intro);
         // Editing: the frame outlined, the table round it dimmed.
-        let frame = ui.layout_edit.get().then_some([frame_at.0, frame_at.1, editor::REF.0 * frame_s, editor::REF.1 * frame_s]);
+        let frame = ui.layout_edit.get().then_some([frame_at.0, frame_at.1, frame_size.0 * frame_s, frame_size.1 * frame_s]);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.sheet_drawn != editor::sheet_shown(ui) || fv.edit_boxes != editor::outlines(ui) || fv.frame != frame;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.sheet_drawn != editor::sheet_shown(ui) || fv.edit_boxes != editor::outlines(ui) || fv.frame != frame || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), sheet_drawn: editor::sheet_shown(ui), edit_boxes: editor::outlines(ui), frame, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), sheet_drawn: editor::sheet_shown(ui), edit_boxes: editor::outlines(ui), frame, part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
@@ -5851,9 +5955,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
-    ui.cable.set_visible(link == "cable");
-    for p in &ui.cable_plug {
-        p.set_visible(link == "cable");
+    // (Editing, the frames' sample has it.)
+    if !ui.layout_edit.get() {
+        ui.cable.set_visible(link == "cable");
+        for p in &ui.cable_plug {
+            p.set_visible(link == "cable");
+        }
     }
     // Over Wi-Fi drawn shut, lying on the table, still: it comes to life on
     // the cable.

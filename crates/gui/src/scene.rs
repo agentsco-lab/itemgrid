@@ -13,8 +13,22 @@
 
 /// The steps, as the start and what comes after show them: the word alone,
 /// the credit come with the squares, the eye down (the cubes standing), the
-/// buttons up, the phone there, the menu open, a section open.
-pub const STEPS: [&str; 7] = ["logo", "agentsco", "cubes", "buttons", "phone", "menu", "section"];
+/// buttons up; no phone: looked for (the wave), not found (the note); the
+/// phone there (on Wi-Fi, shut), opened (a click), on the cable; the menu
+/// and a section open (with the phone, and with none: "bare"); the
+/// wallpaper.
+pub const STEPS: [&str; 14] = [
+    "logo", "agentsco", "cubes", "buttons", "search", "not found", "phone", "phone open", "cable", "menu", "section", "menu bare", "section bare", "wallpaper",
+];
+
+/// Where a step not yet laid out (not in the file) takes its places and
+/// eye from: the one it comes from.
+const PARENT: [usize; STEPS.len()] = [0, 0, 1, 2, 3, 4, 3, 6, 6, 6, 9, 9, 10, 3];
+
+/// The steps in the editor's line of time: the start, the phone looked for
+/// and not found, the menu and a section with none, then the phone found,
+/// opened, on the cable, the menu and a section with it, the wallpaper.
+pub const ORDER: [usize; STEPS.len()] = [0, 1, 2, 3, 4, 5, 11, 12, 6, 7, 8, 9, 10, 13];
 
 /// The parts the editor moves (their index is the part's number
 /// everywhere): the phone's words, the Duo, the word, the buttons, the
@@ -73,6 +87,10 @@ pub const FONTS: [(&str, &str); 20] = [
     ("merri", "Merriweather"),
 ];
 
+/// The sections a section step can show (the menu's keys; with no phone
+/// only the first two are there).
+pub const SECTIONS: [&str; 10] = ["settings", "itemgrid", "overview", "agent", "look", "battery", "storage", "about", "updates", "repair"];
+
 /// The looks chosen: indices into PAPERS, INKS, WIDTHS, FONTS.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Style {
@@ -102,12 +120,38 @@ pub struct Place {
     pub menu: (f32, f32),
     pub credit: (f32, f32),
     pub duo_scale: f32,
+    /// Each part (PARTS) shown (1) or hidden (0; between, fading), how
+    /// strong it is drawn (1 as it comes), and how high it stands: the
+    /// word's cubes (times as high as they come), the buttons (raised as
+    /// boxes, squares).
+    pub show: [f32; PARTS.len()],
+    pub bright: [f32; PARTS.len()],
+    pub height: [f32; PARTS.len()],
 }
+
+/// The parts' heights as they come: the word's cubes as they stand, the
+/// buttons flat.
+pub const HEIGHTS: [f32; PARTS.len()] = [1.0, 1.0, 1.0, 0.0, 1.0, 1.0];
 
 impl Default for Place {
     fn default() -> Place {
-        Place { words: (0.0, 4.0), duo: None, word: (0.0, 0.0), buttons: (0.0, 0.0), menu: (0.0, 0.0), credit: (0.0, 0.0), duo_scale: 1.0 }
+        Place {
+            words: (0.0, 4.0),
+            duo: None,
+            word: (0.0, 0.0),
+            buttons: (0.0, 0.0),
+            menu: (0.0, 0.0),
+            credit: (0.0, 0.0),
+            duo_scale: 1.0,
+            show: [1.0; PARTS.len()],
+            bright: [1.0; PARTS.len()],
+            height: HEIGHTS,
+        }
     }
+}
+
+fn lerp_all<const N: usize>(a: [f32; N], b: [f32; N], f: f32) -> [f32; N] {
+    std::array::from_fn(|i| a[i] + (b[i] - a[i]) * f)
 }
 
 fn lerp2(a: (f32, f32), b: (f32, f32), f: f32) -> (f32, f32) {
@@ -128,6 +172,9 @@ impl Place {
             menu: lerp2(self.menu, to.menu, f),
             credit: lerp2(self.credit, to.credit, f),
             duo_scale: self.duo_scale + (to.duo_scale - self.duo_scale) * f,
+            show: lerp_all(self.show, to.show, f),
+            bright: lerp_all(self.bright, to.bright, f),
+            height: lerp_all(self.height, to.height, f),
         }
     }
 
@@ -165,17 +212,22 @@ pub struct Shot {
     pub zoom: f32,
     pub pan: (f32, f32),
     pub top: f32,
+    /// The eye tipped further down (degrees: more, nearer straight above;
+    /// less, nearer the table) and turned round the table (degrees).
+    pub tilt: f32,
+    pub turn: f32,
 }
 
 impl Default for Shot {
     fn default() -> Shot {
-        Shot { zoom: 1.0, pan: (0.0, 0.0), top: 0.0 }
+        Shot { zoom: 1.0, pan: (0.0, 0.0), top: 0.0, tilt: 0.0, turn: 0.0 }
     }
 }
 
 impl Shot {
     pub fn mix(self, to: Shot, f: f32) -> Shot {
-        Shot { zoom: self.zoom + (to.zoom - self.zoom) * f, pan: lerp2(self.pan, to.pan, f), top: self.top + (to.top - self.top) * f }
+        let l = |a: f32, b: f32| a + (b - a) * f;
+        Shot { zoom: l(self.zoom, to.zoom), pan: lerp2(self.pan, to.pan, f), top: l(self.top, to.top), tilt: l(self.tilt, to.tilt), turn: l(self.turn, to.turn) }
     }
 }
 
@@ -236,18 +288,38 @@ impl Trans {
 
 /// Each step's way in as it came by itself: the word (half a second), the
 /// squares grown and the credit (from 0.55 s), the eye down (from 1.9 s),
-/// the cubes down and the buttons up (as the eye stops); the Duo the last
-/// moment of 1.1 s once found; the menu a third of a second; a section
-/// 0.9 s.
-pub const TRANS: [Trans; 7] = [
+/// the cubes down and the buttons up (as the eye stops); the wave, the
+/// note; the Duo the last moment of 1.1 s once found, opened, the cable;
+/// the menu a third of a second; a section 0.9 s; the wallpaper.
+pub const TRANS: [Trans; STEPS.len()] = [
     Trans { delay: 0.0, secs: 0.5, ease: Ease::Smooth },
     Trans { delay: 0.55, secs: 1.55, ease: Ease::Smooth },
     Trans { delay: 1.35, secs: 1.7, ease: Ease::Smoother },
     Trans { delay: 1.7, secs: 1.2, ease: Ease::Linear },
+    Trans { delay: 0.0, secs: 0.3, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.4, ease: Ease::Smooth },
     Trans { delay: 0.94, secs: 0.16, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.6, ease: Ease::Smoother },
+    Trans { delay: 0.0, secs: 0.6, ease: Ease::Smooth },
     Trans { delay: 0.0, secs: 0.35, ease: Ease::Smooth },
     Trans { delay: 0.0, secs: 0.9, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.35, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.9, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.8, ease: Ease::Smooth },
 ];
+
+/// The steps by name (their index).
+pub const LOGO: usize = 0;
+pub const SEARCH: usize = 4;
+pub const NOT_FOUND: usize = 5;
+pub const PHONE: usize = 6;
+pub const PHONE_OPEN: usize = 7;
+pub const CABLE: usize = 8;
+pub const MENU: usize = 9;
+pub const SECTION: usize = 10;
+pub const MENU_BARE: usize = 11;
+pub const SECTION_BARE: usize = 12;
+pub const WALLPAPER: usize = 13;
 
 /// The start's steps: those that come by themselves, one after the other.
 pub const START_STEPS: usize = 4;
@@ -274,8 +346,7 @@ impl Step {
 }
 
 /// The steps one after the other on one line of time (the editor's play,
-/// its scrubber): the start, then the phone found, the menu opened, a
-/// section opened, each a little after the one before is there.
+/// its scrubber; ORDER).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Script {
     /// When each step's way begins to be due, and when it is all there.
@@ -284,33 +355,72 @@ pub struct Script {
     pub end: f32,
 }
 
-/// What the script has at a moment: the start's seconds, how far the
-/// phone, the menu and a section have come (each its whole way, 0..1),
-/// whether the menu and a section are open.
+/// What the script has at a moment (each step's way: 0..1, its delay and
+/// all, not yet eased): the start's seconds; the wave's seconds and the
+/// note while they show; the steps' ways; the boards open (the menu, a
+/// section; with the phone's lines or with none).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ScriptAt {
     pub start_s: f32,
-    pub phone: f32,
-    pub menu: f32,
-    pub section: f32,
+    pub wave: Option<f32>,
+    pub note: bool,
+    pub raw: Marks,
     pub menu_open: bool,
     pub section_open: bool,
+    pub phone_boards: bool,
+}
+
+/// How far each step after the start has come (0..1): its way, not yet
+/// eased (the start's own come from its seconds).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Marks {
+    pub search: f32,
+    pub not_found: f32,
+    pub phone: f32,
+    pub open: f32,
+    pub cable: f32,
+    pub menu: f32,
+    pub section: f32,
+    pub wall: f32,
 }
 
 /// Seconds between one event step being there and the next being brought.
 const PAUSE: f32 = 0.8;
 
+/// The steps' weights in a frame (summing to 1).
+#[derive(Clone, Copy, Debug)]
+struct Blend([f32; STEPS.len()]);
+
+impl Blend {
+    fn of(i: usize) -> Blend {
+        let mut w = [0.0; STEPS.len()];
+        w[i] = 1.0;
+        Blend(w)
+    }
+
+    fn to(self, other: Blend, f: f32) -> Blend {
+        let f = f.clamp(0.0, 1.0);
+        Blend(std::array::from_fn(|i| self.0[i] * (1.0 - f) + other.0[i] * f))
+    }
+
+    fn into_step(self, i: usize, f: f32) -> Blend {
+        self.to(Blend::of(i), f)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Layout {
     pub steps: [Step; STEPS.len()],
     pub style: Style,
+    /// The section the editor's section steps open (SECTIONS).
+    pub section: usize,
     /// The steps fixed (ok pressed on them, nothing changed since).
     pub fixed: [bool; STEPS.len()],
 }
 
 impl Default for Layout {
     fn default() -> Layout {
-        Layout { steps: std::array::from_fn(|i| Step { trans: TRANS[i], ..Step::default() }), style: Style::default(), fixed: [false; STEPS.len()] }
+        Layout { steps: std::array::from_fn(|i| Step { trans: TRANS[i], ..Step::default() }), style: Style::default(), section: 0, fixed: [false; STEPS.len()] }
     }
 }
 
@@ -320,7 +430,7 @@ impl Layout {
         self.steps.map(|s| s.trans)
     }
 
-    /// The steps on one line of time.
+    /// The steps on one line of time (ORDER).
     pub fn script(&self) -> Script {
         let t = self.timing();
         let mut due = [0.0f32; STEPS.len()];
@@ -334,12 +444,12 @@ impl Layout {
         }
         // Then each brought a little after the one before is there.
         let mut at = reached[START_STEPS - 1] + PAUSE;
-        for i in START_STEPS..STEPS.len() {
+        for &i in &ORDER[START_STEPS..] {
             due[i] = at;
             reached[i] = at + t[i].all();
             at = reached[i] + PAUSE;
         }
-        Script { due, reached, end: reached[STEPS.len() - 1] + PAUSE }
+        Script { due, reached, end: at }
     }
 }
 
@@ -347,38 +457,60 @@ impl Script {
     /// The script at `t` seconds.
     pub fn at(&self, timing: &[Trans; STEPS.len()], t: f32) -> ScriptAt {
         let raw = |i: usize| ((t - self.due[i]) / timing[i].all()).clamp(0.0, 1.0);
+        // The boards with no phone close over the pause before the phone
+        // comes; the phone's before the wallpaper.
+        let close_bare = ((t - self.reached[SECTION_BARE]) / PAUSE).clamp(0.0, 1.0);
+        let close_phone = ((t - self.reached[SECTION]) / PAUSE).clamp(0.0, 1.0);
+        let phone_side = t >= self.due[PHONE];
+        let (menu, section) = if phone_side { (raw(MENU) * (1.0 - close_phone), raw(SECTION) * (1.0 - close_phone)) } else { (raw(MENU_BARE) * (1.0 - close_bare), raw(SECTION_BARE) * (1.0 - close_bare)) };
+        let (menu_due, section_due, closing) = if phone_side { (self.due[MENU], self.due[SECTION], close_phone) } else { (self.due[MENU_BARE], self.due[SECTION_BARE], close_bare) };
         ScriptAt {
             start_s: t.min(self.reached[START_STEPS - 1] + 0.2),
-            phone: raw(4),
-            menu: raw(5),
-            section: raw(6),
-            menu_open: t >= self.due[5],
-            section_open: t >= self.due[6],
+            wave: (t >= self.due[SEARCH] && t < self.due[NOT_FOUND]).then(|| t - self.due[SEARCH]),
+            note: t >= self.due[NOT_FOUND] && t < self.due[MENU_BARE],
+            raw: Marks { search: raw(SEARCH), not_found: raw(NOT_FOUND), phone: raw(PHONE), open: raw(PHONE_OPEN), cable: raw(CABLE), menu, section, wall: raw(WALLPAPER) },
+            menu_open: t >= menu_due && closing < 0.5,
+            section_open: t >= section_due && closing < 0.5,
+            phone_boards: phone_side,
         }
     }
 
-    /// The step all there at `t` (the last reached; before the first, it).
+    /// The step all there at `t` (the last reached in the script's order;
+    /// before the first, it).
     pub fn step_at(&self, t: f32) -> usize {
-        (0..STEPS.len()).rev().find(|&i| t + 1e-3 >= self.reached[i]).unwrap_or(0)
+        ORDER.iter().rev().copied().find(|&i| t + 1e-3 >= self.reached[i]).unwrap_or(LOGO)
     }
 }
 
 impl Layout {
-    /// The step the frame is at, as the start and what comes after go on:
-    /// `marks` how far each next step has come (the squares grown, the eye
-    /// down, the buttons up, the phone there, the menu open, a section
-    /// open) - each step's parts and eye on the way into the next; and the
-    /// step it is at most (the last more than half come).
-    pub fn at(&self, marks: [f32; STEPS.len() - 1]) -> (Step, usize) {
-        let mut step = self.steps[0];
-        let mut now = 0;
-        for (i, f) in marks.into_iter().enumerate() {
-            step = step.mix(self.steps[i + 1], f);
-            if f >= 0.5 {
-                now = i + 1;
-            }
+    /// The frame's step, as the start and what comes after go on: the
+    /// start's steps one into the next (`start`: the squares grown, the eye
+    /// down, the buttons up); then, with no phone, looked for and not
+    /// found; with it (`m.phone`), shut, opened, on the cable; the menu and
+    /// a section open (the phone's or the bare ones, as the phone is
+    /// there); the wallpaper. `m` eased. Each step's parts and eye weighed
+    /// in; the step weighing most.
+    pub fn at(&self, start: [f32; 3], m: Marks) -> (Step, usize) {
+        let mut b = Blend::of(0).into_step(1, start[0]).into_step(2, start[1]).into_step(3, start[2]);
+        b = b.into_step(SEARCH, m.search).into_step(NOT_FOUND, m.not_found);
+        let phone = Blend::of(PHONE).into_step(PHONE_OPEN, m.open).into_step(CABLE, m.cable);
+        b = b.to(phone, m.phone);
+        b = b.to(Blend::of(MENU_BARE).into_step(MENU, m.phone), m.menu);
+        b = b.to(Blend::of(SECTION_BARE).into_step(SECTION, m.phone), m.section);
+        b = b.into_step(WALLPAPER, m.wall);
+        // Weighed in one by one (each a mean of those before and it).
+        let mut order: Vec<usize> = (0..STEPS.len()).filter(|&i| b.0[i] > 1e-5).collect();
+        order.sort_by(|x, y| b.0[*y].partial_cmp(&b.0[*x]).unwrap_or(std::cmp::Ordering::Equal));
+        let most = order.first().copied().unwrap_or(0);
+        let mut step = self.steps[most];
+        let mut acc = b.0[most];
+        for &i in order.iter().skip(1) {
+            let w = b.0[i];
+            step = step.mix(self.steps[i], w / (acc + w));
+            acc += w;
         }
-        (step, now)
+        step.trans = self.steps[most].trans;
+        (step, most)
     }
 
     /// The layout in its file's words.
@@ -390,7 +522,7 @@ impl Layout {
         let mut all_zoom: Option<f32> = None;
         let mut shots: [Option<(f32, (f32, f32))>; STEPS.len()] = [None; STEPS.len()];
         let mut steps: [Option<Step>; STEPS.len()] = [None; STEPS.len()];
-        let step_named = |n: &str| STEPS.iter().position(|s| *s == n).or(["word", "grid"].iter().position(|s| *s == n));
+        let step_named = |n: &str| STEPS.iter().position(|s| s.replace(' ', "-") == n).or(["word", "grid"].iter().position(|s| *s == n));
         for line in text.lines() {
             let w: Vec<&str> = line.split_whitespace().collect();
             let num = |i: usize| w.get(i).and_then(|v| v.parse::<f32>().ok());
@@ -436,6 +568,23 @@ impl Layout {
                             }
                             "duo-scale" => one.map(|v| s.place.duo_scale = v).map_or(1, |_| 2),
                             "pan" => two.map(|v| s.shot.pan = v).map_or(1, |_| 3),
+                            "tilt" => one.map(|v| s.shot.tilt = v).map_or(1, |_| 2),
+                            "turn" => one.map(|v| s.shot.turn = v).map_or(1, |_| 2),
+                            "show" | "bright" | "height" => {
+                                let six: Option<Vec<f32>> = (1..=PARTS.len()).map(|j| num(k + j)).collect();
+                                match six {
+                                    Some(v) => {
+                                        let a: [f32; PARTS.len()] = std::array::from_fn(|j| v[j]);
+                                        match *key {
+                                            "show" => s.place.show = a,
+                                            "bright" => s.place.bright = a,
+                                            _ => s.place.height = a,
+                                        }
+                                        1 + PARTS.len()
+                                    }
+                                    None => 1,
+                                }
+                            }
                             "words" => two.map(|v| s.place.words = v).map_or(1, |_| 3),
                             "duo" => two.map(|v| s.place.duo = Some(v)).map_or(1, |_| 3),
                             "word" => two.map(|v| s.place.word = v).map_or(1, |_| 3),
@@ -449,7 +598,7 @@ impl Layout {
                 }
                 Some(&"fixed") => {
                     for n in &w[1..] {
-                        if let Some(i) = STEPS.iter().position(|s| s == n) {
+                        if let Some(i) = STEPS.iter().position(|s| s.replace(' ', "-") == *n) {
                             l.fixed[i] = true;
                         }
                     }
@@ -458,18 +607,26 @@ impl Layout {
                 Some(&"lines") => l.style.ink = named(&INKS.map(|p| p.0), &w[1..]).unwrap_or(l.style.ink),
                 Some(&"line-width") => l.style.width = num(1).and_then(|v| WIDTHS.iter().position(|w| (*w - v as f64).abs() < 0.01)).unwrap_or(l.style.width),
                 Some(&"font") => l.style.font = named(&FONTS.map(|p| p.0), &w[1..]).unwrap_or(l.style.font),
+                Some(&"section") => l.section = w.get(1).and_then(|n| SECTIONS.iter().position(|s| s == n)).unwrap_or(l.section),
                 _ => {}
             }
         }
+        // The steps there were before the editor had them all (older files:
+        // the places for all, each its eye or the one lens for all); a
+        // step not laid out yet, the one it comes from (PARENT: laid out
+        // before it).
+        const FIRST: [&str; 7] = ["logo", "agentsco", "cubes", "buttons", "phone", "menu", "section"];
         for i in 0..STEPS.len() {
-            l.steps[i] = steps[i].unwrap_or_else(|| {
-                // From an older file: the places for all, the step's eye (the
-                // lens for all before the steps had their own). The eye rose
-                // with the lens then (drawn back): kept so.
-                let (zoom, pan) = shots[i].unwrap_or((all_zoom.unwrap_or(1.0), (0.0, 0.0)));
-                let up = ((1.0 - zoom) / 0.6).clamp(0.0, 1.0);
-                Step { place: all, shot: Shot { zoom, pan, top: up * up * (3.0 - 2.0 * up) }, trans: TRANS[i] }
-            });
+            l.steps[i] = match steps[i] {
+                Some(s) => s,
+                None if !FIRST.contains(&STEPS[i]) => Step { trans: TRANS[i], ..l.steps[PARENT[i]] },
+                None => {
+                    // The eye rose with the lens then (drawn back): kept so.
+                    let (zoom, pan) = shots[i].unwrap_or((all_zoom.unwrap_or(1.0), (0.0, 0.0)));
+                    let up = ((1.0 - zoom) / 0.6).clamp(0.0, 1.0);
+                    Step { place: all, shot: Shot { zoom, pan, top: up * up * (3.0 - 2.0 * up), ..Shot::default() }, trans: TRANS[i] }
+                }
+            };
         }
         l
     }
@@ -477,18 +634,27 @@ impl Layout {
     /// The layout in its file's words.
     pub fn write(&self) -> String {
         let s = self.style;
-        let mut text = format!("paper {}\nlines {}\nline-width {}\nfont {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0);
+        let mut text = format!("paper {}\nlines {}\nline-width {}\nfont {}\nsection {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0, SECTIONS[self.section.min(SECTIONS.len() - 1)]);
         for (i, st) in self.steps.iter().enumerate() {
             let (p, e) = (st.place, st.shot);
             let t = st.trans;
-            text.push_str(&format!("step {} zoom {:.3} pan {:.2} {:.2} top {:.3} delay {:.2} secs {:.2} ease {}", STEPS[i], e.zoom, e.pan.0, e.pan.1, e.top, t.delay, t.secs, t.ease.name()));
+            // (A step's name may have a space: written with a dash.)
+            text.push_str(&format!("step {} zoom {:.3} pan {:.2} {:.2} top {:.3} tilt {:.1} turn {:.1} delay {:.2} secs {:.2} ease {}", STEPS[i].replace(' ', "-"), e.zoom, e.pan.0, e.pan.1, e.top, e.tilt, e.turn, t.delay, t.secs, t.ease.name()));
+            for (key, v, by) in [("show", p.show, [1.0; PARTS.len()]), ("bright", p.bright, [1.0; PARTS.len()]), ("height", p.height, HEIGHTS)] {
+                if v != by {
+                    text.push_str(&format!(" {key}"));
+                    for x in v {
+                        text.push_str(&format!(" {x:.2}"));
+                    }
+                }
+            }
             text.push_str(&format!(" words {} {}", p.words.0, p.words.1));
             if let Some(d) = p.duo {
                 text.push_str(&format!(" duo {} {}", d.0, d.1));
             }
             text.push_str(&format!(" word {} {} buttons {} {} menu {} {} credit {} {} duo-scale {:.3}\n", p.word.0, p.word.1, p.buttons.0, p.buttons.1, p.menu.0, p.menu.1, p.credit.0, p.credit.1, p.duo_scale));
         }
-        let fixed: Vec<&str> = (0..STEPS.len()).filter(|&i| self.fixed[i]).map(|i| STEPS[i]).collect();
+        let fixed: Vec<String> = (0..STEPS.len()).filter(|&i| self.fixed[i]).map(|i| STEPS[i].replace(' ', "-")).collect();
         if !fixed.is_empty() {
             text.push_str(&format!("fixed {}\n", fixed.join(" ")));
         }
@@ -498,7 +664,7 @@ impl Layout {
     /// Whether `other` lays the frames out the same (the fixed marks
     /// aside).
     pub fn same(&self, other: &Layout) -> bool {
-        self.steps == other.steps && self.style == other.style
+        self.steps == other.steps && self.style == other.style && self.section == other.section
     }
 }
 
@@ -553,6 +719,9 @@ mod tests {
         assert_eq!(PAPERS[l.style.paper].0, "lilac");
         assert_eq!(FONTS[l.style.font].0, "open sans");
         assert!(l.fixed[0] && !l.fixed[1]);
+        // The new steps from the ones they come from.
+        assert_eq!(l.steps[PHONE_OPEN].place.duo, Some((11.0, 4.0)));
+        assert_eq!(l.steps[PHONE_OPEN].trans, TRANS[PHONE_OPEN]);
     }
 
     #[test]
@@ -560,7 +729,10 @@ mod tests {
         let mut l = Layout::default();
         l.steps[2].place.word = (3.0, -1.0);
         l.steps[4].place.duo = Some((9.0, 4.0));
-        l.steps[4].shot = Shot { zoom: 0.8, pan: (1.5, -2.25), top: 0.2 };
+        l.steps[4].shot = Shot { zoom: 0.8, pan: (1.5, -2.25), top: 0.2, tilt: -5.0, turn: 12.5 };
+        l.steps[7].place.show[3] = 0.0;
+        l.steps[7].place.height[3] = 0.5;
+        l.fixed[13] = true;
         l.style.font = 18;
         l.steps[3].trans = Trans { delay: 2.0, secs: 0.75, ease: Ease::Out };
         l.fixed[4] = true;
@@ -576,19 +748,25 @@ mod tests {
         assert!((s.due[2] - 1.9).abs() < 1e-4 && (s.reached[2] - 3.6).abs() < 1e-4);
         assert!((s.due[3] - 3.6).abs() < 1e-4);
         assert_eq!(s.step_at(0.0), 0);
-        assert_eq!(s.step_at(s.reached[5]), 5);
-        let at = s.at(&l.timing(), s.reached[4]);
-        assert!(at.phone > 0.999 && !at.menu_open);
+        assert_eq!(s.step_at(s.reached[MENU]), MENU);
+        let at = s.at(&l.timing(), s.reached[PHONE]);
+        assert!(at.raw.phone > 0.999 && !at.menu_open && at.phone_boards);
+        let bare = s.at(&l.timing(), s.reached[MENU_BARE]);
+        assert!(bare.menu_open && !bare.phone_boards && bare.raw.phone == 0.0);
         // The Duo seen in the last moment of its way, as before.
-        assert!(l.steps[4].trans.eased(0.8) == 0.0 && l.steps[4].trans.eased(1.0) == 1.0);
+        assert!(l.steps[PHONE].trans.eased(0.8) == 0.0 && l.steps[PHONE].trans.eased(1.0) == 1.0);
     }
 
     #[test]
     fn the_steps_go_one_into_the_next() {
         let mut l = Layout::default();
         l.steps[1].place.word = (2.0, 0.0);
-        let (s, now) = l.at([0.5, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let (s, _) = l.at([0.5, 0.0, 0.0], Marks::default());
         assert_eq!(s.place.word, (1.0, 0.0));
-        assert_eq!(now, 1);
+        l.steps[MENU].place.menu = (4.0, 0.0);
+        let (s, now) = l.at([1.0; 3], Marks { phone: 1.0, menu: 1.0, ..Marks::default() });
+        assert_eq!((s.place.menu, now), ((4.0, 0.0), MENU));
+        let (_, now) = l.at([1.0; 3], Marks { menu: 1.0, ..Marks::default() });
+        assert_eq!(now, MENU_BARE);
     }
 }
