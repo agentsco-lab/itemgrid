@@ -12,6 +12,16 @@ use sha2::{Digest, Sha256};
 
 use crate::full::{adb_send, adb_shell};
 
+/// A vbmeta image's flags (AVB: magic "AVB0", the flags a big-endian u32 at
+/// 120): bit 0 the hashtree disabled, bit 1 verification disabled - a
+/// stock one has neither, the port's has verification off. None if it is
+/// not a vbmeta image.
+pub fn vbmeta_flags(file: &Path) -> Option<u32> {
+    let mut head = [0u8; 124];
+    std::fs::File::open(file).ok()?.read_exact(&mut head).ok()?;
+    (&head[..4] == b"AVB0").then(|| u32::from_be_bytes([head[120], head[121], head[122], head[123]]))
+}
+
 /// A partition's image to write: its name in by-name without the slot
 /// (boot, dtbo, vbmeta), the file, its size and sha256.
 #[derive(Debug, Clone)]

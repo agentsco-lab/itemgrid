@@ -725,9 +725,10 @@ pub fn fresh_full(host: &str, serial: &str) -> Result<Option<Backup>, String> {
 // ---- clean: the phone as it came, for good ------------------------------------
 
 /// What a clean return to Android would do (reading only): the build in
-/// super, its stock boot chain on this computer (boot, dtbo, vbmeta from
-/// Microsoft's package, beside the stock kernel that belongs to it), and
-/// what stops it.
+/// super, what the port changed of its slot put back from this computer -
+/// the stock kernel that belongs to the build, and the stock vbmeta beside
+/// it (Microsoft's package's, or the backup taken before the port went on;
+/// dtbo the port never changes: left) - and what stops it.
 #[derive(Debug, Clone)]
 pub struct CleanPlan {
     pub build: Option<SuperBuild>,
@@ -744,13 +745,23 @@ pub fn clean_plan(host: &str) -> Result<CleanPlan, String> {
     // backup (radio calibration, IMEI - left on the phone, not touched).
     stops.extend(p.stops.iter().filter(|s| !s.contains("device data")).cloned());
     let mut chain = Vec::new();
-    if let Some((k, _)) = &p.kernel {
+    if let Some((k, build)) = &p.kernel {
+        chain.push(crate::bootchain::Part::of("boot", &k.path)?);
+        // Its vbmeta, by the names a package's and a backup's have: a stock
+        // one only (the port's has verification off).
         let dir = k.path.parent().map(Path::to_path_buf).unwrap_or_default();
-        for (name, file) in [("boot", k.path.clone()), ("dtbo", dir.join("dtbo.img")), ("vbmeta", dir.join("vbmeta.img"))] {
-            match crate::bootchain::Part::of(name, &file) {
-                Ok(part) => chain.push(part),
-                Err(_) => stops.push(format!("no stock {name} beside the stock kernel ({}): Microsoft's package for this phone gives it", dir.display())),
-            }
+        let slot = build.slot;
+        let vbmeta = [format!("vbmeta_{slot}-stock-backup.img"), "vbmeta.img".to_owned()].into_iter().map(|n| dir.join(n)).find(|f| crate::bootchain::vbmeta_flags(f) == Some(0));
+        match vbmeta {
+            Some(f) => chain.push(crate::bootchain::Part::of("vbmeta", &f)?),
+            None => stops.push(format!("no stock vbmeta for slot {slot} beside the stock kernel ({})", dir.display())),
+        }
+        // Linux runs from Android's slot: the slot written is the one the
+        // phone starts (no slot switched).
+        let cmdline = crate::phone::run(host, "cat /proc/cmdline\n")?;
+        let running = cmdline.split_whitespace().find_map(|w| w.strip_prefix("androidboot.slot_suffix=_")).and_then(|s| s.chars().next());
+        if running != Some(slot) {
+            stops.push(format!("Linux runs from slot {}, Android's build is on slot {slot}: not switched here", running.map_or("?".to_owned(), |c| c.to_string())));
         }
     }
     Ok(CleanPlan { build: p.kernel.map(|(_, b)| b), chain, battery: p.battery, stops })
@@ -758,9 +769,9 @@ pub fn clean_plan(host: &str) -> Result<CleanPlan, String> {
 
 /// Back to the phone's stock Android for good, as it came: TWRP from RAM,
 /// metadata and userdata zeroed (Linux and all it held go), the stock boot
-/// chain written to both slots (the port's kernel gone from the phone: a
-/// plain restart starts Android), misc cleared, and a restart. About ten
-/// minutes. `confirm` must be confirm_word's word.
+/// and vbmeta written to Android's slot - the one the phone starts (the
+/// other slot holds no Android: not touched) - misc cleared, and a restart.
+/// About ten minutes. `confirm` must be confirm_word's word.
 pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
     crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
@@ -783,13 +794,8 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - itemgrid", build.fingerprint))?;
     erase(&serial, say)?;
-    // Android's own slot first, then the other: the port's kernel left on
-    // neither (a slot drifting to it would find no system).
-    let other = if build.slot == 'a' { 'b' } else { 'a' };
-    for slot in [build.slot, other] {
-        say(format!("the stock boot on slot {slot}"));
-        crate::bootchain::write(&serial, slot, &plan.chain, say)?;
-    }
+    say(format!("the stock boot on slot {}", build.slot));
+    crate::bootchain::write(&serial, build.slot, &plan.chain, say)?;
     say("clearing misc".into());
     adb(&serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync"))?;
     let _ = std::fs::remove_file(guest_path(&serial));

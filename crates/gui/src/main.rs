@@ -4680,7 +4680,7 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
         "do:install" => {
             let Some(serial) = stock_android(ui) else { return };
             let word = itemgrid_core::android::confirm_word(&serial);
-            let ask = match itemgrid_core::install::releases().into_iter().filter(|r| r.boot.is_some()).next_back() {
+            let ask = match itemgrid_core::install::releases().into_iter().filter(|r| r.boot.is_some() && r.vbmeta.is_some()).next_back() {
                 None => Ask::new("install item", wrapped("no release with a boot image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();

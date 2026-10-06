@@ -23,6 +23,8 @@ pub struct Release {
     /// The port's boot image that goes with it (a phone coming from stock
     /// Android has none), and its sha256 - none in releases made before.
     pub boot: Option<(PathBuf, String)>,
+    /// The vbmeta the port runs with (verification off), written with it.
+    pub vbmeta: Option<(PathBuf, String)>,
 }
 
 /// Where release images are looked for: item/grid's own folder, and the port's
@@ -66,6 +68,7 @@ pub fn read(dir: &Path) -> Result<Release, String> {
         sha256: s(&m["image"]["sha256"]),
         compressed,
         boot: m["boot"]["file"].as_str().map(|f| dir.join(f)).filter(|f| f.exists()).map(|f| (f, s(&m["boot"]["sha256"]))),
+        vbmeta: m["vbmeta"]["file"].as_str().map(|f| dir.join(f)).filter(|f| f.exists()).map(|f| (f, s(&m["vbmeta"]["sha256"]))),
     })
 }
 
@@ -382,6 +385,15 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     if !boot_sha.is_empty() && boot_sha != boot.sha256 {
         return Err("the release's boot image does not match its manifest - nothing is changed".into());
     }
+    // The port's vbmeta: verification off (bit 1), as the port runs.
+    let (vb_file, vb_sha) = release.vbmeta.clone().ok_or("this release has no vbmeta for a phone coming from Android")?;
+    if crate::bootchain::vbmeta_flags(&vb_file).is_none_or(|f| f & 2 == 0) {
+        return Err("the release's vbmeta does not turn verification off - nothing is changed".into());
+    }
+    let vbmeta = crate::bootchain::Part::of("vbmeta", &vb_file)?;
+    if !vb_sha.is_empty() && vb_sha != vbmeta.sha256 {
+        return Err("the release's vbmeta does not match its manifest - nothing is changed".into());
+    }
     say(format!("checking the image {} here", release.name));
     let (size, sha) = hash_stream(&mut decompress(&release.compressed)?)?;
     if sha != release.sha256 || (release.size > 0 && size != release.size) {
@@ -433,6 +445,7 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     let other = if slot == 'a' { 'b' } else { 'a' };
     for s in [slot, other] {
         crate::bootchain::write_from_linux(host, serial, s, &boot, say)?;
+        crate::bootchain::write_from_linux(host, serial, s, &vbmeta, say)?;
     }
     // And started from its own slot: it starts by itself now.
     say("restarting from the phone's own boot".into());
