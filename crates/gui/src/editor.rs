@@ -18,14 +18,14 @@ use std::time::Instant;
 use adw::prelude::*;
 use gtk::gdk;
 
-use super::{board, close_boards, intro, menu_lines, set_style, settings_lines, show_fold, square, table_under, trace, Ui, DUO_PX_PER_MM};
-use crate::scene::{self, Layout, Shot, FONTS, INKS, PAPERS, PARTS, STEPS, WIDTHS};
+use super::{board, close_boards, menu_lines, set_style, settings_lines, show_fold, square, table_under, trace, Ui, DUO_PX_PER_MM};
+use crate::scene::{self, Layout, Shot, EASES, FONTS, INKS, PAPERS, PARTS, STEPS, WIDTHS};
 
 /// The frame's own size: laid out at this, shown scaled to the page (or to
 /// what the editor leaves of it).
 pub const REF: (f32, f32) = (1000.0, 800.0);
 /// The editor's bar and panel (px), and the room round the frame.
-const BAR_H: f32 = 56.0;
+const BAR_H: f32 = 92.0;
 const PANEL_W: f32 = 300.0;
 const ROOM: f32 = 24.0;
 
@@ -40,10 +40,16 @@ enum Drag {
 
 pub struct Editor {
     pub bar: gtk::Box,
-    pub panel: gtk::Box,
+    pub panel: gtk::ScrolledWindow,
     steps: Vec<gtk::ToggleButton>,
     state: gtk::Label,
     play: gtk::Button,
+    /// The script's time (the steps one after the other), its speed.
+    scrub: gtk::Scale,
+    speed: gtk::DropDown,
+    delay: gtk::SpinButton,
+    secs: gtk::SpinButton,
+    ease: gtk::DropDown,
     undo_button: gtk::Button,
     redo_button: gtk::Button,
     ok: gtk::Button,
@@ -62,6 +68,9 @@ pub struct Editor {
     /// The step shown (held there; none: as it goes), the part chosen and
     /// the one under the pointer.
     pub preview: Cell<Option<usize>>,
+    /// Where the script is (seconds), whether it plays.
+    t: Cell<f32>,
+    playing: Cell<bool>,
     pub selected: Cell<Option<usize>>,
     pub hover: Cell<Option<usize>>,
     drag: Cell<Option<Drag>>,
@@ -98,30 +107,44 @@ fn heading(text: &str) -> gtk::Label {
 
 /// The editor's bar and panel (hidden until F2).
 pub fn build() -> Editor {
-    let bar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(2).valign(gtk::Align::Start).height_request(BAR_H as i32).visible(false).css_classes(["editor-bar"]).build();
+    // Two rows: the steps and the keeping; the line of time.
+    let bar = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(0).valign(gtk::Align::Start).height_request(BAR_H as i32).visible(false).css_classes(["editor-bar"]).build();
+    let steps_row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(2).height_request(46).build();
+    let time_row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).height_request(46).build();
+    bar.append(&steps_row);
+    bar.append(&time_row);
     let steps: Vec<gtk::ToggleButton> = STEPS
         .iter()
         .enumerate()
         .map(|(i, name)| {
             let b = gtk::ToggleButton::builder().label(format!("{} {name}", i + 1)).css_classes(["flat"]).valign(gtk::Align::Center).build();
-            bar.append(&b);
+            steps_row.append(&b);
             b
         })
         .collect();
-    let gap = || gtk::Box::builder().hexpand(true).build();
-    let play = gtk::Button::builder().label("▶ play").css_classes(["flat"]).valign(gtk::Align::Center).tooltip_text("The start played from the beginning, each step's frame as laid").build();
+    let play = gtk::Button::builder().label("▶").css_classes(["flat"]).valign(gtk::Align::Center).tooltip_text("Play the steps one after the other (Space)").build();
+    let scrub = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 10.0, 0.01);
+    scrub.set_hexpand(true);
+    scrub.set_draw_value(false);
+    scrub.set_valign(gtk::Align::Center);
+    scrub.set_tooltip_text(Some("The steps on one line of time: drag to see any moment"));
+    let speed = gtk::DropDown::from_strings(&["1×", "½×", "¼×"]);
+    speed.set_valign(gtk::Align::Center);
+    speed.set_tooltip_text(Some("How fast it plays"));
     let undo_button = gtk::Button::builder().icon_name("edit-undo-symbolic").css_classes(["flat"]).valign(gtk::Align::Center).tooltip_text("Undo (Ctrl+Z)").build();
     let redo_button = gtk::Button::builder().icon_name("edit-redo-symbolic").css_classes(["flat"]).valign(gtk::Align::Center).tooltip_text("Redo (Ctrl+Shift+Z)").build();
     let state = gtk::Label::builder().css_classes(["dim-label"]).margin_start(8).margin_end(8).build();
     let cancel = gtk::Button::builder().label("cancel").css_classes(["flat"]).valign(gtk::Align::Center).tooltip_text("Back to the layout kept").build();
     let ok = gtk::Button::builder().label("ok").css_classes(["suggested-action"]).valign(gtk::Align::Center).tooltip_text("Keep the draft as the layout (Ctrl+S); the step marked ✓").build();
-    bar.append(&play);
-    bar.append(&gap());
+    time_row.append(&play);
+    time_row.append(&scrub);
+    time_row.append(&speed);
+    steps_row.append(&gtk::Box::builder().hexpand(true).build());
     for w in [undo_button.upcast_ref::<gtk::Widget>(), redo_button.upcast_ref(), state.upcast_ref(), cancel.upcast_ref(), ok.upcast_ref()] {
-        bar.append(w);
+        steps_row.append(w);
     }
 
-    let panel = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).halign(gtk::Align::End).width_request(PANEL_W as i32).margin_top(BAR_H as i32).visible(false).css_classes(["editor-panel"]).build();
+    let panel = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).css_classes(["editor-panel-in"]).build();
     let step_title = gtk::Label::builder().xalign(0.0).css_classes(["title-4"]).build();
     panel.append(&step_title);
     panel.append(&heading("eye"));
@@ -133,6 +156,14 @@ pub fn build() -> Editor {
     panel.append(&row("moved", &[pan[0].upcast_ref(), pan[1].upcast_ref()]));
     panel.append(&row("from above", &[top.upcast_ref()]));
     panel.append(&reset_eye);
+    panel.append(&heading("way in"));
+    let delay = spin(0.0, 10.0, 0.05, 2);
+    let secs = spin(0.01, 10.0, 0.05, 2);
+    let ease = gtk::DropDown::from_strings(&EASES.map(|e| e.0));
+    ease.set_hexpand(true);
+    panel.append(&row("after", &[delay.upcast_ref(), gtk::Label::builder().label("s").css_classes(["dim-label"]).build().upcast_ref()]));
+    panel.append(&row("takes", &[secs.upcast_ref(), gtk::Label::builder().label("s").css_classes(["dim-label"]).build().upcast_ref()]));
+    panel.append(&row("curve", &[ease.upcast_ref()]));
     panel.append(&heading("part"));
     let part_title = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim-label"]).build();
     panel.append(&part_title);
@@ -160,7 +191,7 @@ pub fn build() -> Editor {
     })
     .collect();
     let hints = gtk::Label::builder()
-        .label("click a part to choose it · drag it · arrows: a square (Shift: five) · Esc: none\nwheel on the table: zoom to the pointer · on the Duo: its size · drag the table: the eye\n← →  with nothing chosen: the steps · Ctrl+Z / Ctrl+Shift+Z · Ctrl+S: ok")
+        .label("click a part to choose it · drag it · arrows: a square (Shift: five) · Esc: none\nSpace: play / pause · the steps: a click brings the line of time there\nwheel on the table: zoom to the pointer · on the Duo: its size · drag the table: the eye\n← →  with nothing chosen: the steps · Ctrl+Z / Ctrl+Shift+Z · Ctrl+S: ok")
         .xalign(0.0)
         .wrap(true)
         .vexpand(true)
@@ -168,12 +199,27 @@ pub fn build() -> Editor {
         .css_classes(["dim-label", "caption"])
         .build();
     panel.append(&hints);
+    // Scrolled, in a short window.
+    let panel = gtk::ScrolledWindow::builder()
+        .child(&panel)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .halign(gtk::Align::End)
+        .width_request(PANEL_W as i32)
+        .margin_top(BAR_H as i32)
+        .visible(false)
+        .css_classes(["editor-panel"])
+        .build();
     Editor {
         bar,
         panel,
         steps,
         state,
         play,
+        scrub,
+        speed,
+        delay,
+        secs,
+        ease,
         undo_button,
         redo_button,
         ok,
@@ -190,6 +236,8 @@ pub fn build() -> Editor {
         size,
         looks,
         preview: Cell::new(None),
+        t: Cell::new(0.0),
+        playing: Cell::new(false),
         selected: Cell::new(None),
         hover: Cell::new(None),
         drag: Cell::new(None),
@@ -205,7 +253,8 @@ pub const CSS: &str = "
 .editor-bar { background: alpha(white, 0.97); border-bottom: 1px solid alpha(black, 0.10); padding: 0 10px; }
 .editor-bar button { padding: 2px 8px; min-height: 0; }
 .editor-bar button:checked { background: alpha(black, 0.10); }
-.editor-panel { background: alpha(white, 0.97); border-left: 1px solid alpha(black, 0.10); padding: 14px 16px; }
+.editor-panel { background: alpha(white, 0.97); border-left: 1px solid alpha(black, 0.10); }
+.editor-panel-in { padding: 14px 16px; }
 window.night .editor-bar, window.night .editor-panel { background: alpha(#2a2a2e, 0.97); }
 ";
 
@@ -226,10 +275,40 @@ pub fn connect(ui: &std::rc::Rc<Ui>) {
     let w = weak(ui);
     ed.play.connect_clicked(move |_| {
         if let Some(ui) = w.upgrade() {
-            show_step(&ui, None);
-            close_boards(&ui);
-            ui.intro.borrow_mut().replay();
-            show_fold(&ui, ui.fold.get().0);
+            play_pause(&ui);
+        }
+    });
+    let w = weak(ui);
+    ed.scrub.connect_value_changed(move |sc| {
+        let Some(ui) = w.upgrade() else { return };
+        if ui.ed.syncing.get() {
+            return;
+        }
+        ui.ed.playing.set(false);
+        go_to(&ui, sc.value() as f32);
+    });
+    let w = weak(ui);
+    ed.delay.connect_value_changed(move |sp| {
+        let Some(ui) = w.upgrade() else { return };
+        if !ui.ed.syncing.get() {
+            let v = sp.value() as f32;
+            change(&ui, "way in", |l, i| l.steps[i].trans.delay = v);
+        }
+    });
+    let w = weak(ui);
+    ed.secs.connect_value_changed(move |sp| {
+        let Some(ui) = w.upgrade() else { return };
+        if !ui.ed.syncing.get() {
+            let v = sp.value() as f32;
+            change(&ui, "way in", |l, i| l.steps[i].trans.secs = v);
+        }
+    });
+    let w = weak(ui);
+    ed.ease.connect_selected_notify(move |d| {
+        let Some(ui) = w.upgrade() else { return };
+        if !ui.ed.syncing.get() {
+            let e = EASES[(d.selected() as usize).min(EASES.len() - 1)].1;
+            change(&ui, "way in", |l, i| l.steps[i].trans.ease = e);
         }
     });
     let w = weak(ui);
@@ -340,7 +419,15 @@ pub fn set_on(ui: &std::rc::Rc<Ui>, on: bool) {
     if on {
         show_step(ui, Some(ed.preview.get().unwrap_or(0)));
     } else {
-        show_step(ui, None);
+        // The app as it goes again: the start over, the phone as it is.
+        ed.playing.set(false);
+        ed.preview.set(None);
+        let mut intro = ui.intro.borrow_mut();
+        intro.hold = None;
+        intro.force_sink = None;
+        drop(intro);
+        close_boards(ui);
+        show_fold(ui, ui.fold.get().0);
     }
     super::refresh_settings(ui);
     // Once the panel has its size, the frame laid beside it.
@@ -519,6 +606,18 @@ pub fn show(ui: &Ui) {
     ed.undo_button.set_sensitive(!ed.undo.borrow().is_empty());
     ed.redo_button.set_sensitive(!ed.redo.borrow().is_empty());
     ed.step_title.set_label(&format!("{} · {}{}", i + 1, STEPS[i], if l.fixed[i] { "  ✓" } else { "" }));
+    let script = l.script();
+    ed.scrub.set_range(0.0, script.end as f64);
+    ed.scrub.clear_marks();
+    for (k, r) in script.reached.iter().enumerate() {
+        ed.scrub.add_mark(*r as f64, gtk::PositionType::Bottom, Some(&format!("{}", k + 1)));
+    }
+    ed.scrub.set_value(ed.t.get() as f64);
+    ed.play.set_label(if ed.playing.get() { "❚❚" } else { "▶" });
+    let tr = l.steps[i].trans;
+    ed.delay.set_value(tr.delay as f64);
+    ed.secs.set_value(tr.secs as f64);
+    ed.ease.set_selected(EASES.iter().position(|e| e.1 == tr.ease).unwrap_or(1) as u32);
     let shot = l.steps[i].shot;
     ed.zoom.set_value(shot.zoom as f64);
     ed.pan[0].set_value(shot.pan.0 as f64);
@@ -547,57 +646,101 @@ pub fn show(ui: &Ui) {
     ed.syncing.set(false);
 }
 
-/// Step `i` shown and held (none: the start going as it goes again): the
-/// start held at its seconds, the Duo there or not, the menu and the
-/// settings open or not.
+/// Step `i` shown (all there: the line of time brought to it, held).
 pub fn show_step(ui: &Ui, i: Option<usize>) {
-    ui.ed.preview.set(i);
+    hold_sample(ui);
+    ui.ed.playing.set(false);
+    let script = ui.layout.get().script();
+    go_to(ui, i.map_or(0.0, |i| script.reached[i]));
+}
+
+/// The line of time at `t`: the start held at its seconds, the phone, the
+/// menu and a section as far on as the script has them there.
+fn go_to(ui: &Ui, t: f32) {
+    let l = ui.layout.get();
+    let script = l.script();
+    let t = t.clamp(0.0, script.end);
+    ui.ed.t.set(t);
+    let at = script.at(&l.timing(), t);
     {
         let mut intro = ui.intro.borrow_mut();
         intro.clear_note();
-        match i {
-            Some(i) => {
-                intro.hold = Some(intro::Intro::STEP_S[i.min(3)]);
-                let sink = if i >= 4 { 1.0 } else { 0.0 };
-                intro.force_sink = Some(sink);
-                intro.sink = sink;
-            }
-            None => {
-                intro.hold = None;
-                intro.force_sink = None;
-            }
+        intro.hold = Some(at.start_s);
+        intro.force_sink = Some(at.phone);
+        intro.sink = at.phone;
+        intro.sink_to = at.phone;
+    }
+    ui.duo_away.set(at.menu);
+    ui.page_back.set(at.section);
+    // The boards open as the script has them.
+    let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
+    if at.menu_open && !menu_open {
+        *ui.board.borrow_mut() = Some(board::Board::open(menu_lines(ui)));
+    }
+    let settings_open = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == "settings" && !b.closing());
+    if at.section_open && !settings_open {
+        if let Some(b) = ui.board.borrow_mut().as_mut() {
+            b.chosen = b.lines.iter().position(|l| l.key == "settings");
+        }
+        *ui.page.borrow_mut() = Some(("settings".to_owned(), board::Board::open(settings_lines(ui))));
+    }
+    if !at.section_open {
+        if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
+            p.close();
+        }
+        if let Some(b) = ui.board.borrow_mut().as_mut() {
+            b.chosen = None;
         }
     }
-    if i.is_some() {
-        hold_sample(ui);
+    if !at.menu_open {
+        close_boards(ui);
     }
-    if let Some(i) = i {
-        let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
-        if i >= 5 && !menu_open {
-            *ui.board.borrow_mut() = Some(board::Board::open(menu_lines(ui)));
-        }
-        let settings_open = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == "settings" && !b.closing());
-        if i == 6 && !settings_open {
-            if let Some(b) = ui.board.borrow_mut().as_mut() {
-                b.chosen = b.lines.iter().position(|l| l.key == "settings");
-            }
-            *ui.page.borrow_mut() = Some(("settings".to_owned(), board::Board::open(settings_lines(ui))));
-        }
-        if i < 6 {
-            if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
-                p.close();
-            }
-            if let Some(b) = ui.board.borrow_mut().as_mut() {
-                b.chosen = None;
-            }
-        }
-        if i < 5 {
-            close_boards(ui);
-        }
+    let step = script.step_at(t);
+    let moved = ui.ed.preview.replace(Some(step)) != Some(step);
+    if moved || !ui.ed.playing.get() {
+        show(ui);
+    } else {
+        // Playing: the line of time and the button only.
+        ui.ed.syncing.set(true);
+        ui.ed.scrub.set_value(t as f64);
+        ui.ed.syncing.set(false);
     }
-    trace(format_args!("step shown: {:?}", i.map(|i| STEPS[i])));
-    show(ui);
     show_fold(ui, ui.fold.get().0);
+}
+
+/// Play from here (from the beginning at the end), or pause.
+fn play_pause(ui: &Ui) {
+    let ed = &ui.ed;
+    if ed.playing.get() {
+        ed.playing.set(false);
+        show(ui);
+        return;
+    }
+    let end = ui.layout.get().script().end;
+    if ed.t.get() >= end - 1e-3 {
+        // From the start again: the boards' own flaps as well.
+        close_boards(ui);
+        ed.t.set(0.0);
+    }
+    ed.playing.set(true);
+    show(ui);
+}
+
+/// A frame on while editing (`dt` seconds): the script played on.
+/// Whether it moves.
+pub fn tick(ui: &Ui, dt: f32) -> bool {
+    let ed = &ui.ed;
+    if !ed.playing.get() {
+        return false;
+    }
+    let speed = [1.0, 0.5, 0.25][(ed.speed.selected() as usize).min(2)];
+    let end = ui.layout.get().script().end;
+    let t = ed.t.get() + dt.clamp(0.0, 0.1) * speed;
+    if t >= end {
+        ed.playing.set(false);
+    }
+    go_to(ui, t);
+    true
 }
 
 /// The sample phone as the frames show it: on Wi-Fi, shut, lying flat
@@ -725,6 +868,10 @@ pub fn key(ui: &Ui, key: gdk::Key, state: gdk::ModifierType) -> bool {
     }
     if ctrl && k == gdk::Key::s {
         keep(ui);
+        return true;
+    }
+    if key == gdk::Key::space {
+        play_pause(ui);
         return true;
     }
     if key == gdk::Key::Escape {

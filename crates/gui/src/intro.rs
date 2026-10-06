@@ -38,19 +38,16 @@ pub struct Flip {
     pub strength: f32,
 }
 
-/// Seconds from the start: the word coming, the squares growing out, the
-/// eye coming down.
-const WORD_IN: f32 = 0.5;
-const GRID: (f32, f32) = (0.55, 2.1);
-const EYE: (f32, f32) = (1.9, 3.6);
-/// The credit set letter by letter; the eye near it and back; it goes.
-const END: f32 = EYE.1;
-/// The buttons grow up out of the table this long after the eye stops (as
-/// the cubes go down).
+/// When the start's steps come and how (the word coming, the squares
+/// growing out, the eye coming down, the cubes down and the buttons up):
+/// the layout's (scene.rs; the editor sets them), as it came by itself
+/// until it is given them.
+use crate::scene::{Trans, START_STEPS, TRANS};
+
+/// The buttons' step as it was laid out (its parts' times inside it, in
+/// its seconds): the buttons this long after the cubes begin to go down.
 const BUTTONS_AFTER: f32 = 0.35;
-/// Seconds for the cubes to sink (or rise), the last starting a little
-/// after the first.
-const SINK_S: f32 = 1.1;
+const BUTTONS_S: f32 = 1.2;
 
 pub struct Intro {
     start: Option<Instant>,
@@ -73,6 +70,8 @@ pub struct Intro {
     pub hold: Option<f32>,
     /// Where the cubes go, whatever the phone says (the editor's steps).
     pub force_sink: Option<f32>,
+    /// The steps' ways in (the layout's).
+    pub timing: [Trans; crate::scene::STEPS.len()],
 }
 
 /// The wave goes on at least so long (a look over the cable alone is over
@@ -87,8 +86,8 @@ impl Default for Intro {
     fn default() -> Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
-        let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(END));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, hold: None, force_sink: None }
+        let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(30.0));
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, hold: None, force_sink: None, timing: TRANS }
     }
 }
 
@@ -132,23 +131,37 @@ impl Intro {
         self.sink = 0.0;
     }
 
-    /// The seconds the start's steps are at: the word in, the squares
-    /// grown, the eye down, the buttons up (the cubes gone down).
-    pub const STEP_S: [f32; 4] = [WORD_IN, GRID.1, EYE.1, END + 2.0];
+    /// When the start's step `i` begins (each after the one before began).
+    fn due(&self, i: usize) -> f32 {
+        self.timing[..=i.min(START_STEPS - 1)].iter().map(|t| t.delay).sum()
+    }
 
+    /// The start's step `i` on its way (0..1, its curve's).
+    fn on(&self, i: usize) -> f32 {
+        let t = self.timing[i];
+        t.ease.at((self.t() - self.due(i)) / t.secs.max(1e-3))
+    }
+
+    /// The buttons' step, in its seconds as laid out (BUTTONS_S): its
+    /// curve over its own time.
+    fn buttons_s(&self) -> f32 {
+        self.on(3) * BUTTONS_S
+    }
+
+    /// The eye down: the start's own part over (the credit gone).
     pub fn done(&self) -> bool {
-        self.begun() && self.t() >= END
+        self.begun() && self.t() >= self.due(2) + self.timing[2].secs
     }
 
     /// The word and its squares: 0 not yet .. 1 there.
     pub fn word(&self) -> f32 {
-        smooth(self.t() / WORD_IN)
+        self.on(0)
     }
 
     /// How far the table's squares have grown out around the cubes: 0 not
     /// at all .. 1 all of them.
     pub fn grid(&self) -> f32 {
-        smooth((self.t() - GRID.0) / (GRID.1 - GRID.0))
+        self.on(1)
     }
 
     /// The eye near the note (not found): 0 .. 1.
@@ -177,7 +190,7 @@ impl Intro {
         if !self.begun() {
             return 0.0;
         }
-        smooth((self.t() - EYE.1 - BUTTONS_AFTER - i as f32 * 0.08) / 0.5)
+        smooth((self.buttons_s() - BUTTONS_AFTER - i as f32 * 0.08) / 0.5)
     }
 
     /// The word's cubes going down at the end (0 standing .. 1 in the
@@ -186,12 +199,12 @@ impl Intro {
         if !self.begun() {
             return 0.0;
         }
-        smooth((self.t() - EYE.1 - i as f32 * 0.06) / 0.6)
+        smooth((self.buttons_s() - i as f32 * 0.06) / 0.6)
     }
 
     /// The eye: 0 straight above .. 1 where the Duo is seen from.
     pub fn eye(&self) -> f32 {
-        smoother((self.t() - EYE.0) / (EYE.1 - EYE.0))
+        self.on(2)
     }
 
     /// Each cube: there (0 sunk .. 1 standing; one after the other), and
@@ -300,7 +313,7 @@ impl Intro {
 
     /// The Duo: seen as the last cube goes down, gone as the first rises.
     pub fn duo(&self) -> f32 {
-        smooth((self.sink - 0.85) / 0.15)
+        self.timing[4].eased(self.sink)
     }
 
     /// A frame on: the cubes toward where they go (once the start is
@@ -312,7 +325,7 @@ impl Intro {
         if !self.begun() {
             return false;
         }
-        if !self.done() || self.t() < EYE.1 + BUTTONS_AFTER + 5.0 * 0.08 + 0.7 {
+        if !self.done() || self.t() < self.due(3) + self.timing[3].secs + 0.1 {
             return true;
         }
         if !self.ended {
@@ -339,7 +352,7 @@ impl Intro {
             self.sink = sink_to;
             return moving;
         }
-        self.sink += d.signum() * (dt / SINK_S).min(d.abs());
+        self.sink += d.signum() * (dt / self.timing[4].all()).min(d.abs());
         true
     }
 }

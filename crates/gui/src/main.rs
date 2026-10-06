@@ -2388,15 +2388,19 @@ fn build(app: &adw::Application) {
                     }
                     _ => false,
                 };
-                // The Duo away while the menu is open: a third of a second.
+                // The menu's step (the Duo away) and a section's (the eye
+                // drawn back) on their way, as the layout has them (the
+                // editor's script sets them itself).
+                let timing = ui.layout.get().timing();
+                let scripted = ui.layout_edit.get();
                 let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
                 let (a, a_to) = (ui.duo_away.get(), if menu_open { 1.0 } else { 0.0 });
-                let a_step = (a_to - a).signum() * (dt.clamp(0.0, 0.1) / 0.35).min((a_to - a).abs());
+                let a_step = if scripted { 0.0 } else { (a_to - a).signum() * (dt.clamp(0.0, 0.1) / timing[5].all()).min((a_to - a).abs()) };
                 if a_step != 0.0 {
                     ui.duo_away.set(a + a_step);
                 }
                 let (now, to) = (ui.page_back.get(), if open { 1.0 } else { 0.0 });
-                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 0.9).min((to - now).abs());
+                let step = if scripted { 0.0 } else { (to - now).signum() * (dt.clamp(0.0, 0.1) / timing[6].all()).min((to - now).abs()) };
                 if step != 0.0 {
                     ui.page_back.set(now + step);
                 }
@@ -2437,7 +2441,11 @@ fn build(app: &adw::Application) {
             };
             let walling = wall_step(&ui, now_us) || walling;
             let pressing = pressing || boarding || paging || saving || zooming || walling;
-            let far = ui.intro.borrow_mut().step() || resized || pressing || far;
+            // The start as the layout times it; editing, the editor's script
+            // played on.
+            ui.intro.borrow_mut().timing = ui.layout.get().timing();
+            let scripting = ui.layout_edit.get() && editor::tick(&ui, dt);
+            let far = ui.intro.borrow_mut().step() || resized || pressing || far || scripting;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
                 let now = shown + (to - shown) * k;
@@ -4459,7 +4467,7 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
 /// The menu's lines: without the phone only item/grid's own (its
 /// settings, about it); with it, the phone's sections, then those.
 fn menu_lines(ui: &Ui) -> Vec<board::Line> {
-    let phone = ui.state.borrow().host.is_some();
+    let phone = ui.state.borrow().host.is_some() || ui.layout_edit.get();
     let mut lines: Vec<board::Line> = if phone {
         NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
     } else {
@@ -5346,14 +5354,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let layout = ui.layout.get();
         // The step the frame is at: each step's places and eye, one into the
         // next as the start and what comes after go on (scene.rs).
-        let away = {
-            let a = ui.duo_away.get();
-            a * a * (3.0 - 2.0 * a)
-        };
-        let back_now = {
-            let b = ui.page_back.get();
-            b * b * (3.0 - 2.0 * b)
-        };
+        let away = intro.timing[5].eased(ui.duo_away.get());
+        let back_now = intro.timing[6].eased(ui.page_back.get());
         let (step, step_now) = layout.at([intro.grid(), eye, intro.button(0), intro.duo(), away, back_now]);
         let (place, shot) = (step.place, step.shot);
         if ui.step_now.replace(step_now) != step_now && ui.layout_edit.get() {
@@ -5475,8 +5477,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // The whole of it in the page's middle.
             Eye { on: (to.0 + to.0 - (x0 + x1) / 2.0, to.1 + to.1 - (y0 + y1) / 2.0), ..e2 }
         };
-        let back = ui.page_back.get();
-        let back = back * back * (3.0 - 2.0 * back);
+        let back = intro.timing[6].eased(ui.page_back.get());
         let mut e = mix(mix(mix(above, rest, eye), near_note, intro.near_note()), page_view, back);
         // The saver: the eye drifting slowly over the table, round the word.
         let drift = ui.saver_mix.get();
@@ -5751,10 +5752,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
         // Put away while the menu is open (it was over the boards).
-        let away = {
-            let a = ui.duo_away.get();
-            a * a * (3.0 - 2.0 * a)
-        };
+        let away = intro.timing[5].eased(ui.duo_away.get());
         let shown = intro.duo() * (1.0 - away);
         ui.duo.set_opacity(shown as f64);
         // Away, the clicks go through it to the boards.

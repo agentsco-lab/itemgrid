@@ -179,24 +179,188 @@ impl Shot {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub struct Step {
-    pub place: Place,
-    pub shot: Shot,
+/// How a step comes on: its curve.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Ease {
+    Linear,
+    Smooth,
+    Smoother,
+    Out,
+    In,
 }
 
-impl Step {
-    pub fn mix(self, to: Step, f: f32) -> Step {
-        Step { place: self.place.mix(to.place, f), shot: self.shot.mix(to.shot, f) }
+pub const EASES: [(&str, Ease); 5] = [("linear", Ease::Linear), ("smooth", Ease::Smooth), ("smoother", Ease::Smoother), ("ease out", Ease::Out), ("ease in", Ease::In)];
+
+impl Ease {
+    /// Its value `x` of the way (0..1).
+    pub fn at(self, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        match self {
+            Ease::Linear => x,
+            Ease::Smooth => x * x * (3.0 - 2.0 * x),
+            Ease::Smoother => x * x * x * (x * (6.0 * x - 15.0) + 10.0),
+            Ease::Out => 1.0 - (1.0 - x).powi(3),
+            Ease::In => x * x * x,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        EASES.iter().find(|e| e.1 == self).map_or("smooth", |e| e.0)
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
+/// The way into a step: how long after it is due it begins (the start's
+/// steps: after the step before began; the others: after what brings them
+/// - the phone found, the menu or a section opened), how long it takes,
+/// its curve.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Trans {
+    pub delay: f32,
+    pub secs: f32,
+    pub ease: Ease,
+}
+
+impl Trans {
+    /// How far on (0..1, eased) at `raw` of the whole way (delay and all,
+    /// 0..1).
+    pub fn eased(self, raw: f32) -> f32 {
+        let all = (self.delay + self.secs).max(1e-3);
+        self.ease.at((raw * all - self.delay) / self.secs.max(1e-3))
+    }
+
+    /// The whole way's seconds.
+    pub fn all(self) -> f32 {
+        (self.delay + self.secs).max(1e-3)
+    }
+}
+
+/// Each step's way in as it came by itself: the word (half a second), the
+/// squares grown and the credit (from 0.55 s), the eye down (from 1.9 s),
+/// the cubes down and the buttons up (as the eye stops); the Duo the last
+/// moment of 1.1 s once found; the menu a third of a second; a section
+/// 0.9 s.
+pub const TRANS: [Trans; 7] = [
+    Trans { delay: 0.0, secs: 0.5, ease: Ease::Smooth },
+    Trans { delay: 0.55, secs: 1.55, ease: Ease::Smooth },
+    Trans { delay: 1.35, secs: 1.7, ease: Ease::Smoother },
+    Trans { delay: 1.7, secs: 1.2, ease: Ease::Linear },
+    Trans { delay: 0.94, secs: 0.16, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.35, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.9, ease: Ease::Smooth },
+];
+
+/// The start's steps: those that come by themselves, one after the other.
+pub const START_STEPS: usize = 4;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Step {
+    pub place: Place,
+    pub shot: Shot,
+    pub trans: Trans,
+}
+
+impl Default for Step {
+    fn default() -> Step {
+        Step { place: Place::default(), shot: Shot::default(), trans: TRANS[0] }
+    }
+}
+
+impl Step {
+    /// On the way to `to`: its parts and eye (the way in stays the
+    /// step's).
+    pub fn mix(self, to: Step, f: f32) -> Step {
+        Step { place: self.place.mix(to.place, f), shot: self.shot.mix(to.shot, f), trans: self.trans }
+    }
+}
+
+/// The steps one after the other on one line of time (the editor's play,
+/// its scrubber): the start, then the phone found, the menu opened, a
+/// section opened, each a little after the one before is there.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Script {
+    /// When each step's way begins to be due, and when it is all there.
+    pub due: [f32; STEPS.len()],
+    pub reached: [f32; STEPS.len()],
+    pub end: f32,
+}
+
+/// What the script has at a moment: the start's seconds, how far the
+/// phone, the menu and a section have come (each its whole way, 0..1),
+/// whether the menu and a section are open.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ScriptAt {
+    pub start_s: f32,
+    pub phone: f32,
+    pub menu: f32,
+    pub section: f32,
+    pub menu_open: bool,
+    pub section_open: bool,
+}
+
+/// Seconds between one event step being there and the next being brought.
+const PAUSE: f32 = 0.8;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Layout {
     pub steps: [Step; STEPS.len()],
     pub style: Style,
     /// The steps fixed (ok pressed on them, nothing changed since).
     pub fixed: [bool; STEPS.len()],
+}
+
+impl Default for Layout {
+    fn default() -> Layout {
+        Layout { steps: std::array::from_fn(|i| Step { trans: TRANS[i], ..Step::default() }), style: Style::default(), fixed: [false; STEPS.len()] }
+    }
+}
+
+impl Layout {
+    /// The ways in, step by step.
+    pub fn timing(&self) -> [Trans; STEPS.len()] {
+        self.steps.map(|s| s.trans)
+    }
+
+    /// The steps on one line of time.
+    pub fn script(&self) -> Script {
+        let t = self.timing();
+        let mut due = [0.0f32; STEPS.len()];
+        let mut reached = [0.0f32; STEPS.len()];
+        // The start's: each after the one before began.
+        let mut began = 0.0;
+        for i in 0..START_STEPS {
+            began += t[i].delay;
+            due[i] = began;
+            reached[i] = began + t[i].secs;
+        }
+        // Then each brought a little after the one before is there.
+        let mut at = reached[START_STEPS - 1] + PAUSE;
+        for i in START_STEPS..STEPS.len() {
+            due[i] = at;
+            reached[i] = at + t[i].all();
+            at = reached[i] + PAUSE;
+        }
+        Script { due, reached, end: reached[STEPS.len() - 1] + PAUSE }
+    }
+}
+
+impl Script {
+    /// The script at `t` seconds.
+    pub fn at(&self, timing: &[Trans; STEPS.len()], t: f32) -> ScriptAt {
+        let raw = |i: usize| ((t - self.due[i]) / timing[i].all()).clamp(0.0, 1.0);
+        ScriptAt {
+            start_s: t.min(self.reached[START_STEPS - 1] + 0.2),
+            phone: raw(4),
+            menu: raw(5),
+            section: raw(6),
+            menu_open: t >= self.due[5],
+            section_open: t >= self.due[6],
+        }
+    }
+
+    /// The step all there at `t` (the last reached; before the first, it).
+    pub fn step_at(&self, t: f32) -> usize {
+        (0..STEPS.len()).rev().find(|&i| t + 1e-3 >= self.reached[i]).unwrap_or(0)
+    }
 }
 
 impl Layout {
@@ -247,7 +411,7 @@ impl Layout {
                 }
                 Some(&"step") => {
                     let Some(i) = w.get(1).and_then(|n| step_named(n)) else { continue };
-                    let mut s = Step::default();
+                    let mut s = Step { trans: TRANS[i], ..Step::default() };
                     let mut k = 2;
                     while let Some(key) = w.get(k) {
                         let two = xy(k + 1);
@@ -255,6 +419,21 @@ impl Layout {
                         k += match *key {
                             "zoom" => one.map(|v| s.shot.zoom = v).map_or(1, |_| 2),
                             "top" => one.map(|v| s.shot.top = v).map_or(1, |_| 2),
+                            "delay" => one.map(|v| s.trans.delay = v.max(0.0)).map_or(1, |_| 2),
+                            "secs" => one.map(|v| s.trans.secs = v.max(0.01)).map_or(1, |_| 2),
+                            // A curve's name may have a space ("ease out").
+                            "ease" => {
+                                let two_words = w.get(k + 1).zip(w.get(k + 2)).map(|(a, b)| format!("{a} {b}"));
+                                if let Some(e) = two_words.as_deref().and_then(|n| EASES.iter().find(|e| e.0 == n)) {
+                                    s.trans.ease = e.1;
+                                    3
+                                } else if let Some(e) = w.get(k + 1).and_then(|n| EASES.iter().find(|e| e.0 == *n)) {
+                                    s.trans.ease = e.1;
+                                    2
+                                } else {
+                                    1
+                                }
+                            }
                             "duo-scale" => one.map(|v| s.place.duo_scale = v).map_or(1, |_| 2),
                             "pan" => two.map(|v| s.shot.pan = v).map_or(1, |_| 3),
                             "words" => two.map(|v| s.place.words = v).map_or(1, |_| 3),
@@ -289,7 +468,7 @@ impl Layout {
                 // with the lens then (drawn back): kept so.
                 let (zoom, pan) = shots[i].unwrap_or((all_zoom.unwrap_or(1.0), (0.0, 0.0)));
                 let up = ((1.0 - zoom) / 0.6).clamp(0.0, 1.0);
-                Step { place: all, shot: Shot { zoom, pan, top: up * up * (3.0 - 2.0 * up) } }
+                Step { place: all, shot: Shot { zoom, pan, top: up * up * (3.0 - 2.0 * up) }, trans: TRANS[i] }
             });
         }
         l
@@ -301,7 +480,8 @@ impl Layout {
         let mut text = format!("paper {}\nlines {}\nline-width {}\nfont {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0);
         for (i, st) in self.steps.iter().enumerate() {
             let (p, e) = (st.place, st.shot);
-            text.push_str(&format!("step {} zoom {:.3} pan {:.2} {:.2} top {:.3}", STEPS[i], e.zoom, e.pan.0, e.pan.1, e.top));
+            let t = st.trans;
+            text.push_str(&format!("step {} zoom {:.3} pan {:.2} {:.2} top {:.3} delay {:.2} secs {:.2} ease {}", STEPS[i], e.zoom, e.pan.0, e.pan.1, e.top, t.delay, t.secs, t.ease.name()));
             text.push_str(&format!(" words {} {}", p.words.0, p.words.1));
             if let Some(d) = p.duo {
                 text.push_str(&format!(" duo {} {}", d.0, d.1));
@@ -382,9 +562,25 @@ mod tests {
         l.steps[4].place.duo = Some((9.0, 4.0));
         l.steps[4].shot = Shot { zoom: 0.8, pan: (1.5, -2.25), top: 0.2 };
         l.style.font = 18;
+        l.steps[3].trans = Trans { delay: 2.0, secs: 0.75, ease: Ease::Out };
         l.fixed[4] = true;
         let back = Layout::read(&l.write());
         assert_eq!(back, l);
+    }
+
+    #[test]
+    fn the_script_keeps_the_start_as_it_was() {
+        let l = Layout::default();
+        let s = l.script();
+        // The eye down at 1.9 .. 3.6 s, the buttons from 3.6 s.
+        assert!((s.due[2] - 1.9).abs() < 1e-4 && (s.reached[2] - 3.6).abs() < 1e-4);
+        assert!((s.due[3] - 3.6).abs() < 1e-4);
+        assert_eq!(s.step_at(0.0), 0);
+        assert_eq!(s.step_at(s.reached[5]), 5);
+        let at = s.at(&l.timing(), s.reached[4]);
+        assert!(at.phone > 0.999 && !at.menu_open);
+        // The Duo seen in the last moment of its way, as before.
+        assert!(l.steps[4].trans.eased(0.8) == 0.0 && l.steps[4].trans.eased(1.0) == 1.0);
     }
 
     #[test]
