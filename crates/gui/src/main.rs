@@ -451,6 +451,9 @@ struct Ui {
     /// the buttons then not kept to whole squares (they jumped a square at
     /// a time as the card grew), but for its first and last quarter.
     wall_t: std::cell::Cell<Option<f32>>,
+    /// Over Wi-Fi (not followed, drawn shut): opened by a click on it, shut
+    /// by another - a picture of opening, nothing asked of the phone.
+    wifi_open: std::cell::Cell<bool>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
     shown: gtk::Widget,
@@ -1233,6 +1236,7 @@ fn build(app: &adw::Application) {
         wallpaper: std::cell::Cell::new(None),
         wall_move: std::cell::Cell::new(None),
         wall_t: std::cell::Cell::new(None),
+        wifi_open: std::cell::Cell::new(false),
         shown: view.clone().upcast(),
         stage: stage.clone(),
         wallpaper_mix: std::cell::Cell::new(0.0),
@@ -2090,6 +2094,20 @@ fn build(app: &adw::Application) {
             ui.orbit.set((ui.orbit.get().0, to));
             let (a, b) = ui.fold.get();
             ui.fold.set((a + 0.1, b));
+        }
+    });
+    // Over Wi-Fi a click opens the drawn Duo flat, another shuts it (a drag
+    // is no click).
+    turn_back.connect_released({
+        let ui = Rc::downgrade(&ui);
+        move |_, n, _, _| {
+            let Some(ui) = ui.upgrade() else { return };
+            let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
+            if n == 1 && wifi {
+                let open = !ui.wifi_open.get();
+                ui.wifi_open.set(open);
+                fold_to(&ui, if open { 180.0 } else { 0.0 });
+            }
         }
     });
     turn_back.connect_pressed({
@@ -4757,14 +4775,27 @@ fn show_fold_now(ui: &Ui, angle: f64) {
     let quad = graphene::Rect::new(0.0, 0.0, mid + 2.0 * DUO_PAD, h + 2.0 * DUO_PAD);
     let holder = ui.duo.parent().map_or(width, |p| p.width().max(1) as f32);
     let first = (holder.min(width) / 2.0, room / 2.0);
-    let mut seen: Option<graphene::Rect> = None;
-    for i in 0..2 {
-        for z in [0.0, -DUO_THICK] {
-            let b = place(first, i, z, true).transform_bounds(&quad);
-            seen = Some(seen.map_or(b, |s| s.union(&b)));
-        }
-    }
-    let at = seen.map_or(first, |b| (first.0 + width / 2.0 - (b.x() + b.width() / 2.0), first.1 + room / 2.0 - (b.y() + b.height() / 2.0)));
+    // Centred: not the phone as it is now (opening, it moved the whole view)
+    // but the place it has - open flat, and left of it its words on the
+    // table (show_fold's texts: a square clear of it, some 13 across) - as
+    // the table sees it, the hand's tilt aside.
+    let _ = quad;
+    let [yaw, more] = ui.orbit.get().0;
+    let stand = gsk::Transform::new()
+        .translate(&graphene::Point::new(first.0, first.1))
+        .perspective(3.2 * h)
+        .rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
+        .rotate_3d(yaw, &graphene::Vec3::z_axis())
+        .translate(&graphene::Point::new(-mid, -h / 2.0));
+    let words = 14.0 * square() * DUO_PX_PER_MM as f32;
+    let b = stand.transform_bounds(&graphene::Rect::new(-words, 0.0, 2.0 * mid + words, h));
+    // The eye drawn back for that place to fit the page (the table's rest,
+    // below), about the phone: its offset from the place's middle as near.
+    let shown = ui.intro.borrow().duo();
+    let fit = 1.0 + ((ui.floor.width() as f32 * 0.86 / b.width().max(1.0)).min(1.0) - 1.0) * shown;
+    // Its middle at the page's (the room is not: the window's sidebar).
+    let page_mid = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map_or(width / 2.0, |o| ui.floor.width() as f32 / 2.0 - o.x());
+    let at = (page_mid + (first.0 - (b.x() + b.width() / 2.0)) * fit, first.1 + room / 2.0 - (b.y() + b.height() / 2.0));
     let duo_at = at;
     let mut depth = [0.0f32; 2];
     for (i, half) in ui.halves.iter().enumerate() {
@@ -4972,7 +5003,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             (v.x() / v.w(), v.y() / v.w())
         };
         let middle = (holder.min(width) / 2.0, room / 2.0);
-        let want = (ui.floor.width() as f32 * START_AT.0 - off.0 - middle.0, ui.floor.height() as f32 * START_AT.1 - off.1 - middle.1);
+        // Where the eye at rest is on the page (the room's middle before the
+        // Duo is seen, the Duo's place after), and how near: the word's place
+        // as that eye shows it.
+        let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
+        let want = ((ui.floor.width() as f32 * START_AT.0 - off.0 - middle_seen.0) / fit, (ui.floor.height() as f32 * START_AT.1 - off.1 - middle_seen.1) / fit);
         // The table's point shown there (Newton's way, a few steps).
         let down = looking(1.0);
         let mut p = want;
@@ -5048,10 +5083,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let v = m.transform_vec4(&graphene::Vec4::new(p.0, p.1, -DUO_THICK, 1.0));
             (v.x() / v.w(), v.y() / v.w())
         };
-        let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
         // The Duo seen, a little farther back: its words under it on the
         // table too.
-        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: tilt_rest, near: 1.0 - 0.12 * seen, far: 3.2 };
+        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: tilt_rest, near: fit, far: 3.2 };
         // Where the word is once the eye is down (its cubes in the
         // table's squares, a little off the page's point): kept there all
         // the way, so that nothing moves as the eye stops.
@@ -5291,10 +5325,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let title = low(ui.status_title.label());
             let wrong = if title.contains("fine") { String::new() } else { title.strip_prefix("your duo is ").or(title.strip_prefix("your duo ")).unwrap_or(&title).to_owned() };
             let lines: Vec<String> = [name, system, charge, link, wrong].into_iter().filter(|l| !l.is_empty()).collect();
+            // Left of it, a square clear of where its left half lies open
+            // flat (opened by a click on Wi-Fi), its top at the phone's.
             let (mid, _) = ui.duo_size;
-            let (left, right) = if ui.fold.get().0 < 90.0 { (0.0, mid) } else { (-mid, mid) };
             let wide = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cur;
-            let (x, top) = on_squares(k, ((left + right) / 2.0 - wide / 2.0, h / 2.0 + 1.2 * cur));
+            let (x, top) = on_squares(k, (-mid - cur - wide, -h / 2.0));
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
@@ -5402,7 +5437,7 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
         ui.shut_away.set(true);
         ui.orient.set((ui.orient.get().0, ui.orient.get().1, false));
         ui.motion_on.set(false);
-        fold_to(ui, 0.0);
+        fold_to(ui, if ui.wifi_open.get() { 180.0 } else { 0.0 });
         tilt_to(ui, [0.0, 0.0, 1.0]);
         ui.pose_name.borrow_mut().clear();
         ui.pose.set_label("On Wi-Fi · plug in the cable to see it move");
