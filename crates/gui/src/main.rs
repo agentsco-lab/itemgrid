@@ -4553,18 +4553,19 @@ fn stock_android(ui: &Ui) -> Option<String> {
     }
 }
 
-/// The phone's words on the table when it is not in Linux: where it is,
+/// The phone's words on the table when it is not in Linux (eleven
+/// letters at most: the open phone lies past them): where it is,
 /// and - Android without USB debugging - how to let item/grid reach it.
 fn away_words(ui: &Ui) -> Option<Vec<String>> {
     let st = ui.state.borrow();
     let guest = st.place.serial().is_some_and(|s| itemgrid_core::android::guest(s).is_some());
     Some(match &st.place {
-        Place::Android(_) if guest => vec!["android".into(), "started by item/grid".into()],
-        Place::Android(_) => vec!["android".into(), "on the cable".into()],
+        Place::Android(_) if guest => vec!["android".into(), "as a guest".into()],
+        Place::Android(_) => vec!["android".into(), "on cable".into()],
         Place::Quiet(_) => vec!["android".into(), "turn on".into(), "usb debugging".into()],
         Place::Fastboot(_) => vec!["bootloader".into()],
         Place::Recovery(_) => vec!["recovery".into()],
-        Place::NoSystem => vec!["no system".into(), "install item again".into()],
+        Place::NoSystem => vec!["no system".into(), "reinstall".into()],
         _ => return None,
     })
 }
