@@ -27,6 +27,8 @@ mod duo3d;
 mod floor_area;
 mod grid_gl;
 mod intro;
+// The job's card (GTK): the table tells jobs now; kept for the pages.
+#[allow(dead_code)]
 mod card;
 mod control;
 mod journey;
@@ -2299,7 +2301,8 @@ fn build(app: &adw::Application) {
                 ui.intro.borrow_mut().begin();
             }
             // Waiting for the phone: the drawn one opens and closes, slowly.
-            if ui.idle.get() && !ui.shut_away.get() && std::env::var_os("ITEMGRID_FOLD").is_none() {
+            let working = ui.state.borrow().job.as_ref().is_some_and(|j| j.ended.is_none());
+            if ui.idle.get() && !ui.shut_away.get() && !working && std::env::var_os("ITEMGRID_FOLD").is_none() {
                 let t = clock.frame_time() as f64 / 1e6;
                 ui.fold.set((ui.fold.get().0, 135.0 + 40.0 * (t * 0.6).sin()));
             }
@@ -2592,9 +2595,14 @@ fn tell(ui: &Rc<Ui>) {
         let st = ui.state.borrow();
         if let Some(job) = &st.job {
             let secs = job.took.unwrap_or_else(|| job.started.elapsed().as_secs());
-            ui.card.show(job.kind, &job.lines, secs, job.ended.clone(), false);
+            // Told on the table (its lines under the word), not on a card;
+            // the drawn Duo shut and still meanwhile.
+            let _ = secs;
+            ui.card.hide();
             if job.ended.is_none() {
-                duo_moving(ui, ui.card.phone(job.kind, &job.lines));
+                drop(st);
+                fold_to(ui, 0.0);
+                tilt_to(ui, [0.0, 0.0, 1.0]);
             }
             return;
         }
@@ -2604,7 +2612,7 @@ fn tell(ui: &Rc<Ui>) {
     match other {
         Some(a) if a.ended_at.is_none() || a.ended_at != dismissed => {
             let running = a.ended_at.is_none();
-            ui.card.show(&a.job, &a.lines, a.seconds(), a.outcome(), true);
+            ui.card.hide();
             ui.actions.set_sensitive(!running);
             ui.mode_buttons.set_sensitive(!running);
             if running {
@@ -2652,8 +2660,8 @@ fn duo_moving(ui: &Ui, phone: &str) {
         "Starting" => "Starting…",
         other => other,
     });
-    ui.duo_mode.add_css_class("moving");
-    ui.duo_mode.set_visible(true);
+    // (Not over the table: the job's lines there say it.)
+    ui.duo_mode.set_visible(false);
 }
 
 
@@ -2875,7 +2883,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     ui.tabs.set_visible_child_name("general");
     ui.switcher.set_visible(false);
     ui.linux_only.set_visible(false);
-    ui.mode.set_visible(true);
+    ui.mode.set_visible(false);
     bottom_shown(ui);
     for s in &ui.screens {
         s.set_paintable(gdk::Paintable::NONE);
@@ -2951,7 +2959,8 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         ui.duo_mode.remove_css_class("moving");
     }
     ui.duo_mode_label.set_label(duo);
-    ui.duo_mode.set_visible(true);
+    // (Where the phone is: said on the table, beside it.)
+    ui.duo_mode.set_visible(false);
     ui.name_sub.set_label(match place {
         Place::Fastboot(_) => "Bootloader",
         Place::Recovery(_) => "Recovery",
@@ -4545,14 +4554,18 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
     let guest = st.place.serial().is_some_and(|s| itemgrid_core::android::guest(s).is_some());
     Some(match &st.place {
         Place::Android(_) if guest => vec!["android".into(), "started by item/grid".into()],
-        Place::Android(_) => vec!["android".into(), "on the cable".into(), "menu: install item".into()],
-        Place::Quiet(_) => vec!["android".into(), "usb debugging off".into(), "settings".into(), "› about phone".into(), "› build number 7×".into(), "› system".into(), "› developer options".into(), "› usb debugging".into()],
+        Place::Android(_) => vec!["android".into(), "on the cable".into()],
+        Place::Quiet(_) => vec!["android".into(), "not reached".into()],
         Place::Fastboot(_) => vec!["bootloader".into()],
         Place::Recovery(_) => vec!["recovery".into()],
         Place::NoSystem => vec!["no system".into(), "install item again".into()],
         _ => return None,
     })
 }
+
+/// Android without USB debugging: how to let item/grid reach it - under
+/// the word (the menu closed).
+const DEBUGGING_STEPS: [&str; 7] = ["turn on usb debugging:", "settings › about phone", "› build number 7 times", "settings › system", "› developer options", "› usb debugging on", "then allow this computer"];
 
 /// The way back to the phone's stock Android ("stock" on the menu) - on
 /// the cable only (off it, said so, not to be clicked).
@@ -6071,20 +6084,39 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // A job going on (or just over): told on the table where the phone's
         // words are - what it is, its stage, how long is left; then done or
         // stopped (a minute).
-        let job_lines: Option<Vec<String>> = ui.state.borrow().job.as_ref().and_then(|j| {
-            let over = j.took.map(|t| j.started.elapsed().as_secs().saturating_sub(t));
-            if over.is_some_and(|o| o > 60) {
+        // (This window's job, else one the command line runs.)
+        let job_now: Option<(String, Vec<String>, Option<Option<String>>, u64)> = ui
+            .state
+            .borrow()
+            .job
+            .as_ref()
+            .map(|j| (j.kind.to_owned(), j.lines.clone(), j.ended.clone(), j.took.map_or(0, |t| j.started.elapsed().as_secs().saturating_sub(t))))
+            .or_else(|| {
+                itemgrid_core::activity::elsewhere(60).map(|a| {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    (a.job.clone(), a.lines.clone(), a.outcome(), a.ended_at.map_or(0, |e| now.saturating_sub(e)))
+                })
+            });
+        let job_lines: Option<Vec<String>> = job_now.and_then(|(kind, jlines, ended, over)| {
+            if ended.is_some() && over > 60 {
                 return None;
             }
-            let mut lines = wrapped(journey::title(j.kind));
-            match &j.ended {
+            let title = match kind.as_str() {
+                "android-clean" => "to android",
+                "install-stock" => "installing item",
+                "update" => "updating item",
+                "full-backup" => "backing up",
+                k => journey::title(k),
+            };
+            let mut lines = wrapped(title);
+            match &ended {
                 None => {
-                    let stages = journey::stages(j.kind);
+                    let stages = journey::stages(&kind);
                     if !stages.is_empty() {
-                        let at = journey::locate(&stages, &j.lines).min(stages.len() - 1);
+                        let at = journey::locate(&stages, &jlines).min(stages.len() - 1);
                         lines.extend(wrapped(stages[at].title));
                         let left = (journey::left(&stages, at, 0.0) / 60.0).ceil();
-                        lines.push(if left <= 1.0 { "about a minute left".to_owned() } else { format!("about {left} min left") });
+                        lines.push(if left <= 1.0 { "a minute left".to_owned() } else { format!("{left} min left") });
                     }
                 }
                 Some(None) => lines.push("done".to_owned()),
@@ -6096,7 +6128,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             Some(lines)
         });
         if let Some(lines) = &job_lines {
-            let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
+            // Under the word, where the note goes (room for them there; the
+            // phone's words gone meanwhile).
+            let (x, top) = (left, under);
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: 1.0 });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: 1.0 });
@@ -6149,6 +6183,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
                 texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
             }
+        }
+        // Android without USB debugging: the way, under the word.
+        let quiet = matches!(ui.state.borrow().place, Place::Quiet(_));
+        if quiet && job_lines.is_none() && ui.board.borrow().as_ref().is_none_or(|b| b.closing()) {
+            texts.push(TableText { at: (left, under), cell: cur, lines: DEBUGGING_STEPS.iter().map(|l| l.to_string()).collect(), grey: 0.45, bold: false, set: 1.0, strength: 1.0 });
         }
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });

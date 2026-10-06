@@ -85,11 +85,10 @@ pub fn stages(job: &str) -> Vec<Stage> {
             st("Its own boot", "item's boot is written to the phone, read back, and the phone restarts from it.", "Linux", &["writing boot", "restarting from the phone"], 120.0),
         ],
         "android-clean" => vec![
-            st("Copying your files", "Your home folder and settings, to this computer.", "Linux", &["copying your files"], 60.0),
-            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP"], 60.0),
-            st("Erasing", "Linux and everything in it are erased from the phone.", "Recovery", &["zeroing"], 480.0),
-            st("Stock boot", "The phone's own boot from Microsoft goes back on, on both slots, each read back.", "Recovery", &["the stock boot"], 60.0),
-            st("Android starting", "Android sets itself up and opens its welcome screens.", "Restarting", &["starting Android"], 120.0),
+            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP", "checking the image"], 30.0),
+            st("Erasing item", "Linux and everything in it are erased from the phone.", "Recovery", &["zeroing"], 450.0),
+            st("Stock boot back", "The phone's own boot goes back on, read back.", "Recovery", &["the stock boot", "writing"], 15.0),
+            st("Android starting", "Android sets itself up and opens its welcome screens.", "Restarting", &["clearing misc", "starting Android"], 30.0),
         ],
         "android-go" => vec![
             st("Backing up everything", "Everything on the phone is copied to this computer first - or a fresh copy is checked - so the way back is certain.", "TWRP", &["checking ", "taking the whole system's backup first"], 1250.0),
