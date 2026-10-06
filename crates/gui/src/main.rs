@@ -316,6 +316,9 @@ const CSS: &str = "
 /* LOOK: minimal - white, small type, light weights; colour only where it
    says something (the status dot, the accent on the chosen section). */
 window, window.background { background: #ffffff; font-size: 9.5pt; }
+.steps-bar { background: alpha(white, 0.92); border: 1px solid alpha(black, 0.12); border-radius: 8px; padding: 3px 6px; }
+.steps-bar button { padding: 2px 8px; min-height: 0; }
+.steps-bar button:checked { background: alpha(black, 0.10); }
 window.night, window.night.background { background: #242427; color: #e6e6ea; }
 window.wallpaper, window.wallpaper.csd { border-radius: 0; box-shadow: none; outline: none; margin: 0; }
 /* On its way into the wallpaper or back: the window the monitor's, seen
@@ -586,6 +589,16 @@ struct Ui {
     layout_edit: std::cell::Cell<bool>,
     layout_drag: std::cell::Cell<Option<(usize, (f32, f32), (f32, f32))>>,
     layout_boxes: std::cell::Cell<[[f32; 4]; 5]>,
+    /// The editor's steps: the one shown (held there; none: as it goes),
+    /// the one the eye is at now, their bar (over the page's top) and its
+    /// buttons and words.
+    preview: std::cell::Cell<Option<usize>>,
+    step_now: std::cell::Cell<usize>,
+    steps_bar: gtk::Box,
+    steps_buttons: Vec<gtk::ToggleButton>,
+    steps_label: gtk::Label,
+    /// The Duo put away while the menu is open (eased 0 .. 1).
+    duo_away: std::cell::Cell<f32>,
     duo_drawn_at: std::cell::Cell<Option<(f32, f32)>>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
@@ -1149,6 +1162,25 @@ fn build(app: &adw::Application) {
     home_page.set_child(Some(&floor_gl));
     home_page.add_overlay(&floor);
     home_page.add_overlay(scroll);
+    // The layout editor's steps, over the page's top (F2 shows it).
+    let steps_bar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(2).halign(gtk::Align::Center).valign(gtk::Align::Start).margin_top(8).visible(false).css_classes(["steps-bar"]).build();
+    let steps_buttons: Vec<gtk::ToggleButton> = STEPS
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let b = gtk::ToggleButton::builder().label(format!("{} {name}", i + 1)).css_classes(["flat"]).build();
+            steps_bar.append(&b);
+            b
+        })
+        .collect();
+    let steps_play = gtk::Button::builder().label("play").css_classes(["flat"]).build();
+    let steps_reset = gtk::Button::builder().label("reset step").css_classes(["flat"]).build();
+    let steps_label = gtk::Label::builder().css_classes(["dim-label"]).margin_start(10).build();
+    steps_bar.append(&steps_play);
+    steps_bar.append(&steps_reset);
+    steps_bar.append(&steps_label);
+    steps_bar.set_tooltip_text(Some("A step shown and held. Its eye: the wheel on the table (not on the Duo) - nearer or further; drag the table - moved. Kept for that step."));
+    home_page.add_overlay(&steps_bar);
     // Nothing on the way to the page cuts the drawn Duo off: held up and
     // tipped it reaches far past its room (an overlay clipped it there).
     {
@@ -1377,6 +1409,12 @@ fn build(app: &adw::Application) {
         layout_edit: std::cell::Cell::new(false),
         layout_drag: std::cell::Cell::new(None),
         layout_boxes: std::cell::Cell::new([[0.0; 4]; 5]),
+        preview: std::cell::Cell::new(None),
+        step_now: std::cell::Cell::new(0),
+        steps_bar: steps_bar.clone(),
+        steps_buttons: steps_buttons.clone(),
+        steps_label: steps_label.clone(),
+        duo_away: std::cell::Cell::new(0.0),
         duo_drawn_at: std::cell::Cell::new(None),
         shown: view.clone().upcast(),
         stage: stage.clone(),
@@ -1577,12 +1615,12 @@ fn build(app: &adw::Application) {
                 if over_duo {
                     l.duo_scale = (l.duo_scale * 1.05f32.powf(-dy as f32)).clamp(0.4, 2.0);
                 } else {
-                    let to = (ui.zoom.get().1 * 1.1f32.powf(-dy as f32)).clamp(0.4, 1.0);
-                    ui.zoom.set((ui.zoom.get().0, to));
-                    l.zoom = Some(to);
+                    let i = current_step(&ui);
+                    l.shots[i].zoom = (l.shots[i].zoom * 1.1f32.powf(-dy as f32)).clamp(0.3, 3.0);
                 }
                 ui.layout.set(l);
                 save_layout(l);
+                show_steps(&ui);
                 show_fold(&ui, ui.fold.get().0);
                 return glib::Propagation::Stop;
             }
@@ -1649,6 +1687,17 @@ fn build(app: &adw::Application) {
                         grid_drag.set(false);
                         return;
                     }
+                    // Nothing of the layout: the step's eye moved (the
+                    // table's px a page's px here kept for the drag).
+                    let fv = ui.floor_view.borrow();
+                    let (bx, by) = (table_under(&fv, (x + 10.0, y)), table_under(&fv, (x, y + 10.0)));
+                    drop(fv);
+                    if let (Some(bx), Some(by)) = (bx, by) {
+                        let per = ((bx.0 - t.0) / 10.0, (by.1 - t.1) / 10.0);
+                        ui.layout_drag.set(Some((5 + current_step(&ui), l.shots[current_step(&ui)].pan, per)));
+                        grid_drag.set(false);
+                        return;
+                    }
                 }
             }
             // With Ctrl the squares are dragged (for now); else, once it
@@ -1659,6 +1708,15 @@ fn build(app: &adw::Application) {
         drag.connect_drag_update(move |g, dx, dy| {
             let Some(ui) = weak.upgrade() else { return };
             // A part of the layout dragged: whole squares from where it was.
+            if let Some((item, from, per)) = ui.layout_drag.get().filter(|d| d.0 >= 5) {
+                let cur = square() * DUO_PX_PER_MM as f32;
+                let mut l = ui.layout.get();
+                l.shots[item - 5].pan = (from.0 - dx as f32 * per.0 / cur, from.1 - dy as f32 * per.1 / cur);
+                ui.layout.set(l);
+                show_steps(&ui);
+                show_fold(&ui, ui.fold.get().0);
+                return;
+            }
             if let Some((item, from, began)) = ui.layout_drag.get() {
                 let ((_, _), _, (x, y)) = f.get();
                 // Let go of the view before it is drawn anew below.
@@ -1737,6 +1795,36 @@ fn build(app: &adw::Application) {
             }
         });
         ui.window.add_controller(keys);
+        // The editor's steps: one shown (held there), played from the
+        // start, the shown one's eye as it comes by itself again.
+        for (i, b) in ui.steps_buttons.iter().enumerate() {
+            let weak = Rc::downgrade(&ui);
+            b.connect_clicked(move |_| {
+                if let Some(ui) = weak.upgrade() {
+                    preview_step(&ui, Some(i));
+                }
+            });
+        }
+        let weak = Rc::downgrade(&ui);
+        steps_play.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                preview_step(&ui, None);
+                close_boards(&ui);
+                ui.intro.borrow_mut().replay();
+                show_fold(&ui, ui.fold.get().0);
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        steps_reset.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                let mut l = ui.layout.get();
+                l.shots[current_step(&ui)] = Shot::default();
+                ui.layout.set(l);
+                save_layout(l);
+                show_steps(&ui);
+                show_fold(&ui, ui.fold.get().0);
+            }
+        });
         // The table's buttons: raised under the pointer, the hand there.
         let motion = gtk::EventControllerMotion::new();
         let (weak, pg) = (Rc::downgrade(&ui), page.clone());
@@ -1788,20 +1876,7 @@ fn build(app: &adw::Application) {
                                 p.close();
                             }
                         } else {
-                            // Without the phone only item/grid's own: its
-                            // settings, about it; with it, the phone's
-                            // sections, then those.
-                            let phone = ui.state.borrow().host.is_some();
-                            let mut lines: Vec<board::Line> = if phone {
-                                NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
-                            } else {
-                                Vec::new()
-                            };
-                            lines.push(board::Line::new("settings", "settings"));
-                            if !phone {
-                                lines.push(board::Line::new("itemgrid", "about"));
-                            }
-                            *b = Some(board::Board::open(lines));
+                            *b = Some(board::Board::open(menu_lines(&ui)));
                             drop(b);
                             ui.intro.borrow_mut().clear_note();
                         }
@@ -2494,12 +2569,19 @@ fn build(app: &adw::Application) {
                     }
                     _ => false,
                 };
+                // The Duo away while the menu is open: a third of a second.
+                let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
+                let (a, a_to) = (ui.duo_away.get(), if menu_open { 1.0 } else { 0.0 });
+                let a_step = (a_to - a).signum() * (dt.clamp(0.0, 0.1) / 0.35).min((a_to - a).abs());
+                if a_step != 0.0 {
+                    ui.duo_away.set(a + a_step);
+                }
                 let (now, to) = (ui.page_back.get(), if open { 1.0 } else { 0.0 });
                 let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / 0.9).min((to - now).abs());
                 if step != 0.0 {
                     ui.page_back.set(now + step);
                 }
-                moving || sizing || step != 0.0
+                moving || sizing || step != 0.0 || a_step != 0.0
             };
             // The saver: the eye going over to drifting (and back), the
             // frames going on while it drifts.
@@ -4541,11 +4623,39 @@ struct Layout {
     duo_scale: f32,
     zoom: Option<f32>,
     style: Style,
+    /// The eye at each of the steps (STEPS): how near, how moved.
+    shots: [Shot; STEPS.len()],
+}
+
+/// The steps from the start on, each with its own eye (the layout editor
+/// shows each and keeps how near and where the eye is for it): the word
+/// in, the squares grown, the eye down (the cubes standing), the buttons
+/// up, the phone there, the menu open, a section open.
+const STEPS: [&str; 7] = ["word", "grid", "cubes", "buttons", "phone", "menu", "section"];
+
+/// A step's eye: its lens (1 as it comes by itself) and how far it is
+/// moved over the table (squares).
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Shot {
+    zoom: f32,
+    pan: (f32, f32),
+}
+
+impl Default for Shot {
+    fn default() -> Shot {
+        Shot { zoom: 1.0, pan: (0.0, 0.0) }
+    }
+}
+
+impl Shot {
+    fn mix(self, to: Shot, f: f32) -> Shot {
+        Shot { zoom: self.zoom + (to.zoom - self.zoom) * f, pan: (self.pan.0 + (to.pan.0 - self.pan.0) * f, self.pan.1 + (to.pan.1 - self.pan.1) * f) }
+    }
 }
 
 impl Default for Layout {
     fn default() -> Layout {
-        Layout { words: (0.0, 4.0), duo: None, word: (0.0, 0.0), buttons: (0.0, 0.0), menu: (0.0, 0.0), duo_scale: 1.0, zoom: None, style: Style::default() }
+        Layout { words: (0.0, 4.0), duo: None, word: (0.0, 0.0), buttons: (0.0, 0.0), menu: (0.0, 0.0), duo_scale: 1.0, zoom: None, style: Style::default(), shots: [Shot::default(); STEPS.len()] }
     }
 }
 
@@ -4573,6 +4683,12 @@ fn read_layout() -> Layout {
             Some(&"paper") => l.style.paper = named(&PAPERS.map(|p| p.0), &w[1..]).unwrap_or(l.style.paper),
             Some(&"lines") => l.style.ink = named(&INKS.map(|p| p.0), &w[1..]).unwrap_or(l.style.ink),
             Some(&"line-width") => l.style.width = one().and_then(|v| WIDTHS.iter().position(|w| (*w - v as f64).abs() < 0.01)).unwrap_or(l.style.width),
+            Some(&"shot") => {
+                let f = |i: usize| w.get(i).and_then(|v| v.parse::<f32>().ok());
+                if let (Some(i), Some(zoom), Some(x), Some(y)) = (w.get(1).and_then(|n| STEPS.iter().position(|s| s == n)), f(2), f(3), f(4)) {
+                    l.shots[i] = Shot { zoom, pan: (x, y) };
+                }
+            }
             Some(&"font") => l.style.font = named(&FONTS.map(|p| p.0), &w[1..]).unwrap_or(l.style.font),
             _ => {}
         }
@@ -4595,10 +4711,109 @@ fn save_layout(l: Layout) {
     if let Some(z) = l.zoom {
         text.push_str(&format!("zoom {z:.3}\n"));
     }
+    for (i, shot) in l.shots.iter().enumerate().filter(|(_, s)| **s != Shot::default()) {
+        text.push_str(&format!("shot {} {:.3} {:.2} {:.2}\n", STEPS[i], shot.zoom, shot.pan.0, shot.pan.1));
+    }
     let s = l.style;
     text.push_str(&format!("paper {}\nlines {}\nline-width {}\nfont {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0));
     let _ = std::fs::create_dir_all(layout_file().parent().unwrap_or(std::path::Path::new(".")));
     let _ = std::fs::write(layout_file(), text);
+}
+
+/// The menu's lines: without the phone only item/grid's own (its
+/// settings, about it); with it, the phone's sections, then those.
+fn menu_lines(ui: &Ui) -> Vec<board::Line> {
+    let phone = ui.state.borrow().host.is_some();
+    let mut lines: Vec<board::Line> = if phone {
+        NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
+    } else {
+        Vec::new()
+    };
+    lines.push(board::Line::new("settings", "settings"));
+    if !phone {
+        lines.push(board::Line::new("itemgrid", "about"));
+    }
+    lines
+}
+
+/// The menu and the section on the table closed.
+fn close_boards(ui: &Ui) {
+    if let Some(b) = ui.board.borrow_mut().as_mut() {
+        b.close();
+    }
+    if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
+        p.close();
+    }
+}
+
+/// The step the editor's wheel and drag set: the one shown, else the one
+/// the eye is at.
+fn current_step(ui: &Ui) -> usize {
+    ui.preview.get().unwrap_or(ui.step_now.get()).min(STEPS.len() - 1)
+}
+
+/// The steps' bar as things are: the shown one pressed, the current one's
+/// eye in words.
+fn show_steps(ui: &Ui) {
+    let shown = ui.preview.get();
+    for (i, b) in ui.steps_buttons.iter().enumerate() {
+        if b.is_active() != (shown == Some(i)) {
+            b.set_active(shown == Some(i));
+        }
+    }
+    let i = current_step(ui);
+    let shot = ui.layout.get().shots[i];
+    ui.steps_label.set_label(&format!("{} · zoom {:.2} · moved {:.1}, {:.1}", STEPS[i], shot.zoom, shot.pan.0, shot.pan.1));
+}
+
+/// Step `i` shown and held (none: the start going as it goes again): the
+/// start held at its seconds, the Duo there or not, the menu and the
+/// settings open or not.
+fn preview_step(ui: &Ui, i: Option<usize>) {
+    ui.preview.set(i);
+    {
+        let mut intro = ui.intro.borrow_mut();
+        match i {
+            Some(i) => {
+                intro.hold = Some(intro::Intro::STEP_S[i.min(3)]);
+                let sink = if i >= 4 { 1.0 } else { 0.0 };
+                intro.force_sink = Some(sink);
+                intro.sink = sink;
+            }
+            None => {
+                intro.hold = None;
+                intro.force_sink = None;
+            }
+        }
+    }
+    if let Some(i) = i {
+        let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
+        if i >= 5 && !menu_open {
+            *ui.board.borrow_mut() = Some(board::Board::open(menu_lines(ui)));
+            ui.intro.borrow_mut().clear_note();
+        }
+        let settings_open = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == "settings" && !b.closing());
+        if i == 6 && !settings_open {
+            if let Some(b) = ui.board.borrow_mut().as_mut() {
+                b.chosen = b.lines.iter().position(|l| l.key == "settings");
+            }
+            *ui.page.borrow_mut() = Some(("settings".to_owned(), board::Board::open(settings_lines(ui))));
+        }
+        if i < 6 {
+            if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
+                p.close();
+            }
+            if let Some(b) = ui.board.borrow_mut().as_mut() {
+                b.chosen = None;
+            }
+        }
+        if i < 5 {
+            close_boards(ui);
+        }
+    }
+    trace(format_args!("step shown: {:?}", i.map(|i| STEPS[i])));
+    show_steps(ui);
+    show_fold(ui, ui.fold.get().0);
 }
 
 /// A look of the table's turned to the next (`key` its setting's), kept.
@@ -4647,6 +4862,11 @@ fn set_layout_edit(ui: &Ui, on: bool) {
         holder.set_can_target(!on);
     }
     trace(format_args!("layout: {}", if on { "editing" } else { "fixed" }));
+    ui.steps_bar.set_visible(on);
+    if !on && ui.preview.get().is_some() {
+        preview_step(ui, None);
+    }
+    show_steps(ui);
     refresh_settings(ui);
     show_fold(ui, ui.fold.get().0);
 }
@@ -4656,7 +4876,7 @@ fn set_layout_edit(ui: &Ui, on: bool) {
 fn duo_clicked(ui: &Ui, p: (f64, f64)) -> bool {
     let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
     let Some(d) = ui.duo_on_sheet.get() else { return false };
-    if !wifi || ui.intro.borrow().duo() <= 0.0 || ui.layout_edit.get() {
+    if !wifi || ui.intro.borrow().duo() <= 0.0 || ui.layout_edit.get() || ui.duo_away.get() > 0.5 {
         return false;
     }
     let Some(t) = table_under(&ui.floor_view.borrow(), p) else { return false };
@@ -5713,7 +5933,24 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // the word and the buttons comes to the page's middle, the eye rises to straight above and
         // the perspective all but goes: the cubes go down into the table,
         // letters in its squares again (as the start begins).
-        let lens = ui.zoom.get().0.powf(1.0 - ui.saver_mix.get());
+        // The steps' eyes, one into the next as the start and what comes
+        // after go on (each as the layout editor kept it).
+        let away = {
+            let a = ui.duo_away.get();
+            a * a * (3.0 - 2.0 * a)
+        };
+        let mut shot = layout.shots[0];
+        let mut step_now = 0;
+        for (i, f) in [intro.grid(), eye, intro.button(0), intro.duo(), away, back].into_iter().enumerate() {
+            shot = shot.mix(layout.shots[i + 1], f);
+            if f >= 0.5 {
+                step_now = i + 1;
+            }
+        }
+        if ui.step_now.replace(step_now) != step_now && ui.layout_edit.get() {
+            show_steps(ui);
+        }
+        let lens = (ui.zoom.get().0 * shot.zoom).powf(1.0 - ui.saver_mix.get());
         e.near *= lens;
         let up = ((1.0 - lens) / 0.6).clamp(0.0, 1.0);
         let flat = up * up * (3.0 - 2.0 * up);
@@ -5735,6 +5972,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             (b.0 - a.0).abs() / 2.0
         };
         e.on.0 -= half * (1.0 - flat);
+        // The step's eye moved over the table.
+        let kept_k = 1.0 - ui.saver_mix.get();
+        e.look = (e.look.0 + shot.pan.0 * cur * kept_k, e.look.1 + shot.pan.1 * cur * kept_k);
         let at = e.on;
         let eye_x = e.look.0;
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
@@ -5859,10 +6099,23 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
-        ui.duo.set_opacity(intro.duo() as f64);
+        // Put away while the menu is open (it was over the boards).
+        let away = {
+            let a = ui.duo_away.get();
+            a * a * (3.0 - 2.0 * a)
+        };
+        let shown = intro.duo() * (1.0 - away);
+        ui.duo.set_opacity(shown as f64);
+        // Away, the clicks go through it to the boards.
+        if let Some(holder) = ui.duo.parent() {
+            let target = !ui.layout_edit.get() && away < 0.5;
+            if holder.can_target() != target {
+                holder.set_can_target(target);
+            }
+        }
         // Not seen: its GL area not drawn (it was each frame regardless; the
         // frames go on, ticking on the Duo's room).
-        ui.gl3d.set_visible(intro.duo() > 0.0);
+        ui.gl3d.set_visible(shown > 0.0);
         for l in [&ui.name, &ui.name_sub, &ui.battery] {
             l.set_opacity(intro.duo() as f64);
         }

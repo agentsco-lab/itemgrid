@@ -69,6 +69,10 @@ pub struct Intro {
     tapped: Option<((f32, f32), Instant)>,
     /// How near the eye is to the note (eased toward 1 while it shows).
     near_note: f32,
+    /// Held at these seconds from the start (the layout editor's steps).
+    pub hold: Option<f32>,
+    /// Where the cubes go, whatever the phone says (the editor's steps).
+    pub force_sink: Option<f32>,
 }
 
 /// The wave goes on at least so long (a look over the cable alone is over
@@ -84,7 +88,7 @@ impl Default for Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(END));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0 }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, hold: None, force_sink: None }
     }
 }
 
@@ -101,6 +105,9 @@ fn smoother(x: f32) -> f32 {
 
 impl Intro {
     fn t(&self) -> f32 {
+        if let Some(t) = self.hold {
+            return t;
+        }
         self.start.map_or(0.0, |s| s.elapsed().as_secs_f32())
     }
 
@@ -110,7 +117,7 @@ impl Intro {
     }
 
     pub fn begun(&self) -> bool {
-        self.start.is_some()
+        self.start.is_some() || self.hold.is_some()
     }
 
     pub fn begin(&mut self) {
@@ -124,6 +131,10 @@ impl Intro {
         self.ended = false;
         self.sink = 0.0;
     }
+
+    /// The seconds the start's steps are at: the word in, the squares
+    /// grown, the eye down, the buttons up (the cubes gone down).
+    pub const STEP_S: [f32; 4] = [WORD_IN, GRID.1, EYE.1, END + 2.0];
 
     pub fn done(&self) -> bool {
         self.begun() && self.t() >= END
@@ -315,16 +326,17 @@ impl Intro {
             || self.note.as_ref().is_some_and(|(_, at)| Instant::now().saturating_duration_since(*at).as_secs_f32() < 0.5);
         // Toward the note while it shows (as it comes), away when it goes:
         // a second each way.
-        let to = if self.note().is_some() && self.sink_to < 0.5 { 1.0 } else { 0.0 };
+        let sink_to = self.force_sink.unwrap_or(self.sink_to);
+        let to = if self.note().is_some() && sink_to < 0.5 { 1.0 } else { 0.0 };
         let near_moving = (to - self.near_note).abs() > 1e-4;
         if near_moving {
             let d = to - self.near_note;
             self.near_note += d.signum() * dt.min(d.abs());
         }
         let moving = moving || near_moving;
-        let d = self.sink_to - self.sink;
+        let d = sink_to - self.sink;
         if d.abs() < 1e-4 {
-            self.sink = self.sink_to;
+            self.sink = sink_to;
             return moving;
         }
         self.sink += d.signum() * (dt / SINK_S).min(d.abs());
