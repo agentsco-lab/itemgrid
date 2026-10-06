@@ -1736,6 +1736,14 @@ fn build(app: &adw::Application) {
                 let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
                 drop(fv);
                 let key = line.and_then(|l| ui.board.borrow().as_ref().map(|b| b.lines[l].key.clone()));
+                // A line that asks for a job: its question beside the menu.
+                if let Some(k) = key.as_deref().filter(|k| k.starts_with("do:")) {
+                    if let Some(b) = ui.board.borrow_mut().as_mut() {
+                        b.chosen = line;
+                    }
+                    board_action(&ui, k);
+                    return;
+                }
                 // A section set in words: on the table beside the menu (the
                 // menu kept, its line chosen).
                 let on_table = key.as_deref().and_then(|k| ui.section_words.borrow().get(k).cloned().map(|rows| (k.to_owned(), rows)));
@@ -4476,6 +4484,32 @@ fn updates_lines(ui: &Ui) -> Vec<board::Line> {
     lines
 }
 
+/// The phone's serial when it runs its stock Android (adb on) or sits in
+/// its bootloader - not the Android item/grid started as a guest.
+fn stock_android(ui: &Ui) -> Option<String> {
+    let st = ui.state.borrow();
+    match &st.place {
+        Place::Android(s) | Place::Fastboot(s) if itemgrid_core::android::guest(s).is_none() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// The phone's words on the table when it is not in Linux: where it is,
+/// and - Android without USB debugging - how to let item/grid reach it.
+fn away_words(ui: &Ui) -> Option<Vec<String>> {
+    let st = ui.state.borrow();
+    let guest = st.place.serial().is_some_and(|s| itemgrid_core::android::guest(s).is_some());
+    Some(match &st.place {
+        Place::Android(_) if guest => vec!["android".into(), "started by item/grid".into()],
+        Place::Android(_) => vec!["android".into(), "on the cable".into(), "menu: install item".into()],
+        Place::Quiet(_) => vec!["android".into(), "usb debugging off".into(), "settings".into(), "› about phone".into(), "› build number 7×".into(), "› system".into(), "› developer options".into(), "› usb debugging".into()],
+        Place::Fastboot(_) => vec!["bootloader".into()],
+        Place::Recovery(_) => vec!["recovery".into()],
+        Place::NoSystem => vec!["no system".into(), "install item again".into()],
+        _ => return None,
+    })
+}
+
 /// What can be done about the phone (repair): reinstalled, or back to
 /// Android - both on the cable only (off it, said so, not to be clicked).
 fn repair_lines(ui: &Ui) -> Vec<board::Line> {
@@ -4643,6 +4677,21 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                 show_ask(&ui);
             });
         }
+        "do:install" => {
+            let Some(serial) = stock_android(ui) else { return };
+            let word = itemgrid_core::android::confirm_word(&serial);
+            let ask = match itemgrid_core::install::releases().into_iter().filter(|r| r.boot.is_some()).next_back() {
+                None => Ask::new("install item", wrapped("no release with a boot image on this computer yet")),
+                Some(release) => {
+                    let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
+                    let mut ask = Ask::new("install item", vec![format!("item {version}"), "android is erased".into(), "about 15 min".into(), "keep the cable in".into()]);
+                    ask.word = Some(word);
+                    ask.go = Some(Rc::new(move |ui, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));
+                    ask
+                }
+            };
+            open_ask(ui, ask);
+        }
         "ask:go" => {
             let go = ui.asking.borrow().as_ref().filter(|a| a.can_go()).and_then(|a| a.go.clone().map(|g| (g, a.choices.get(a.chosen).map_or("", |c| c.0))));
             if let Some((go, choice)) = go {
@@ -4703,6 +4752,11 @@ const MENU_LATER: [&str; 6] = ["overview", "agent", "look", "battery", "storage"
 
 fn menu_lines(ui: &Ui) -> Vec<board::Line> {
     let phone = ui.state.borrow().host.is_some();
+    // On stock Android (not the guest item/grid started): item put on it.
+    if let Some(serial) = stock_android(ui) {
+        let _ = serial;
+        return vec![board::Line::new("do:install", "install item"), board::Line::new("settings", "settings"), board::Line::new("itemgrid", "about")];
+    }
     let mut lines: Vec<board::Line> = if phone {
         NAV.iter().filter(|(key, ..)| !MENU_LATER.contains(key) && (*key != "developer" || developer_mode())).map(|(key, ..)| board::Line::new(*key, *key)).collect()
     } else {
@@ -5999,6 +6053,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let strength = (intro.duo() * part_alpha[0]).min(1.0);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
+        } else if let Some(lines) = (intro.duo() > 0.0 && ui.state.borrow().host.is_none() && !ui.shut_away.get()).then(|| away_words(ui)).flatten() {
+            let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
+            let (head, rest) = lines.split_at(1);
+            let strength = (intro.duo() * part_alpha[0]).min(1.0);
+            texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
+            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
         } else if intro.duo() > 0.0 && ui.shut_away.get() {
             // Asleep (gone quiet shut): as it was last seen.
             if let Some(lines) = ui.last_seen.borrow().as_ref().map(LastSeen::words) {
@@ -6573,6 +6633,8 @@ enum Job {
     /// Back to stock Android for good (its boot on the phone again), the
     /// owner's files copied first if asked.
     AndroidClean(Box<itemgrid_core::android::CleanPlan>, bool),
+    /// item put on a phone coming from stock Android (its serial).
+    InstallStock(Box<itemgrid_core::install::Release>, String),
     AndroidStart(String),
     AndroidBack(String),
     /// Microsoft's package from a link, then its boot chain taken out.
@@ -6594,6 +6656,7 @@ impl Job {
             Job::RecoveryExit(_) | Job::LeaveFastboot(_) => "recovery-exit",
             Job::AndroidGo(_) => "android-go",
             Job::AndroidClean(..) => "android-clean",
+            Job::InstallStock(..) => "install-stock",
             Job::AndroidStart(_) => "android-start",
             Job::AndroidBack(_) => "android-back",
             Job::StockDownload(..) => "stock-download",
@@ -6911,6 +6974,10 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
                 // The number was typed on the table already.
                 itemgrid_core::android::go_clean(&host, &plan, &word, &mut say)
             })(),
+            Job::InstallStock(release, serial) => {
+                // The number was typed on the table already.
+                itemgrid_core::install::from_stock(&serial, &release, &itemgrid_core::android::confirm_word(&serial), &mut say)
+            }
             Job::AndroidStart(serial) => itemgrid_core::android::start(&host, &serial, &mut say),
             Job::AndroidBack(serial) => itemgrid_core::android::back(&host, &serial, false, &mut say),
             Job::Install(release, mode) => {

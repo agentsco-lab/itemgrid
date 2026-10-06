@@ -77,6 +77,13 @@ pub fn stages(job: &str) -> Vec<Stage> {
             st("Copying the rest", "Android apps' data and the other files on the data partition are copied too.", "TWRP", &["taking the Android container", "taking the rest of userdata"], 240.0),
             BACK_TO_LINUX,
         ],
+        "install-stock" => vec![
+            st("Getting ready", "The image is checked here; the phone goes into its bootloader (unlocked, if it is not: say so on the phone).", "Bootloader", &["checking the image", "into the bootloader", "unlocking"], 90.0),
+            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP"], 60.0),
+            st("Putting item on", "The phone's storage is made anew and the new system written, in checked parts.", "Recovery", &["making userdata", "putting "], 420.0),
+            st("First start", "item starts from the computer and grows to fill the phone.", "Restarting", &["starting item from the computer"], 240.0),
+            st("Its own boot", "item's boot is written to the phone, read back, and the phone restarts from it.", "Linux", &["writing boot", "restarting from the phone"], 120.0),
+        ],
         "android-clean" => vec![
             st("Copying your files", "Your home folder and settings, to this computer.", "Linux", &["copying your files"], 60.0),
             st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP"], 60.0),
@@ -142,6 +149,7 @@ pub fn title(job: &str) -> &'static str {
         "recovery-exit" => "Back to Linux",
         "full-backup" => "Backing up the whole system",
         "android-clean" => "Back to Android",
+        "install-stock" => "Installing item",
         "android-go" => "Returning to Android",
         "android-start" => "Starting Android",
         "android-back" => "Back to the full backup",

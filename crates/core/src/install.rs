@@ -20,6 +20,9 @@ pub struct Release {
     pub size: u64,
     pub sha256: String,
     pub compressed: PathBuf,
+    /// The port's boot image that goes with it (a phone coming from stock
+    /// Android has none), and its sha256 - none in releases made before.
+    pub boot: Option<(PathBuf, String)>,
 }
 
 /// Where release images are looked for: item/grid's own folder, and the port's
@@ -62,6 +65,7 @@ pub fn read(dir: &Path) -> Result<Release, String> {
         size: m["image"]["size"].as_u64().unwrap_or(0),
         sha256: s(&m["image"]["sha256"]),
         compressed,
+        boot: m["boot"]["file"].as_str().map(|f| dir.join(f)).filter(|f| f.exists()).map(|f| (f, s(&m["boot"]["sha256"]))),
     })
 }
 
@@ -135,6 +139,31 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
         return Err(format!("{e} - nothing is erased"));
     }
 
+    put_on_userdata(&serial, release, size, &key, quick.as_ref(), say)?;
+
+    say("starting the new system - its first start grows it to fill userdata".into());
+    adb_shell(&serial, "reboot").ok();
+    let start = std::time::Instant::now();
+    while !crate::phone::answers_fresh(host) {
+        if start.elapsed() > std::time::Duration::from_secs(480) {
+            return Err("the new system did not answer in 8 minutes - look at the phone's screen".into());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    crate::ramboot::arm_brake_linux(host)?;
+    crate::flash::log(&serial, "the new system answers, parking brake armed - itemgrid")?;
+    say(if mode == Mode::KeepFiles { "the new system is up: unlock with your PIN".into() } else { "the new system is up: unlock with 1234, then choose your own PIN".into() });
+    Ok(())
+}
+
+
+/// From TWRP on the phone `serial`: userdata made anew, the release image
+/// (`size` decompressed) put on it in checked parts and checked whole, this
+/// computer's ssh key put into it (and what `quick` kept, put back), misc
+/// cleared.
+fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick: Option<&crate::backup::Backup>, say: crate::ramboot::Say) -> Result<(), String> {
+    use crate::full::adb_shell;
+    let serial = serial.to_owned();
     crate::flash::log(&serial, &format!("ERASING userdata for {} - itemgrid", release.name))?;
     say("making userdata anew (what it held goes)".into());
     let blk = crate::android::BLK;
@@ -157,7 +186,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     let put_key = (|| -> Result<(), String> {
         // A small text by adb push: through the socket it did not arrive
         // (2026-10-04) - the big transfers go that way, this need not.
-        push_text(&serial, &key, "/tmp/itemgrid.pub")?;
+        push_text(&serial, key, "/tmp/itemgrid.pub")?;
         adb_shell(
             &serial,
             "for d in /tmp/r/root /tmp/r/home/droidian; do mkdir -p $d/.ssh && cat /tmp/itemgrid.pub > $d/.ssh/authorized_keys && chmod 700 $d/.ssh && chmod 600 $d/.ssh/authorized_keys; done; \
@@ -166,7 +195,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
         )
         .map(|_| ())
     })();
-    let kept = match (&quick, &put_key) {
+    let kept = match (quick, &put_key) {
         (Some(q), Ok(())) => put_kept(&serial, q, say),
         _ => Ok(()),
     };
@@ -179,18 +208,6 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     let _ = std::fs::remove_file(crate::android::guest_path_of(&serial));
     crate::flash::log(&serial, &format!("{} installed (userdata anew) - itemgrid", release.name))?;
 
-    say("starting the new system - its first start grows it to fill userdata".into());
-    adb_shell(&serial, "reboot").ok();
-    let start = std::time::Instant::now();
-    while !crate::phone::answers_fresh(host) {
-        if start.elapsed() > std::time::Duration::from_secs(480) {
-            return Err("the new system did not answer in 8 minutes - look at the phone's screen".into());
-        }
-        std::thread::sleep(std::time::Duration::from_secs(3));
-    }
-    crate::ramboot::arm_brake_linux(host)?;
-    crate::flash::log(&serial, "the new system answers, parking brake armed - itemgrid")?;
-    say(if mode == Mode::KeepFiles { "the new system is up: unlock with your PIN".into() } else { "the new system is up: unlock with 1234, then choose your own PIN".into() });
     Ok(())
 }
 
@@ -339,5 +356,89 @@ fn push_text(serial: &str, text: &str, to: &str) -> Result<(), String> {
     if !out.status.success() {
         return Err(format!("adb push: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
+    Ok(())
+}
+
+/// item put on a Duo that runs its stock Android (adb on, this computer
+/// allowed) or sits in its bootloader - a whole new start: the bootloader
+/// unlocked if it is not (the owner says so on the phone: Android is erased
+/// then), TWRP from RAM, userdata made anew and the release put on it, the
+/// port's kernel booted from RAM until Linux answers (SAFETY.md: only an
+/// image that booted on this phone is written), then written to both slots
+/// from the running Linux and read back, and the phone restarted from its
+/// slot. `confirm`: the phone's word (android::confirm_word).
+pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+    let host = crate::link::CABLE;
+    if confirm.trim() != crate::android::confirm_word(serial) {
+        return Err(format!("the confirmation does not match ({} expected) - nothing is changed", crate::android::confirm_word(serial)));
+    }
+    let key = public_key()?;
+    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let twrp_img = crate::ramboot::check_image(&twrp)?;
+    let (boot_file, boot_sha) = release.boot.clone().ok_or("this release has no boot image for a phone coming from Android")?;
+    let boot_img = crate::ramboot::check_image(&boot_file)?;
+    let boot = crate::bootchain::Part::of("boot", &boot_file)?;
+    if !boot_sha.is_empty() && boot_sha != boot.sha256 {
+        return Err("the release's boot image does not match its manifest - nothing is changed".into());
+    }
+    say(format!("checking the image {} here", release.name));
+    let (size, sha) = hash_stream(&mut decompress(&release.compressed)?)?;
+    if sha != release.sha256 || (release.size > 0 && size != release.size) {
+        return Err("the release image does not match its manifest - nothing is changed".into());
+    }
+
+    // Into the bootloader, unlocked.
+    if !crate::ramboot::in_fastboot(serial) {
+        say("into the bootloader".into());
+        crate::ramboot::adb_to_bootloader(serial)?;
+    }
+    let fb = crate::ramboot::probe()?;
+    if fb.serial != serial {
+        return Err(format!("the bootloader shows another phone ({}): stopping", fb.serial));
+    }
+    if fb.unlocked != "yes" {
+        say("unlocking the bootloader: on the phone, choose Unlock with the volume keys, then press Power".into());
+        crate::flash::log(serial, "bootloader unlock asked (Android is erased by it) - itemgrid")?;
+        let _ = crate::ramboot::fastboot(&["flashing", "unlock"], Duration::from_secs(120));
+        let start = Instant::now();
+        loop {
+            if crate::ramboot::in_fastboot(serial) && crate::ramboot::probe().is_ok_and(|f| f.unlocked == "yes") {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(180) {
+                return Err("the bootloader was not unlocked: if the phone restarted into Android's setup, turn USB debugging on again there, then install again".into());
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        crate::flash::log(serial, "bootloader unlocked - itemgrid")?;
+    }
+    let fb = crate::ramboot::probe()?;
+    let slot = fb.slot.chars().next().ok_or("the bootloader did not say its slot")?;
+    crate::flash::log(serial, &format!("install of {} from stock begun (slot {slot}) - itemgrid", release.name))?;
+
+    say("into TWRP".into());
+    crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
+    if !crate::full::fast_tools(serial) {
+        return Err("this TWRP lacks pigz or nc".into());
+    }
+    put_on_userdata(serial, release, size, &key, None, say)?;
+
+    // The port's kernel from RAM: it proves itself on this phone first.
+    say("into the bootloader".into());
+    crate::ramboot::adb_to_bootloader(serial)?;
+    say("starting item from the computer - its first start grows it to fill the phone".into());
+    crate::ramboot::boot_in_fastboot_within(host, serial, slot, &boot_file, &boot_img, crate::ramboot::Expect::Linux, 600, say)?;
+    // Then written for good, both slots, from it.
+    let other = if slot == 'a' { 'b' } else { 'a' };
+    for s in [slot, other] {
+        crate::bootchain::write_from_linux(host, serial, s, &boot, say)?;
+    }
+    // And started from its own slot: it starts by itself now.
+    say("restarting from the phone's own boot".into());
+    crate::ramboot::arm_brake_linux(host)?;
+    crate::phone::reboot(host, &mut |b| say(b.words().to_owned()))?;
+    crate::flash::log(serial, &format!("{} installed from stock, started from slot {slot} - itemgrid", release.name))?;
+    say("item is up: unlock with 1234, then choose your own PIN".into());
     Ok(())
 }

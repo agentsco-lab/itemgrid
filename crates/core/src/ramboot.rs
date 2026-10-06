@@ -122,7 +122,7 @@ pub struct Fastboot {
     pub critical: String,
 }
 
-fn fastboot(args: &[&str], limit: Duration) -> Result<String, String> {
+pub(crate) fn fastboot(args: &[&str], limit: Duration) -> Result<String, String> {
     let mut child = Command::new("fastboot").args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("fastboot: {e}"))?;
     let start = Instant::now();
     loop {
@@ -439,6 +439,12 @@ pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<()
 /// counted; the image booted from RAM; what it boots into awaited and the
 /// boot confirmed. `host`: where Linux would answer, for Expect::Linux.
 pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img: &Image, expect: Expect, say: Say) -> Result<(), String> {
+    boot_in_fastboot_within(host, serial, slot, image, img, expect, 240, say)
+}
+
+/// As boot_in_fastboot, waiting up to `wait_secs` for what it boots (a new
+/// system's first start grows it to fill userdata: longer).
+pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Path, img: &Image, expect: Expect, wait_secs: u64, say: Say) -> Result<(), String> {
     let serial = serial.to_owned();
     say("in fastboot: checking it is the same phone, and its health".into());
     let fb = probe()?;
@@ -499,8 +505,8 @@ pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img:
     say(format!("waiting for {what}"));
     let start = Instant::now();
     while !up() {
-        if start.elapsed() > Duration::from_secs(240) {
-            return Err(format!("{what} did not come up in 4 minutes: the attempt stays counted ({n} of {}). Do not boot this image again to see.", crate::flash::MAX_UNCONFIRMED));
+        if start.elapsed() > Duration::from_secs(wait_secs) {
+            return Err(format!("{what} did not come up in {} minutes: the attempt stays counted ({n} of {}). Do not boot this image again to see.", wait_secs / 60, crate::flash::MAX_UNCONFIRMED));
         }
         std::thread::sleep(Duration::from_secs(3));
     }

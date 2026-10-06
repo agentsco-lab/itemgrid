@@ -80,3 +80,22 @@ pub fn write(serial: &str, slot: char, parts: &[Part], say: crate::ramboot::Say)
     }
     Ok(())
 }
+
+/// `part` written to `slot` from the running Linux at `host` (an image that
+/// booted Linux on this phone from RAM first: SAFETY.md's rule one) - sent,
+/// written with dd, the partition's first `size` bytes read back and
+/// compared.
+pub fn write_from_linux(host: &str, serial: &str, slot: char, part: &Part, say: crate::ramboot::Say) -> Result<(), String> {
+    let partition = format!("{}_{slot}", part.name);
+    say(format!("writing {partition}"));
+    let remote = format!("/var/tmp/itemgrid-install/{partition}.img");
+    crate::phone::upload(host, &part.file, &remote)?;
+    let dev = format!("/dev/disk/by-partlabel/{partition}");
+    let script = format!("dd if='{remote}' of={dev} bs=4M conv=fsync status=none && sync && head -c {} {dev} | sha256sum | cut -d' ' -f1; rm -f '{remote}'\n", part.size);
+    let back = crate::phone::run_vetted(host, &script)?;
+    if back.trim() != part.sha256 {
+        crate::flash::log(serial, &format!("INSTALL-STOP: {partition} read back differs after writing - itemgrid"))?;
+        return Err(format!("{partition} reads back different after writing - STOP: do not restart the phone; the port runs from RAM now"));
+    }
+    crate::flash::log(serial, &format!("wrote {partition} from {} ({}) - itemgrid", part.file.display(), &part.sha256[..16]))
+}
