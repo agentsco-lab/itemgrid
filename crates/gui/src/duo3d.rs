@@ -66,6 +66,9 @@ const LOGO_GAP: f32 = 1.05;
 /// Running Droidian: its swirl in the logo's place (mm, a square; the
 /// picture's swirl fills most of it).
 const STICKER: f32 = 26.0;
+/// Its glow round it: the square it is drawn in this much larger (the
+/// swirl in the middle of it as large as ever).
+const GLOW: f32 = 1.35;
 const STICKER_PNG: &[u8] = include_bytes!("../data/droidian-sticker.png");
 /// The screens (mm): each panel's size, the left edge of each in the body,
 /// and their top.
@@ -322,7 +325,7 @@ fn sticker(k: f32) -> Mesh {
     let (cx, cy) = (HALF_W / 2.0, BODY_H / 2.0);
     let z = (-THICK - 0.03) * k;
     let n = [0.0, 0.0, -1.0];
-    let h = STICKER / 2.0;
+    let h = STICKER * GLOW / 2.0;
     let c = |x: f32, y: f32| [(cx + x) * k, (cy + y) * k, z];
     for (p, uv) in [(c(-h, -h), [1.0, 0.0]), (c(h, -h), [0.0, 0.0]), (c(h, h), [0.0, 1.0]), (c(-h, -h), [1.0, 0.0]), (c(h, h), [0.0, 1.0]), (c(-h, h), [1.0, 1.0])] {
         m.vert_uv(p, n, STICKER_MAT, uv);
@@ -488,6 +491,7 @@ in vec2 v_uv;
 uniform vec3 u_eye;
 uniform sampler2D u_tex;
 out vec4 o;
+const float GLOW = 1.35;
 void main() {
     vec3 n = normalize(v_nor);
     vec3 l = normalize(vec3(-0.3, -0.75, 0.85));
@@ -512,11 +516,31 @@ void main() {
     vec3 room = mix(vec3(0.05), vec3(0.95), smoothstep(0.35, 0.95, up));
     float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
     if (m == 9) {
-        // Droidian's swirl: its print, lit, a little gloss on it.
-        vec4 s = texture(u_tex, v_uv);
+        // Droidian's swirl: its print, lit and a little of its own light, a
+        // little gloss on it; round it a soft glow of its green (its
+        // picture blurred: its smaller mipmaps).
+        vec2 uv = (v_uv - 0.5) * GLOW + 0.5;
+        float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+        vec4 s = texture(u_tex, uv) * inside;
+        // (Taps round the point, each only from inside the picture: at its
+        // edge a small mipmap's border smeared the swirl out in streaks.)
+        vec4 b = vec4(0.0);
+        for (int r = 1; r <= 2; r++) {
+            for (int i = 0; i < 12; i++) {
+                float t = 6.2832 * (float(i) + 0.5 * float(r)) / 12.0;
+                vec2 q = uv + vec2(cos(t), sin(t)) * 0.045 * float(r);
+                float in_q = step(0.0, q.x) * step(q.x, 1.0) * step(0.0, q.y) * step(q.y, 1.0);
+                b += textureLod(u_tex, q, 3.0) * in_q;
+            }
+        }
+        b /= 24.0;
         vec3 ink = s.a > 0.0 ? s.rgb / s.a : vec3(0.0);
-        vec3 lit = ink * (0.55 * mix(0.55, 1.0, sky) + 0.55 * diff) + vec3(pow(max(dot(n, h), 0.0), 140.0) * 0.6);
-        o = vec4(lit * s.a, s.a);
+        vec3 lit = ink * (0.45 * mix(0.55, 1.0, sky) + 0.4 * diff + 0.35) + vec3(pow(max(dot(n, h), 0.0), 140.0) * 0.6);
+        vec3 glow_c = b.a > 0.0 ? b.rgb / b.a : vec3(0.25, 0.86, 0.52);
+        float ga = clamp(b.a * 2.0, 0.0, 1.0) * 0.45;
+        // The print over its glow (premultiplied).
+        vec3 col = lit * s.a + glow_c * ga * (1.0 - s.a);
+        o = vec4(col, s.a + ga * (1.0 - s.a));
         return;
     }
     if (m == 8) {
