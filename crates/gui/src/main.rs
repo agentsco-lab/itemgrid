@@ -5028,6 +5028,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // a square at a time as the page's size changed).
         let moved = grid_at();
         let cubes_at = (p.0 + moved.0 * k, p.1 + moved.1 * k);
+        // The Duo seen, the word's left edge in the column of its words
+        // (thirteen squares left of where the phone lies open: show_fold's
+        // texts), going there as it comes.
+        let column = -ui.duo_size.0 - 13.0 * square() * k;
+        let cubes_at = (cubes_at.0 + (column + WORD_HALF * square() * k - cubes_at.0) * seen, cubes_at.1);
         // On the card's way into the wallpaper the buttons (kept to whole
         // squares, counted from the page's right) go along smoothly, kept
         // to them only at its first and last quarter.
@@ -5329,7 +5334,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // flat (opened by a click on Wi-Fi), its top at the phone's.
             let (mid, _) = ui.duo_size;
             let wide = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cur;
-            let (x, top) = on_squares(k, (-mid - cur - wide, -h / 2.0));
+            // Its left edge in the word's column (the i of item: the word is
+            // put there, above), its top at the phone's.
+            let _ = (mid, wide);
+            let (x, top) = (cubes_at.0 - WORD_HALF * cur, on_squares(k, (0.0, -h / 2.0)).1);
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
