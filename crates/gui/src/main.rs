@@ -5730,7 +5730,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
-    // Running Droidian: its sticker on the drawn Duo's back.
+    // Running Droidian: its swirl on the drawn Duo's back (for the logo).
     let droidian = s.os.to_lowercase().contains("droidian");
     if ui.scene3d.borrow().sticker != droidian {
         ui.scene3d.borrow_mut().sticker = droidian;

@@ -63,8 +63,8 @@ const STICKER_MAT: f32 = 9.0;
 /// was: shut, the back is all that shows of it).
 const LOGO_SQUARE: f32 = 8.4;
 const LOGO_GAP: f32 = 1.05;
-/// Running Droidian: its swirl on a clear sticker over the logo (mm, a
-/// square; the picture's swirl fills most of it).
+/// Running Droidian: its swirl in the logo's place (mm, a square; the
+/// picture's swirl fills most of it).
 const STICKER: f32 = 26.0;
 const STICKER_PNG: &[u8] = include_bytes!("../data/droidian-sticker.png");
 /// The screens (mm): each panel's size, the left edge of each in the body,
@@ -314,13 +314,13 @@ fn logo(mesh: &mut Mesh, k: f32) {
     }
 }
 
-/// The sticker on the left half's back, over the logo: a square of clear
-/// film a little further out than it, its picture mapped as seen from
-/// behind (the back is looked at from outside: x mirrored).
+/// Droidian's swirl on the left half's back in the logo's place, a hair out
+/// of the glass, its picture mapped as seen from behind (the back is looked
+/// at from outside: x mirrored).
 fn sticker(k: f32) -> Mesh {
     let mut m = Mesh::default();
     let (cx, cy) = (HALF_W / 2.0, BODY_H / 2.0);
-    let z = (-THICK - 0.06) * k;
+    let z = (-THICK - 0.03) * k;
     let n = [0.0, 0.0, -1.0];
     let h = STICKER / 2.0;
     let c = |x: f32, y: f32| [(cx + x) * k, (cy + y) * k, z];
@@ -454,9 +454,6 @@ fn half(i: usize, k: f32) -> Mesh {
     if i == 1 {
         bottom_edge(&mut m, PORT_X, k);
     }
-    if i == 0 {
-        logo(&mut m, k);
-    }
     m
 }
 
@@ -515,18 +512,11 @@ void main() {
     vec3 room = mix(vec3(0.05), vec3(0.95), smoothstep(0.35, 0.95, up));
     float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
     if (m == 9) {
-        // The sticker: its print, lit, on a clear film - the film only a
-        // sheen of the room (its corners round), the print matte with a
-        // little gloss of the film over it.
+        // Droidian's swirl: its print, lit, a little gloss on it.
         vec4 s = texture(u_tex, v_uv);
-        vec2 q = abs(v_uv - 0.5) - (0.5 - 0.08);
-        float film = 1.0 - smoothstep(0.0, 0.01, length(max(q, 0.0)) - 0.08);
         vec3 ink = s.a > 0.0 ? s.rgb / s.a : vec3(0.0);
-        vec3 lit = ink * (0.55 * mix(0.55, 1.0, sky) + 0.55 * diff);
-        float gloss = pow(max(dot(n, h), 0.0), 140.0) * 0.9;
-        float a = max(s.a, 0.10 * fres + 0.04) * film;
-        vec3 col = mix(room * 0.6, lit, s.a / max(a, 1e-4)) + vec3(gloss);
-        o = vec4(col * a, a);
+        vec3 lit = ink * (0.55 * mix(0.55, 1.0, sky) + 0.55 * diff) + vec3(pow(max(dot(n, h), 0.0), 140.0) * 0.6);
+        o = vec4(lit * s.a, s.a);
         return;
     }
     if (m == 8) {
@@ -555,7 +545,8 @@ struct Gpu {
     halves: [(glow::VertexArray, glow::Buffer, i32); 2],
     screens: [(glow::VertexArray, glow::Buffer, i32); 2],
     spine: (glow::VertexArray, glow::Buffer, i32),
-    /// The sticker's mesh and picture.
+    /// The logo's mesh (the Microsoft one), the swirl's and its picture.
+    logo: (glow::VertexArray, glow::Buffer, i32),
     sticker: (glow::VertexArray, glow::Buffer, i32),
     sticker_tex: Option<glow::Texture>,
     /// The screens' pictures on the GPU, and which change each is.
@@ -632,8 +623,13 @@ impl Gpu {
             let screens = [upload(&screen(0, k))?, upload(&screen(1, k))?];
             let spine = upload(&spine(k))?;
             let sticker_mesh = upload(&sticker(k))?;
+            let logo_mesh = {
+                let mut m = Mesh::default();
+                logo(&mut m, k);
+                upload(&m)?
+            };
             let sticker_tex = upload_png(&gl, STICKER_PNG);
-            Ok(Gpu { gl, prog, halves, screens, spine, sticker: sticker_mesh, sticker_tex, textures: [None, None], uploaded: [0, 0], msaa: None })
+            Ok(Gpu { gl, prog, halves, screens, spine, logo: logo_mesh, sticker: sticker_mesh, sticker_tex, textures: [None, None], uploaded: [0, 0], msaa: None })
         }
     }
 
@@ -682,6 +678,12 @@ impl Gpu {
                 gl.bind_vertex_array(Some(*vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, *count);
             }
+            // The Microsoft logo - running Droidian, its swirl instead (below).
+            if let (false, Some(mv)) = (scene.sticker, scene.halves[0]) {
+                gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
+                gl.bind_vertex_array(Some(self.logo.0));
+                gl.draw_arrays(glow::TRIANGLES, 0, self.logo.2);
+            }
             if let Some(mv) = scene.spine {
                 gl.uniform_matrix_4_f32_slice(u_mv.as_ref(), false, &mv.to_float());
                 gl.bind_vertex_array(Some(self.spine.0));
@@ -725,7 +727,7 @@ impl Gpu {
                 gl.draw_arrays(glow::TRIANGLES, 0, count);
                 gl.disable(glow::POLYGON_OFFSET_FILL);
             }
-            // The sticker over the logo, blended (its print and film).
+            // Droidian's swirl in the logo's place, blended.
             if let (true, Some(t), Some(mv)) = (scene.sticker, self.sticker_tex, scene.halves[0]) {
                 gl.active_texture(glow::TEXTURE0);
                 gl.bind_texture(glow::TEXTURE_2D, Some(t));
