@@ -492,6 +492,9 @@ struct Ui {
     /// how far the eye has drawn back to see it all (eased toward 1 while
     /// it is there).
     page: RefCell<Option<(String, board::Board)>>,
+    /// What can be done with the phone where it is, under its words (on
+    /// stock Android: item installed) - a line to click.
+    act: RefCell<Option<board::Board>>,
     page_back: std::cell::Cell<f32>,
     /// The section's board's size (squares across, lines) the eye is
     /// drawn back for, eased: one section for another, the eye goes over
@@ -1315,6 +1318,7 @@ fn build(app: &adw::Application) {
         buttons: RefCell::default(),
         board: RefCell::default(),
         page: RefCell::default(),
+        act: RefCell::default(),
         page_back: std::cell::Cell::new(0.0),
         page_dims: std::cell::Cell::new(None),
         saver: std::cell::Cell::new(None),
@@ -1629,14 +1633,16 @@ fn build(app: &adw::Application) {
             let side = square() * fv.k;
             let line = under.and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, side, t)));
             let page_line = under.and_then(|t| ui.page.borrow().as_ref().and_then(|(_, b)| b.line_at(fv.page_at, side, t)));
+            let act_line = under.and_then(|t| ui.act.borrow().as_ref().filter(|b| !b.closing()).and_then(|b| b.line_at(fv.act_at, side, t)));
             drop(fv);
             let mut changed = ui.board.borrow_mut().as_mut().is_some_and(|b| b.set_hover(line));
+            changed |= ui.act.borrow_mut().as_mut().is_some_and(|b| b.set_hover(act_line));
             let clickable = ui.page.borrow().as_ref().and_then(|(_, b)| page_line.filter(|&l| !b.lines[l].key.is_empty()));
             changed |= ui.page.borrow_mut().as_mut().is_some_and(|(_, b)| b.set_hover(clickable));
             if changed {
                 show_fold(&ui, ui.fold.get().0);
             }
-            pg.set_cursor_from_name(on.or(line).or(clickable).map(|_| "pointer"));
+            pg.set_cursor_from_name(on.or(line).or(clickable).or(act_line).map(|_| "pointer"));
         };
         let h2 = hover.clone();
         motion.connect_motion(move |_, x, y| hover(x, y));
@@ -1688,6 +1694,23 @@ fn build(app: &adw::Application) {
                         win.close();
                     }
                 }
+                return;
+            }
+            // The phone's line (install item): the menu opened, its question
+            // beside it.
+            let act = {
+                let fv = ui.floor_view.borrow();
+                let side = square() * fv.k;
+                table_under(&fv, (x, y)).and_then(|t| ui.act.borrow().as_ref().filter(|b| !b.closing()).and_then(|b| b.line_at(fv.act_at, side, t).map(|l| b.lines[l].key.clone())))
+            };
+            if let Some(key) = act.filter(|k| k.starts_with("do:")) {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                if let Some(a) = ui.act.borrow_mut().as_mut() {
+                    a.close();
+                }
+                *ui.board.borrow_mut() = Some(board::Board::open(menu_lines(&ui)));
+                ui.intro.borrow_mut().clear_note();
+                board_action(&ui, &key);
                 return;
             }
             // A line of the open board: its section; anywhere else, the
@@ -2362,6 +2385,16 @@ fn build(app: &adw::Application) {
                     true
                 } else {
                     b.as_ref().is_some_and(|b| b.moving())
+                }
+            };
+            // The phone's line to click too.
+            let boarding = {
+                let mut a = ui.act.borrow_mut();
+                if a.as_ref().is_some_and(|b| b.gone()) {
+                    *a = None;
+                    true
+                } else {
+                    boarding || a.as_ref().is_some_and(|b| b.moving())
                 }
             };
             // The section's board too; the eye drawing back for it, or in.
@@ -3443,6 +3476,7 @@ struct FloorView {
     tiles: Vec<board::Tile>,
     board_at: (f32, f32),
     page_at: (f32, f32),
+    act_at: (f32, f32),
     /// Across the table, where the eye's line is (boxes drawn farthest
     /// from it first: a box nearer it covers its neighbour's side).
     eye_x: f32,
@@ -4851,7 +4885,8 @@ fn menu_lines(ui: &Ui) -> Vec<board::Line> {
     // On stock Android (not the guest item/grid started): item put on it.
     if let Some(serial) = stock_android(ui) {
         let _ = serial;
-        return vec![board::Line::new("do:install", "install item"), board::Line::new("settings", "settings"), board::Line::new("itemgrid", "about")];
+        // (install: under the phone's words, its line to click.)
+        return vec![board::Line::new("settings", "settings"), board::Line::new("itemgrid", "about")];
     }
     let mut lines: Vec<board::Line> = if phone {
         // (repair shown as "stock": the way back to the phone's Android.)
@@ -6088,6 +6123,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // words are - what it is, its stage, how long is left; then done or
         // stopped (a minute).
         // (This window's job, else one the command line runs.)
+        // (Where it was, while it fades.)
+        let (mut act_at, mut act_wanted, mut act_strength) = (ui.floor_view.borrow().act_at, false, (intro.duo() * part_alpha[0]).min(1.0));
         let job_now: Option<(String, Vec<String>, Option<Option<String>>, u64)> = ui
             .state
             .borrow()
@@ -6175,6 +6212,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
             let (head, rest) = lines.split_at(1);
             let strength = (intro.duo() * part_alpha[0]).min(1.0);
+            // Stock Android on the cable: item put on it, a row under the
+            // words (eleven letters: clear of the open phone).
+            act_at = (x, top + (lines.len() + 1) as f32 * cur);
+            act_wanted = matches!(ui.state.borrow().place, Place::Android(_)) && stock_android(ui).is_some();
+            act_strength = strength;
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
         } else if intro.duo() > 0.0 && ui.shut_away.get() {
@@ -6189,6 +6231,22 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
+        }
+        // The phone's line: open while wanted (no menu, no question), else
+        // put away.
+        let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
+        let wanted = act_wanted && !menu_open && ui.asking.borrow().is_none();
+        {
+            let mut a = ui.act.borrow_mut();
+            match (a.as_mut(), wanted) {
+                (Some(b), true) if b.closing() => *a = Some(board::Board::open(vec![board::Line::new("do:install", "› install")])),
+                (None, true) => *a = Some(board::Board::open(vec![board::Line::new("do:install", "› install")])),
+                (Some(b), false) if !b.closing() => b.close(),
+                _ => {}
+            }
+        }
+        if let Some(b) = ui.act.borrow().as_ref() {
+            tiles.extend(b.tiles(act_at, cur).into_iter().map(|t| board::Tile { rgba: (t.rgba.0, t.rgba.1, t.rgba.2, (t.rgba.3 * act_strength as f64).min(1.0)), ..t }));
         }
         // The Duo seen as the cubes go down, its name under it with it (no
         // phone: the table and the word only).
@@ -6216,9 +6274,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
