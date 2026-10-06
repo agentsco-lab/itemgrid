@@ -5266,41 +5266,38 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         if let Some((_, b)) = ui.page.borrow().as_ref() {
             tiles.extend(b.tiles(page_at, cur));
         }
-        // The phone's words under it, in the table's squares (a letter a
-        // half square): its name, its system, how it is; on Wi-Fi how to
-        // bring it to life. Under what is seen of it: shut, its right half.
+        // The phone's words under it, a letter a square of the table (never
+        // smaller: the words are made short instead) - its number, its
+        // system, its charge, how it is linked (or, on the cable, held), and
+        // what is wrong if anything is. Under what is seen of it: shut, its
+        // right half.
         if intro.duo() > 0.0 && ui.state.borrow().host.is_some() {
             let low = |s: glib::GString| s.to_lowercase();
+            // "Surface Duo · 00001": its club number.
             let name = low(ui.name.label());
-            // The system, without the build's date ("(dev, 5 oct)").
-            let system = {
-                let s = low(ui.name_sub.label());
-                match (s.find(" ("), s.find(')')) {
-                    (Some(a), Some(b)) if b > a => format!("{}{}", &s[..a], &s[b + 1..]),
-                    _ => s,
-                }
+            let name = name.split_once(" · ").map_or(name.clone(), |(_, n)| format!("duo {n}"));
+            // "item 0.2.1 (dev, 5 Oct) · Droidian 102": item's version.
+            let system = low(ui.name_sub.label()).split(" (").next().unwrap_or("").split(" · ").next().unwrap_or("").to_owned();
+            // "Battery 78% · charging · Wi-Fi": the charge, charging or not.
+            let first = ui.status_lines.label().lines().next().unwrap_or("").to_lowercase();
+            let parts: Vec<&str> = first.strip_prefix("battery ").unwrap_or("").split(" · ").collect();
+            let charge = match parts.as_slice() {
+                [c, "charging", ..] => format!("{c} charging"),
+                [c, ..] if c.ends_with('%') => c.to_string(),
+                _ => String::new(),
             };
-            let status = {
-                let title = low(ui.status_title.label());
-                let title = title.strip_prefix("your duo is ").unwrap_or(&title).to_owned();
-                // "Battery 77% · charging · Wi-Fi": the charge and what it
-                // does (the link is said below).
-                let first = ui.status_lines.label().lines().next().unwrap_or("").to_lowercase();
-                let first = first.strip_prefix("battery ").unwrap_or(&first).replace(" · wi-fi", "").replace(" · cable", "");
-                if first.is_empty() { title } else { format!("{title} · {first}") }
-            };
-            let pose = low(ui.pose.label());
-            let pose: Vec<String> = if pose.starts_with("on wi-fi") { vec!["on wi-fi".into(), "plug in to see it move".into()] } else { vec![pose] };
-            let lines: Vec<String> = [name, system, status].into_iter().chain(pose).filter(|l| !l.is_empty()).collect();
-            let half = cur / 2.0;
+            let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
+            let link = if wifi { "on wi-fi".to_owned() } else { low(ui.pose.label()).split(" · ").next().unwrap_or("").to_owned() };
+            let title = low(ui.status_title.label());
+            let wrong = if title.contains("fine") { String::new() } else { title.strip_prefix("your duo is ").or(title.strip_prefix("your duo ")).unwrap_or(&title).to_owned() };
+            let lines: Vec<String> = [name, system, charge, link, wrong].into_iter().filter(|l| !l.is_empty()).collect();
             let (mid, _) = ui.duo_size;
             let (left, right) = if ui.fold.get().0 < 90.0 { (0.0, mid) } else { (-mid, mid) };
-            let wide = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * half;
-            let top = on_squares(k, (0.0, h / 2.0 + 1.2 * cur)).1;
-            let x = on_squares(k, ((left + right) / 2.0 - wide / 2.0, top)).0;
+            let wide = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cur;
+            let (x, top) = on_squares(k, ((left + right) / 2.0 - wide / 2.0, h / 2.0 + 1.2 * cur));
             let (head, rest) = lines.split_at(1);
-            texts.push(TableText { at: (x, top), cell: half, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
-            texts.push(TableText { at: (x, top + half), cell: half, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
+            texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
+            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
         }
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
