@@ -4577,7 +4577,7 @@ fn show_fold(ui: &Ui, angle: f64) {
 fn show_fold_now(ui: &Ui, angle: f64) {
     use gtk::{graphene, gsk};
     const TILT: f32 = 50.0;
-    let lift = (180.0 - angle).clamp(-178.0, 178.0) as f32;
+    let lift = (180.0 - angle).clamp(-180.0, 180.0) as f32;
     let (mid, h) = ui.duo_size;
     let room = h * DUO_ROOM as f32;
     let width = ui.duo.width().max(1) as f32;

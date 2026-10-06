@@ -58,9 +58,10 @@ const SCREEN: f32 = 6.0;
 const CHROME: f32 = 8.0;
 const MIRROR: f32 = 7.0;
 /// The Microsoft logo on the left half's back, mirror-polished: four
-/// squares (mm) with a gap, at the back's middle.
-const LOGO_SQUARE: f32 = 5.6;
-const LOGO_GAP: f32 = 0.7;
+/// squares (mm) with a gap, at the back's middle (half as big again as it
+/// was: shut, the back is all that shows of it).
+const LOGO_SQUARE: f32 = 8.4;
+const LOGO_GAP: f32 = 1.05;
 /// The screens (mm): each panel's size, the left edge of each in the body,
 /// and their top.
 const PANEL: (f32, f32) = (86.654, 115.539);
@@ -388,6 +389,10 @@ fn spine(k: f32) -> Mesh {
     let ends = 8.0;
     // The core, dark, a little down from the glass.
     bar(&mut m, 2.0 * THICK - 1.2, THICK - 1.4, 0.0, -0.4, ends, BODY_H - ends, DARK, k);
+    // Its outer side, the hinge's metal: shut, it is what shows along the
+    // spine (dark there, it read as a gap between the halves).
+    let back = -0.4 - (THICK - 1.4) / 2.0;
+    bar(&mut m, 2.0 * THICK - 1.6, 0.5, 0.0, back + 0.15, ends, BODY_H - ends, CHROME, k);
     // The rods: round (a bar as thick as long), near the glass.
     for x in [-0.85, 0.85] {
         bar(&mut m, 1.2, 1.2, x, 1.2, ends - 0.2, BODY_H - ends + 0.2, CHROME, k);
