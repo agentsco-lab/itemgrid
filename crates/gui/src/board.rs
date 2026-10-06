@@ -52,6 +52,9 @@ pub struct Tile {
     pub at: (f32, f32),
     pub flap: Flap,
     pub rgba: (f64, f64, f64, f64),
+    /// Raised off the table as a cube (its height, squares): a line that
+    /// can be clicked, under the pointer.
+    pub lift: f32,
 }
 
 pub struct Line {
@@ -75,19 +78,23 @@ const TURN_S: f32 = 1.3;
 const LINE_AFTER: f32 = 0.1;
 const LETTER_AFTER: f32 = 0.05;
 const FADE_S: f32 = 0.3;
+/// A line's letters rising under the pointer.
+const HOVER_S: f32 = 0.15;
 
 pub struct Board {
     pub lines: Vec<Line>,
     opened: Instant,
     closed: Option<Instant>,
     pub hover: Option<usize>,
+    /// Since when the line under the pointer is (its letters rising).
+    hover_since: Option<Instant>,
     /// A line chosen (kept darker).
     pub chosen: Option<usize>,
 }
 
 impl Board {
     pub fn open(lines: Vec<Line>) -> Board {
-        Board { lines, opened: Instant::now(), closed: None, hover: None, chosen: None }
+        Board { lines, opened: Instant::now(), closed: None, hover: None, hover_since: None, chosen: None }
     }
 
     /// Line `i` set anew: its squares turn up again to the new words.
@@ -118,6 +125,26 @@ impl Board {
     }
 
     /// Still turning up or fading.
+    /// The line under the pointer (none: none): a line that can be
+    /// clicked (it has a key) rises; whether that changed.
+    pub fn set_hover(&mut self, line: Option<usize>) -> bool {
+        let line = line.filter(|&l| self.lines.get(l).is_some_and(|l| !l.key.is_empty()));
+        if self.hover == line {
+            return false;
+        }
+        self.hover = line;
+        self.hover_since = line.map(|_| Instant::now());
+        true
+    }
+
+    /// How high line `r`'s letters stand (squares).
+    fn lift(&self, r: usize) -> f32 {
+        match (self.hover, self.hover_since) {
+            (Some(h), Some(since)) if h == r && !self.lines[r].key.is_empty() => 0.3 * smoother(since.elapsed().as_secs_f32() / HOVER_S),
+            _ => 0.0,
+        }
+    }
+
     pub fn moving(&self) -> bool {
         let longest = self.lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
         let all = self.lines.len() as f32 * LINE_AFTER + longest as f32 * LETTER_AFTER + TURN_S;
@@ -125,6 +152,7 @@ impl Board {
         self.opened.elapsed().as_secs_f32() < all + 0.05
             || self.lines.iter().any(|l| l.since.is_some_and(|s| s.elapsed().as_secs_f32() < line + 0.05))
             || self.closed.is_some_and(|c| c.elapsed().as_secs_f32() < FADE_S + 0.05)
+            || self.hover_since.is_some_and(|s| s.elapsed().as_secs_f32() < HOVER_S + 0.05)
     }
 
     /// Its squares from `origin` (the first line's first square's far left
@@ -135,6 +163,7 @@ impl Board {
         let mut out = Vec::new();
         for (r, line) in self.lines.iter().enumerate() {
             let grey = if self.hover == Some(r) || self.chosen == Some(r) { 0.12 } else { 0.42 };
+            let lift = self.lift(r);
             // Set again: from then, alone.
             let (t, r_after) = line.since.map_or((t, r as f32 * LINE_AFTER), |s| (s.elapsed().as_secs_f32(), 0.0));
             for (c, ch) in line.text.chars().enumerate() {
@@ -150,6 +179,7 @@ impl Board {
                     at: (origin.0 + c as f32 * side, origin.1 + r as f32 * side),
                     flap: flap(r * 13 + c, ch, p),
                     rgba: (cr, cg, cb, 0.9 * fade as f64),
+                    lift,
                 });
             }
         }

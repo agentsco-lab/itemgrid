@@ -1621,14 +1621,20 @@ fn build(app: &adw::Application) {
             let fv = ui.floor_view.borrow();
             let on = button_at(&fv, (x, y));
             ui.buttons.borrow_mut().hover = on;
-            // A line of the open board: darker under the pointer.
-            let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
+            // A line of the open boards that can be clicked: its letters
+            // rising on cubes under the pointer, the hand there.
+            let under = table_under(&fv, (x, y));
+            let side = square() * fv.k;
+            let line = under.and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, side, t)));
+            let page_line = under.and_then(|t| ui.page.borrow().as_ref().and_then(|(_, b)| b.line_at(fv.page_at, side, t)));
             drop(fv);
-            let changed = ui.board.borrow_mut().as_mut().is_some_and(|b| std::mem::replace(&mut b.hover, line) != line);
+            let mut changed = ui.board.borrow_mut().as_mut().is_some_and(|b| b.set_hover(line));
+            let clickable = ui.page.borrow().as_ref().and_then(|(_, b)| page_line.filter(|&l| !b.lines[l].key.is_empty()));
+            changed |= ui.page.borrow_mut().as_mut().is_some_and(|(_, b)| b.set_hover(clickable));
             if changed {
                 show_fold(&ui, ui.fold.get().0);
             }
-            pg.set_cursor_from_name(on.or(line).map(|_| "pointer"));
+            pg.set_cursor_from_name(on.or(line).or(clickable).map(|_| "pointer"));
         };
         let h2 = hover.clone();
         motion.connect_motion(move |_, x, y| hover(x, y));
@@ -3883,9 +3889,45 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
     let mut tiles = fv.tiles.clone();
     let off_eye = |t: &board::Tile| (t.at.0 + side / 2.0 - fv.eye_x).abs();
     tiles.sort_by(|a, b| a.at.1.partial_cmp(&b.at.1).unwrap().then(off_eye(b).partial_cmp(&off_eye(a)).unwrap()));
+    // The raised ones last (over their neighbours).
+    tiles.sort_by(|a, b| (a.lift > 0.0).cmp(&(b.lift > 0.0)));
+    let path = |q: &[(f64, f64)]| {
+        cr.new_path();
+        cr.move_to(q[0].0, q[0].1);
+        for p in &q[1..] {
+            cr.line_to(p.0, p.1);
+        }
+        cr.close_path();
+    };
     for t in &tiles {
         let (x0, y0) = t.at;
         let f = t.flap;
+        // Raised (a line that can be clicked, under the pointer): a cube
+        // with its letter on top, as the buttons are.
+        if t.lift > 0.001 && f.turn <= 0.0 {
+            let (shadow, faces, top) = box_shape(&p3, (x0, y0), side, z0, t.lift);
+            path(&shadow);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * t.rgba.3 * if night() { 3.0 } else { 1.0 });
+            let _ = cr.fill();
+            for (q, light) in &faces {
+                path(q);
+                let (r, g, b) = face_rgb(*light);
+                cr.set_source_rgba(r, g, b, t.rgba.3);
+                let _ = cr.fill_preserve();
+                ink(cr, 0.14 * t.rgba.3);
+                cr.set_line_width(1.6);
+                let _ = cr.stroke();
+            }
+            path(&top);
+            let (r, g, b) = face_rgb(1.0);
+            cr.set_source_rgba(r, g, b * 1.005, t.rgba.3);
+            let _ = cr.fill_preserve();
+            ink(cr, 0.14 * t.rgba.3);
+            cr.set_line_width(1.6);
+            let _ = cr.stroke();
+            letter(top[0], top[1], top[3], f.from, t.rgba);
+            continue;
+        }
         // The square on the table: a point `u` across, `v` along from its
         // far edge (0..1).
         let at = |u: f32, v: f32| p3(x0 + u * side, y0 + v * side, z0);
@@ -5998,7 +6040,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 let c = (credit_at.0 + (i as f32 + 0.5) * cur, credit_at.1 + 0.5 * cur);
                 let d = ((c.0 - cubes_at.0).powi(2) + (c.1 - cubes_at.1).powi(2)).sqrt();
                 let f = intro.credit_flip(i, ch, ((grown - d) / (14.0 * cur)).clamp(0.0, 1.0));
-                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, (0.8 * f.strength * part_alpha[5]).min(1.0) as f64) }
+                board::Tile { at: (credit_at.0 + i as f32 * cur, credit_at.1), flap: board::Flap { from: f.from, to: f.to, turn: f.turn }, rgba: (0.5, 0.5, 0.52, (0.8 * f.strength * part_alpha[5]).min(1.0) as f64), lift: 0.0 }
             })
             .collect();
         // The open board (the sections' menu) under the word, a row apart
