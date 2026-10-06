@@ -575,6 +575,9 @@ struct Ui {
     /// The phone was closed and went (asleep): drawn shut, lying on the
     /// table, not waiting open; and the hinge's last angle read.
     shut_away: std::cell::Cell<bool>,
+    /// How the phone was last seen (kept on disk): asleep, its words on the
+    /// table say so.
+    last_seen: RefCell<Option<LastSeen>>,
     /// When the lid was shut (and not opened since), and when the last
     /// gravity came: shut, the display goes dark and the gravity with it.
     lid_shut_at: std::cell::Cell<Option<std::time::Instant>>,
@@ -1331,6 +1334,7 @@ fn build(app: &adw::Application) {
         orbit: std::cell::Cell::new(([0.0; 2], [0.0; 2])),
         idle: std::cell::Cell::new(false),
         shut_away: std::cell::Cell::new(false),
+        last_seen: RefCell::new(None),
         usb_was: std::cell::Cell::new(false),
         looking: std::cell::Cell::new(false),
         resting: std::cell::Cell::new(false),
@@ -1579,7 +1583,18 @@ fn build(app: &adw::Application) {
             say(&ui, format!("Squares moved {:.0}, {:.0} mm", at.0, at.1));
         });
         page.add_controller(drag);
-        // The table's buttons: raised under the pointer, the hand there.
+        // The phone asleep when last seen (before a restart): lying shut on the
+    // table, saying so, not looked for as gone.
+    if let Some(seen) = LastSeen::read() {
+        if seen.asleep() {
+            ui.shut_away.set(true);
+            ui.scene3d.borrow_mut().sticker = seen.droidian;
+            // Shut, from the first frame.
+            ui.fold.set((0.0, 0.0));
+        }
+        *ui.last_seen.borrow_mut() = Some(seen);
+    }
+    // The table's buttons: raised under the pointer, the hand there.
         let motion = gtk::EventControllerMotion::new();
         let (weak, pg) = (Rc::downgrade(&ui), page.clone());
         let hover = move |x: f64, y: f64| {
@@ -2627,7 +2642,8 @@ fn look(ui: &Rc<Ui>) {
         ui.looking.set(false);
         let Ok((place, guest, status)) = found else { return };
         // Looked for from a cube: the wave ends; not found, a note.
-        let note = (place == Place::Gone).then(|| "plug in usb\nor wi-fi on".to_owned());
+        // (Asleep, it is not missing: no note.)
+        let note = (place == Place::Gone && !ui.shut_away.get()).then(|| "plug in usb\nor wi-fi on".to_owned());
         if let Some(took) = ui.intro.borrow_mut().found(note) {
             trace(format_args!("looked for from a cube: {:.2} s, {}", took, if place == Place::Gone { "not found" } else { "found" }));
         }
@@ -5621,6 +5637,15 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let strength = (intro.duo() * part_alpha[0]).min(1.0);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
+        } else if intro.duo() > 0.0 && ui.shut_away.get() {
+            // Asleep (gone quiet shut): as it was last seen.
+            if let Some(lines) = ui.last_seen.borrow().as_ref().map(LastSeen::words) {
+                let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
+                let (head, rest) = lines.split_at(1);
+                let strength = (intro.duo() * part_alpha[0]).min(1.0);
+                texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
+                texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
+            }
         }
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
@@ -5832,7 +5857,66 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
         ui.facts.attach(&gtk::Label::builder().label(name).xalign(1.0).css_classes(["fact-name"]).build(), 0, i as i32, 1, 1);
         ui.facts.attach(&gtk::Label::builder().label(&value).xalign(0.0).selectable(true).build(), 1, i as i32, 1, 1);
     }
+    // As it is now, kept: gone quiet after this, shut (on Wi-Fi it is
+    // drawn shut; on the cable, the lid closed), it is asleep - after a
+    // restart too.
+    let name = ui.name.label().to_lowercase();
+    let seen = LastSeen {
+        name: name.split_once(" · ").map_or("duo".to_owned(), |(_, n)| format!("duo {n}")),
+        battery: s.battery,
+        at: glib::DateTime::now_local().map_or(0, |t| t.to_unix()),
+        shut: link != "cable" || ui.lid_shut_at.get().is_some(),
+        droidian,
+    };
+    seen.save();
+    *ui.last_seen.borrow_mut() = Some(seen);
+}
 
+/// How the phone was last seen (~/.local/share/itemgrid/last-seen): its
+/// name on the table, its charge, when (unix seconds), whether shut (gone
+/// quiet so, asleep), whether it ran Droidian.
+#[derive(Clone, Debug, PartialEq)]
+struct LastSeen {
+    name: String,
+    battery: Option<u32>,
+    at: i64,
+    shut: bool,
+    droidian: bool,
+}
+
+/// Asleep longer than this, it is only not seen (taken away, run down).
+const ASLEEP_FOR_S: i64 = 24 * 3600;
+
+impl LastSeen {
+    fn path() -> std::path::PathBuf {
+        glib::user_data_dir().join("itemgrid/last-seen")
+    }
+
+    fn save(&self) {
+        let text = format!("name={}\nbattery={}\nat={}\nshut={}\ndroidian={}\n", self.name, self.battery.map_or(String::new(), |b| b.to_string()), self.at, self.shut as u8, self.droidian as u8);
+        let _ = std::fs::create_dir_all(Self::path().parent().unwrap_or(std::path::Path::new(".")));
+        let _ = std::fs::write(Self::path(), text);
+    }
+
+    fn read() -> Option<LastSeen> {
+        let text = std::fs::read_to_string(Self::path()).ok()?;
+        let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_owned));
+        Some(LastSeen { name: get("name")?, battery: get("battery").and_then(|b| b.parse().ok()), at: get("at")?.parse().ok()?, shut: get("shut")? == "1", droidian: get("droidian").is_some_and(|d| d == "1") })
+    }
+
+    /// Shut when last seen, and not too long ago.
+    fn asleep(&self) -> bool {
+        self.shut && glib::DateTime::now_local().map_or(0, |t| t.to_unix()) - self.at < ASLEEP_FOR_S
+    }
+
+    /// Its words on the table: its name, asleep since when (today the time,
+    /// else the day), its charge.
+    fn words(&self) -> Vec<String> {
+        let when = glib::DateTime::from_unix_local(self.at).ok();
+        let today = glib::DateTime::now_local().ok().map(|n| (n.year(), n.day_of_year()));
+        let since = when.and_then(|w| if Some((w.year(), w.day_of_year())) == today { w.format("%H:%M").ok() } else { w.format("%-d %b").ok() }).map(|s| s.to_lowercase()).unwrap_or_default();
+        [self.name.clone(), format!("asleep {since}").trim().to_owned(), self.battery.map_or(String::new(), |b| format!("{b}%"))].into_iter().filter(|l| !l.is_empty()).collect()
+    }
 }
 
 /// The storage bar's parts counted again, and the bar and its legend shown.
