@@ -36,6 +36,8 @@ pub struct Grid {
     pub ink: [f32; 3],
     pub ink_k: f32,
     pub under: Option<[f32; 3]>,
+    /// The lines' width, times the old 1.6 px.
+    pub width: f32,
 }
 
 /// Whether the GPU draws the squares (else the floor's cairo does).
@@ -65,13 +67,14 @@ uniform float u_grown;
 uniform float u_grid;
 uniform vec4 u_ink;
 uniform vec4 u_under;
+uniform float u_width;
 out vec4 color;
 
 float line(float t, float shift) {
     // How far from the nearest line, in the page's device px.
     float d = abs(fract((t - shift) / u_step + 0.5) - 0.5) * u_step;
     float px = length(vec2(dFdx(t), dFdy(t)));
-    float half_w = 0.8 * u_scale;
+    float half_w = 0.8 * u_width * u_scale;
     return clamp(half_w + 0.5 - d / max(px, 1e-6), 0.0, 1.0);
 }
 
@@ -155,6 +158,7 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink").as_ref(), g.ink[0], g.ink[1], g.ink[2], g.ink_k);
             let under = g.under.map_or([0.0; 4], |c| [c[0], c[1], c[2], 1.0]);
             gl.uniform_4_f32(u("u_under").as_ref(), under[0], under[1], under[2], under[3]);
+            gl.uniform_1_f32(u("u_width").as_ref(), g.width);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);

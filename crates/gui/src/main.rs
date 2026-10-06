@@ -105,6 +105,126 @@ fn night_file() -> std::path::PathBuf {
 /// The table's own grey (what is white by day).
 const NIGHT_TABLE: f64 = 0.142;
 
+/// The table's looks, chosen in the layout editor (F2): its paper (by day;
+/// the night keeps its dark), the lines' ink (by day), how thick the lines
+/// are, the letters' face. Names as kept in the layout file; the fonts
+/// those tools/fetch-fonts.sh brings (light), Lato first as before.
+const PAPERS: [(&str, [f64; 3]); 10] = [
+    ("white", [1.0, 1.0, 1.0]),
+    ("warm", [0.980, 0.969, 0.941]),
+    ("cream", [0.961, 0.937, 0.878]),
+    ("sand", [0.949, 0.910, 0.847]),
+    ("stone", [0.933, 0.933, 0.925]),
+    ("cool", [0.945, 0.957, 0.973]),
+    ("sky", [0.918, 0.949, 0.984]),
+    ("mint", [0.933, 0.965, 0.945]),
+    ("rose", [0.984, 0.941, 0.941]),
+    ("lilac", [0.953, 0.941, 0.984]),
+];
+const INKS: [(&str, [f64; 3]); 10] = [
+    ("black", [0.0, 0.0, 0.0]),
+    ("graphite", [0.23, 0.23, 0.25]),
+    ("blue", [0.11, 0.31, 0.85]),
+    ("navy", [0.12, 0.16, 0.47]),
+    ("teal", [0.06, 0.46, 0.43]),
+    ("green", [0.08, 0.50, 0.24]),
+    ("red", [0.73, 0.11, 0.11]),
+    ("orange", [0.76, 0.25, 0.05]),
+    ("brown", [0.49, 0.29, 0.12]),
+    ("violet", [0.43, 0.16, 0.85]),
+];
+/// The lines' width, px (1.6 the old one).
+const WIDTHS: [f64; 8] = [0.6, 1.0, 1.3, 1.6, 2.0, 2.5, 3.2, 4.5];
+const FONTS: [(&str, &str); 20] = [
+    ("lato", "Lato"),
+    ("inter", "Inter"),
+    ("roboto", "Roboto"),
+    ("open sans", "Open Sans"),
+    ("montserrat", "Montserrat"),
+    ("poppins", "Poppins"),
+    ("raleway", "Raleway"),
+    ("nunito", "Nunito"),
+    ("work sans", "Work Sans"),
+    ("fira sans", "Fira Sans"),
+    ("plex", "IBM Plex Sans"),
+    ("jetbrains", "JetBrains Mono"),
+    ("grotesk", "Space Grotesk"),
+    ("manrope", "Manrope"),
+    ("rubik", "Rubik"),
+    ("quicksand", "Quicksand"),
+    ("comfortaa", "Comfortaa"),
+    ("josefin", "Josefin Sans"),
+    ("playfair", "Playfair Display"),
+    ("merri", "Merriweather"),
+];
+
+/// The looks chosen: indices into PAPERS, INKS, WIDTHS, FONTS.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Style {
+    paper: usize,
+    ink: usize,
+    width: usize,
+    font: usize,
+}
+
+impl Default for Style {
+    fn default() -> Style {
+        Style { paper: 0, ink: 0, width: 3, font: 0 }
+    }
+}
+
+thread_local! {
+    static STYLE: std::cell::Cell<Style> = std::cell::Cell::new(Style::default());
+}
+
+fn style() -> Style {
+    STYLE.with(|s| s.get())
+}
+
+/// The paper's colour by day.
+fn paper_rgb() -> [f64; 3] {
+    PAPERS[style().paper.min(PAPERS.len() - 1)].1
+}
+
+/// The lines' width (px) chosen, and how many times the old one.
+fn line_width() -> f64 {
+    WIDTHS[style().width.min(WIDTHS.len() - 1)]
+}
+
+/// A face lit `light` as drawn: by day the paper's colour that lit, by
+/// night the grey.
+fn face_rgb(light: f64) -> (f64, f64, f64) {
+    let l = paper(light);
+    if night() {
+        (l, l, l * 1.005)
+    } else {
+        let p = paper_rgb();
+        (l * p[0], l * p[1], l * p[2] * 1.005)
+    }
+}
+
+/// The page's paper as CSS (by day; the night's own stays).
+fn style_css() -> String {
+    let p = paper_rgb().map(|v| (v * 255.0).round() as u8);
+    let hex = format!("#{:02x}{:02x}{:02x}", p[0], p[1], p[2]);
+    format!("window:not(.night), window.background:not(.night), window:not(.night) headerbar, window.wall-cover:not(.night), window.wall-move:not(.night) .wall-card {{ background: {hex}; }}")
+}
+
+thread_local! {
+    static STYLE_CSS: gtk::CssProvider = gtk::CssProvider::new();
+}
+
+/// The looks `s` taken: kept for the drawing, the page's paper, the
+/// letters made anew in the face.
+fn set_style(s: Style) {
+    let font_changed = style().font != s.font;
+    STYLE.with(|c| c.set(s));
+    STYLE_CSS.with(|css| css.load_from_string(&style_css()));
+    if font_changed {
+        GLYPHS.with(|g| g.borrow_mut().clear());
+    }
+}
+
 /// A face's grey: by day `light` itself (1 the table's white); by night
 /// the table's dark, the less lit faces lighter (lit from the viewer).
 fn paper(light: f64) -> f64 {
@@ -120,7 +240,8 @@ fn ink(cr: &gtk::cairo::Context, alpha: f64) {
     if night() {
         cr.set_source_rgba(1.0, 1.0, 1.0, alpha * 1.15);
     } else {
-        cr.set_source_rgba(0.0, 0.0, 0.0, alpha);
+        let c = INKS[style().ink.min(INKS.len() - 1)].1;
+        cr.set_source_rgba(c[0], c[1], c[2], alpha);
     }
 }
 
@@ -464,7 +585,7 @@ struct Ui {
     layout: std::cell::Cell<Layout>,
     layout_edit: std::cell::Cell<bool>,
     layout_drag: std::cell::Cell<Option<(usize, (f32, f32), (f32, f32))>>,
-    layout_boxes: std::cell::Cell<[[f32; 4]; 2]>,
+    layout_boxes: std::cell::Cell<[[f32; 4]; 5]>,
     duo_drawn_at: std::cell::Cell<Option<(f32, f32)>>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
@@ -605,7 +726,9 @@ fn build(app: &adw::Application) {
     css.load_from_string(&format!("{CSS}{}{}", card::CSS, sections::CSS));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        STYLE_CSS.with(|s| gtk::style_context_add_provider_for_display(&display, s, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1));
     }
+    set_style(read_layout().style);
     let window = adw::ApplicationWindow::builder().application(app).title("item/grid").default_width(1000).default_height(800).build();
     if night() {
         window.add_css_class("night");
@@ -1253,12 +1376,15 @@ fn build(app: &adw::Application) {
         layout: std::cell::Cell::new(read_layout()),
         layout_edit: std::cell::Cell::new(false),
         layout_drag: std::cell::Cell::new(None),
-        layout_boxes: std::cell::Cell::new([[0.0; 4]; 2]),
+        layout_boxes: std::cell::Cell::new([[0.0; 4]; 5]),
         duo_drawn_at: std::cell::Cell::new(None),
         shown: view.clone().upcast(),
         stage: stage.clone(),
         wallpaper_mix: std::cell::Cell::new(0.0),
-        zoom: std::cell::Cell::new((1.0, 1.0)),
+        zoom: std::cell::Cell::new({
+            let z = read_layout().zoom.unwrap_or(1.0);
+            (z, z)
+        }),
         section_words: RefCell::default(),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
@@ -1431,8 +1557,35 @@ fn build(app: &adw::Application) {
         let say = Rc::new(say);
         let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         let (weak, s) = (Rc::downgrade(&ui), say.clone());
+        let pointer = Rc::new(std::cell::Cell::new((0.0f64, 0.0f64)));
+        let wheel_at = gtk::EventControllerMotion::new();
+        wheel_at.connect_motion({
+            let pointer = pointer.clone();
+            move |_, x, y| pointer.set((x, y))
+        });
+        page.add_controller(wheel_at);
         wheel.connect_scroll(move |c, _, dy| {
             let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
+            // Layout editing: over the Duo its size, elsewhere the eye's
+            // lens - both kept.
+            if ui.layout_edit.get() {
+                let mut l = ui.layout.get();
+                let over_duo = table_under(&ui.floor_view.borrow(), pointer.get()).is_some_and(|t| {
+                    let b = ui.layout_boxes.get()[1];
+                    (b[0]..=b[2]).contains(&t.0) && (b[1]..=b[3]).contains(&t.1)
+                });
+                if over_duo {
+                    l.duo_scale = (l.duo_scale * 1.05f32.powf(-dy as f32)).clamp(0.4, 2.0);
+                } else {
+                    let to = (ui.zoom.get().1 * 1.1f32.powf(-dy as f32)).clamp(0.4, 1.0);
+                    ui.zoom.set((ui.zoom.get().0, to));
+                    l.zoom = Some(to);
+                }
+                ui.layout.set(l);
+                save_layout(l);
+                show_fold(&ui, ui.fold.get().0);
+                return glib::Propagation::Stop;
+            }
             // The wheel: the eye nearer or further, as a lens (a tenth a
             // notch), eased there.
             if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
@@ -1477,15 +1630,20 @@ fn build(app: &adw::Application) {
                     let boxes = ui.layout_boxes.get();
                     let inside = |b: [f32; 4]| (b[0]..=b[2]).contains(&t.0) && (b[1]..=b[3]).contains(&t.1);
                     let l = ui.layout.get();
-                    let picked = if inside(boxes[1]) {
-                        let cur = square() * DUO_PX_PER_MM as f32;
-                        let sheet = ui.floor_view.borrow().sheet.unwrap_or([0.0; 4]);
-                        Some((1, l.duo.unwrap_or(((boxes[1][0] - sheet[0]) / cur, (boxes[1][1] - sheet[1]) / cur)), t))
-                    } else if inside(boxes[0]) {
-                        Some((0, l.words, t))
-                    } else {
-                        None
-                    };
+                    let cur = square() * DUO_PX_PER_MM as f32;
+                    let sheet = ui.floor_view.borrow().sheet.unwrap_or([0.0; 4]);
+                    // The Duo first (over its room), then the words, the
+                    // word, the buttons, the menu.
+                    let picked = [1, 0, 2, 3, 4].into_iter().find(|&i| inside(boxes[i])).map(|i| {
+                        let from = match i {
+                            0 => l.words,
+                            1 => l.duo.unwrap_or(((boxes[1][0] - sheet[0]) / cur, (boxes[1][1] - sheet[1]) / cur)),
+                            2 => l.word,
+                            3 => l.buttons,
+                            _ => l.menu,
+                        };
+                        (i, from, t)
+                    });
                     if picked.is_some() {
                         ui.layout_drag.set(picked);
                         grid_drag.set(false);
@@ -1509,10 +1667,12 @@ fn build(app: &adw::Application) {
                     let cur = square() * DUO_PX_PER_MM as f32;
                     let to = ((from.0 + (now.0 - began.0) / cur).round(), (from.1 + (now.1 - began.1) / cur).round());
                     let mut l = ui.layout.get();
-                    if item == 0 {
-                        l.words = to;
-                    } else {
-                        l.duo = Some(to);
+                    match item {
+                        0 => l.words = to,
+                        1 => l.duo = Some(to),
+                        2 => l.word = to,
+                        3 => l.buttons = to,
+                        _ => l.menu = to,
                     }
                     if l != ui.layout.get() {
                         ui.layout.set(l);
@@ -1646,6 +1806,8 @@ fn build(app: &adw::Application) {
                             ui.intro.borrow_mut().clear_note();
                         }
                     }
+                    // The start played again (for laying things out by it).
+                    FloorButton::Replay => ui.intro.borrow_mut().replay(),
                     // As the wallpaper, the window back first (its place and
                     // size kept as it closes are the usual ones).
                     FloorButton::Close => {
@@ -1676,14 +1838,12 @@ fn build(app: &adw::Application) {
                         // way).
                         "set:wallpaper" => wallpaper(&ui),
                         "set:layout" => set_layout_edit(&ui, !ui.layout_edit.get()),
+                        "set:paper" | "set:lines" | "set:width" | "set:font" => turn_style(&ui, &key),
                         _ => return,
                     }
                     trace(format_args!("setting {key} turned"));
-                    if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
-                        if let Some(new) = settings_lines(&ui).into_iter().find(|n| n.key == key) {
-                            b.set_line(l, new.text);
-                        }
-                    }
+                    let _ = l;
+                    refresh_settings(&ui);
                     return;
                 }
                 let fv = ui.floor_view.borrow();
@@ -3361,7 +3521,7 @@ struct FloorView {
     /// px), outlined.
     sheet: Option<[f32; 4]>,
     /// Layout editing: the boxes that can be dragged (outlined).
-    edit_boxes: Option<[[f32; 4]; 2]>,
+    edit_boxes: Option<[[f32; 4]; 5]>,
     grid_mid: (f32, f32),
 }
 
@@ -3413,7 +3573,8 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         cubes_at: fv.cubes_at,
         grown: fv.grid * (fv.reach + 3.0 * step),
         grid: fv.grid,
-        ink: if night { [1.0; 3] } else { [0.0; 3] },
+        ink: if night { [1.0; 3] } else { INKS[style().ink.min(INKS.len() - 1)].1.map(|v| v as f32) },
+        width: (line_width() / 1.6) as f32,
         ink_k: if night { 1.15 } else { 1.0 },
         under: night.then_some([NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32]),
     })
@@ -3489,9 +3650,9 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
                     strongest = strongest.max(a);
                     // The ink, premultiplied, this strong.
                     let k = (a * g.ink_k as f64 * 255.0).round().clamp(0.0, 255.0) as u8;
-                    let c = (g.ink[0] as f64 * k as f64).round() as u8;
+                    let c = g.ink.map(|v| (v as f64 * k as f64).round() as u32);
                     let at = py as usize * stride + px as usize * 4;
-                    data[at..at + 4].copy_from_slice(&((k as u32) << 24 | (c as u32) << 16 | (c as u32) << 8 | c as u32).to_ne_bytes());
+                    data[at..at + 4].copy_from_slice(&((k as u32) << 24 | c[0] << 16 | c[1] << 8 | c[2]).to_ne_bytes());
                 }
             }
         }
@@ -3525,7 +3686,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
                     cr.line_to(p1.0, p1.1);
                 }
             }
-            cr.set_line_width(1.6);
+            cr.set_line_width(line_width());
             mask.mark_dirty();
             let pattern = gtk::cairo::SurfacePattern::create(&mask);
             pattern.set_filter(gtk::cairo::Filter::Bilinear);
@@ -3785,16 +3946,16 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         if up > 0.0 {
             for (q, light) in &c.faces {
                 path(q);
-                let l = paper(*light);
-                cr.set_source_rgba(l, l, l * 1.005, up);
+                let (r, g, b) = face_rgb(*light);
+                cr.set_source_rgba(r, g, b, up);
                 let _ = cr.fill_preserve();
                 ink(cr, 0.14 * up);
                 cr.set_line_width(1.6);
                 let _ = cr.stroke();
             }
             path(&c.top);
-            let l = paper(1.0);
-            cr.set_source_rgba(l, l, l * 1.01, up);
+            let (r, g, b) = face_rgb(1.0);
+            cr.set_source_rgba(r, g, b * 1.005, up);
             let _ = cr.fill_preserve();
             ink(cr, 0.14 * up);
             cr.set_line_width(1.6);
@@ -3938,7 +4099,7 @@ fn glyph_made(ch: char) -> Option<gtk::cairo::Path> {
     let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, 1, 1).ok()?;
     let cr = gtk::cairo::Context::new(&surface).ok()?;
     let layout = pangocairo::functions::create_layout(&cr);
-    let mut font = gtk::pango::FontDescription::from_string("Lato, Ubuntu Sans, Ubuntu, sans-serif");
+    let mut font = gtk::pango::FontDescription::from_string(&format!("{}, Lato, Ubuntu Sans, Ubuntu, sans-serif", FONTS[style().font.min(FONTS.len() - 1)].1));
     font.set_weight(gtk::pango::Weight::Light);
     font.set_absolute_size(0.7 * GLYPH * gtk::pango::SCALE as f64);
     layout.set_font_description(Some(&font));
@@ -4365,18 +4526,26 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
     }
 }
 
-/// Where things are laid on the table's sheet, in its squares from its top
-/// left: the phone's words (their first letter's square), the Duo (its
-/// top left open flat; none: in the middle of what is right of its words).
+/// Where things are laid on the table's sheet, in its squares: the phone's
+/// words (their first letter's square) and the Duo (its top left open
+/// flat; none: in the middle of what is right of its words) from the
+/// sheet's top left; the word, the buttons and the menu moved from where
+/// they come by themselves; the Duo's size; the eye's lens (none: 1).
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Layout {
     words: (f32, f32),
     duo: Option<(f32, f32)>,
+    word: (f32, f32),
+    buttons: (f32, f32),
+    menu: (f32, f32),
+    duo_scale: f32,
+    zoom: Option<f32>,
+    style: Style,
 }
 
 impl Default for Layout {
     fn default() -> Layout {
-        Layout { words: (0.0, 4.0), duo: None }
+        Layout { words: (0.0, 4.0), duo: None, word: (0.0, 0.0), buttons: (0.0, 0.0), menu: (0.0, 0.0), duo_scale: 1.0, zoom: None, style: Style::default() }
     }
 }
 
@@ -4390,13 +4559,31 @@ fn read_layout() -> Layout {
     for line in std::fs::read_to_string(layout_file()).unwrap_or_default().lines() {
         let w: Vec<&str> = line.split_whitespace().collect();
         let xy = || Some((w.get(1)?.parse().ok()?, w.get(2)?.parse().ok()?));
+        let one = || w.get(1)?.parse::<f32>().ok();
         match w.first() {
             Some(&"words") => l.words = xy().unwrap_or(l.words),
             Some(&"duo") => l.duo = xy().or(l.duo),
+            Some(&"word") => l.word = xy().unwrap_or(l.word),
+            Some(&"buttons") => l.buttons = xy().unwrap_or(l.buttons),
+            Some(&"menu") => l.menu = xy().unwrap_or(l.menu),
+            Some(&"duo-scale") => l.duo_scale = one().unwrap_or(l.duo_scale),
+            Some(&"zoom") => l.zoom = one().or(l.zoom),
+            // The looks by name (the rest of the line: a name may have a
+            // space).
+            Some(&"paper") => l.style.paper = named(&PAPERS.map(|p| p.0), &w[1..]).unwrap_or(l.style.paper),
+            Some(&"lines") => l.style.ink = named(&INKS.map(|p| p.0), &w[1..]).unwrap_or(l.style.ink),
+            Some(&"line-width") => l.style.width = one().and_then(|v| WIDTHS.iter().position(|w| (*w - v as f64).abs() < 0.01)).unwrap_or(l.style.width),
+            Some(&"font") => l.style.font = named(&FONTS.map(|p| p.0), &w[1..]).unwrap_or(l.style.font),
             _ => {}
         }
     }
     l
+}
+
+/// Which of `names` the words `w` are.
+fn named(names: &[&str], w: &[&str]) -> Option<usize> {
+    let name = w.join(" ");
+    names.iter().position(|n| *n == name)
 }
 
 fn save_layout(l: Layout) {
@@ -4404,8 +4591,52 @@ fn save_layout(l: Layout) {
     if let Some(d) = l.duo {
         text.push_str(&format!("duo {} {}\n", d.0, d.1));
     }
+    text.push_str(&format!("word {} {}\nbuttons {} {}\nmenu {} {}\nduo-scale {:.3}\n", l.word.0, l.word.1, l.buttons.0, l.buttons.1, l.menu.0, l.menu.1, l.duo_scale));
+    if let Some(z) = l.zoom {
+        text.push_str(&format!("zoom {z:.3}\n"));
+    }
+    let s = l.style;
+    text.push_str(&format!("paper {}\nlines {}\nline-width {}\nfont {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0));
     let _ = std::fs::create_dir_all(layout_file().parent().unwrap_or(std::path::Path::new(".")));
     let _ = std::fs::write(layout_file(), text);
+}
+
+/// A look of the table's turned to the next (`key` its setting's), kept.
+fn turn_style(ui: &Ui, key: &str) {
+    let mut l = ui.layout.get();
+    let s = &mut l.style;
+    match key {
+        "set:paper" => s.paper = (s.paper + 1) % PAPERS.len(),
+        "set:lines" => s.ink = (s.ink + 1) % INKS.len(),
+        "set:width" => s.width = (s.width + 1) % WIDTHS.len(),
+        "set:font" => s.font = (s.font + 1) % FONTS.len(),
+        _ => return,
+    }
+    ui.layout.set(l);
+    set_style(l.style);
+    save_layout(l);
+    ui.floor.queue_draw();
+    ui.floor_gl.queue_render();
+}
+
+/// The settings' board, if open, set to the settings as they are now: its
+/// lines turned up anew where changed; laid anew if lines came or went.
+fn refresh_settings(ui: &Ui) {
+    let lines = settings_lines(ui);
+    let mut page = ui.page.borrow_mut();
+    let Some((key, b)) = page.as_mut() else { return };
+    if key != "settings" || b.closing() {
+        return;
+    }
+    if b.lines.len() != lines.len() {
+        *b = board::Board::open(lines);
+        return;
+    }
+    for (i, new) in lines.into_iter().enumerate() {
+        if b.lines[i].text != new.text {
+            b.set_line(i, new.text);
+        }
+    }
 }
 
 /// Layout editing on or off: the Duo's own room lets the pointer through
@@ -4416,6 +4647,7 @@ fn set_layout_edit(ui: &Ui, on: bool) {
         holder.set_can_target(!on);
     }
     trace(format_args!("layout: {}", if on { "editing" } else { "fixed" }));
+    refresh_settings(ui);
     show_fold(ui, ui.fold.get().0);
 }
 
@@ -4459,12 +4691,23 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
         "day" => "off".to_owned(),
         _ => "auto".to_owned(),
     };
-    vec![
+    let mut lines = vec![
         board::Line::new("set:night", format!("night      {night}")),
         board::Line::new("set:wallpaper", format!("wallpaper  {}", onoff(ui.wallpaper.get().is_some()))),
         board::Line::new("set:layout", format!("layout     {}", if ui.layout_edit.get() { "edit" } else { "fixed" })),
-        board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode()))),
-    ]
+    ];
+    // Editing, the looks too (each clicked: the next).
+    if ui.layout_edit.get() {
+        let s = style();
+        lines.extend([
+            board::Line::new("set:paper", format!("paper      {}", PAPERS[s.paper].0)),
+            board::Line::new("set:lines", format!("lines      {}", INKS[s.ink].0)),
+            board::Line::new("set:width", format!("width      {}", WIDTHS[s.width])),
+            board::Line::new("set:font", format!("font       {}", FONTS[s.font].0)),
+        ]);
+    }
+    lines.push(board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode()))));
+    lines
 }
 
 /// Night or day shown as due: the table, the window.
@@ -4499,13 +4742,14 @@ fn turn_night_mode(ui: &Ui) {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum FloorButton {
     Menu,
+    Replay,
     Close,
 }
 
 /// In the word's row at the page's right (the wallpaper turned in the
 /// settings).
-const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Close)];
-const BUTTONS: usize = 2;
+const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Replay), Some(FloorButton::Close)];
+const BUTTONS: usize = 3;
 
 /// The buttons' hover and press, eased.
 #[derive(Default)]
@@ -4598,16 +4842,16 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
         if h > 0.001 {
             for (q, light) in &faces {
                 path(q);
-                let l = paper(*light);
-                cr.set_source_rgb(l, l, l * 1.005);
+                let (r, g, b) = face_rgb(*light);
+                cr.set_source_rgb(r, g, b);
                 let _ = cr.fill_preserve();
                 ink(cr, 0.14);
                 cr.set_line_width(1.6);
                 let _ = cr.stroke();
             }
             path(&top);
-            let l = paper(1.0);
-            cr.set_source_rgb(l, l, l * 1.01);
+            let (r, g, b) = face_rgb(1.0);
+            cr.set_source_rgb(r, g, b * 1.005);
             let _ = cr.fill_preserve();
             ink(cr, 0.14);
             let _ = cr.stroke();
@@ -4636,6 +4880,17 @@ fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f
                 cr.move_to(32.0, y);
                 cr.line_to(68.0, y);
             }
+            let _ = cr.stroke();
+        }
+        FloorButton::Replay => {
+            // Round and back to where it began.
+            let (r, from, to) = (17.0, -1.2, 4.3);
+            cr.arc(50.0, 50.0, r, from, to);
+            let _ = cr.stroke();
+            let (ex, ey) = (50.0 + r * to.cos(), 50.0 + r * to.sin());
+            cr.move_to(ex + 8.0, ey - 1.0);
+            cr.line_to(ex, ey);
+            cr.line_to(ex - 1.0, ey - 9.0);
             let _ = cr.stroke();
         }
         FloorButton::Close => {
@@ -5230,6 +5485,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The saver's page is another size: the word kept where it was on
         // the table (worked out anew it went far off, past the squares).
         let cubes_at = if ui.saver.get().is_some() { ui.cubes_rest.get() } else { ui.cubes_rest.replace(cubes_at); cubes_at };
+        // Where the word comes by itself (the sheet's corner), and where the
+        // layout moves it.
+        let layout = ui.layout.get();
+        let word_home = cubes_at;
+        let cubes_at = (word_home.0 + layout.word.0 * square() * k, word_home.1 + layout.word.1 * square() * k);
         for (i, v) in [cubes_at.0, cubes_at.1].into_iter().enumerate() {
             CUBES_AT[i].store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }
@@ -5377,7 +5637,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The buttons in the word's row, at the page's right (as the usual
         // view shows it): the last in the square seen a square or so in
         // from the edge.
-        let buttons_at = {
+        let buttons_home = {
+            let cubes_at = word_home;
             let m = rest_m;
             let row = cubes_at.1;
             // As far in from the right as the word is from the left (the
@@ -5402,14 +5663,17 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let end = squared(on_squares(k, (x, cubes_at.1 - 0.5 * cur)), (x, cubes_at.1 - 0.5 * cur));
             (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
+        let buttons_at = (buttons_home.0 + layout.buttons.0 * cur, buttons_home.1 + layout.buttons.1 * cur);
         // The sheet: from the word's left edge to the buttons' right, from
         // the word's row down to near the page's bottom (in whole squares).
         // What comes after is laid on it: the Duo right of its words, its
         // top two rows under the word's; its words at its left, in the
         // word's column.
+        // (Where the word and the buttons come by themselves: moved by the
+        // layout, the sheet stays.)
         let sheet = {
-            let top = cubes_at.1 - 0.5 * cur;
-            let (left, right) = (cubes_at.0 - WORD_HALF * cur, buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur);
+            let top = word_home.1 - 0.5 * cur;
+            let (left, right) = (word_home.0 - WORD_HALF * cur, buttons_home.0 + FLOOR_BUTTONS.len() as f32 * cur);
             // The table's row at the page's bottom (Newton's way, down the
             // sheet's middle).
             let want_y = ui.floor.height() as f32 * 0.9 - off.1;
@@ -5425,11 +5689,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let bottom = top + ((y - top) / cur).floor().max(4.0) * cur;
             [left, top, right, bottom]
         };
-        let (mid_px, duo_h) = ui.duo_size;
+        // The Duo as big as the layout makes it.
+        let (mid_px, duo_h) = (ui.duo_size.0 * layout.duo_scale, ui.duo_size.1 * layout.duo_scale);
         // Where the layout puts it (its top left open flat, in the sheet's
         // squares); by default in the middle of what is left of the sheet
         // right of its words' column (twelve letters and a square clear).
-        let layout = ui.layout.get();
         let duo_corner = layout.duo.unwrap_or_else(|| ((((13.0 * cur + sheet[2] - sheet[0]) / 2.0 - mid_px) / cur).round(), 4.0));
         let duo_on_sheet = (sheet[0] + duo_corner.0 * cur + mid_px, sheet[1] + duo_corner.1 * cur + duo_h / 2.0);
         ui.duo_on_sheet.set(Some(duo_on_sheet));
@@ -5480,7 +5744,16 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // seen from `at`) into this eye's.
         let duo_rest = gsk::Transform::new().translate(&graphene::Point::new(duo_at.0, duo_at.1)).perspective(3.2 * h).rotate_3d(TILT, &graphene::Vec3::x_axis()).to_matrix();
         if let Some(inv) = duo_rest.inverse() {
-            duo_fix.set(Some(gsk::Transform::new().matrix(&rest).translate_3d(&graphene::Point3D::new(duo_on_sheet.0, duo_on_sheet.1, 0.0)).matrix(&inv).to_matrix()));
+            let sc = layout.duo_scale;
+            // Its back (z -DUO_THICK) kept on the table as it is scaled.
+            duo_fix.set(Some(
+                gsk::Transform::new()
+                    .matrix(&rest)
+                    .translate_3d(&graphene::Point3D::new(duo_on_sheet.0, duo_on_sheet.1, DUO_THICK * (sc - 1.0)))
+                    .scale_3d(sc, sc, sc)
+                    .matrix(&inv)
+                    .to_matrix(),
+            ));
         }
         // Where that is in the Duo's own drawing, for the next frame (its GL
         // room follows it).
@@ -5519,12 +5792,24 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The open board (the sections' menu) under the word, a row apart
         // (where the note goes: one or the other).
         let board_at = on_squares(k, (left, under));
+        let board_at = (board_at.0 + layout.menu.0 * cur, board_at.1 + layout.menu.1 * cur);
         let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8));
         if let Some(b) = ui.board.borrow().as_ref() {
             tiles.extend(b.tiles(board_at, cur));
         }
         // A section's board beside the menu, two squares apart.
         let page_at = (board_at.0 + (menu_cols + 2) as f32 * cur, board_at.1);
+        // What the layout can drag, as it lies now: (the phone's words, set
+        // with them) the Duo open flat, the word, the buttons, the menu.
+        {
+            let menu_rows = ui.board.borrow().as_ref().map_or(3, |b| b.lines.len()) as f32;
+            let mut b = ui.layout_boxes.get();
+            b[1] = [duo_on_sheet.0 - mid_px, duo_on_sheet.1 - duo_h / 2.0, duo_on_sheet.0 + mid_px, duo_on_sheet.1 + duo_h / 2.0];
+            b[2] = [cubes_at.0 - WORD_HALF * cur, cubes_at.1 - 0.5 * cur, cubes_at.0 + WORD_HALF * cur, cubes_at.1 + 0.5 * cur];
+            b[3] = [buttons_at.0, buttons_at.1, buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur, buttons_at.1 + cur];
+            b[4] = [board_at.0, board_at.1, board_at.0 + menu_cols as f32 * cur, board_at.1 + menu_rows * cur];
+            ui.layout_boxes.set(b);
+        }
         if let Some((_, b)) = ui.page.borrow().as_ref() {
             tiles.extend(b.tiles(page_at, cur));
         }
@@ -5562,7 +5847,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let _ = (mid, wide);
             let (x, top) = (sheet[0] + layout.words.0 * cur, sheet[1] + layout.words.1 * cur);
             let rows = lines.len() as f32;
-            ui.layout_boxes.set([[x, top, x + wide, top + rows * cur], [duo_on_sheet.0 - mid, duo_on_sheet.1 - h / 2.0, duo_on_sheet.0 + mid, duo_on_sheet.1 + h / 2.0]]);
+            let mut b = ui.layout_boxes.get();
+            b[0] = [x, top, x + wide, top + rows * cur];
+            ui.layout_boxes.set(b);
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
@@ -5583,7 +5870,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.edit_boxes != ui.layout_edit.get().then(|| ui.layout_boxes.get());
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] + duo_on_sheet.0, hole[1] + duo_on_sheet.1, hole[2] + duo_on_sheet.0, hole[3] + duo_on_sheet.1], depth)), sheet: Some(sheet), edit_boxes: ui.layout_edit.get().then(|| ui.layout_boxes.get()), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] * layout.duo_scale + duo_on_sheet.0, hole[1] * layout.duo_scale + duo_on_sheet.1, hole[2] * layout.duo_scale + duo_on_sheet.0, hole[3] * layout.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), edit_boxes: ui.layout_edit.get().then(|| ui.layout_boxes.get()), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
