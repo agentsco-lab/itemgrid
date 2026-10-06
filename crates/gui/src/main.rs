@@ -538,6 +538,8 @@ struct Ui {
     zoom: std::cell::Cell<(f32, f32)>,
     /// The sections' facts as words, from the last look (for their boards).
     section_words: RefCell<std::collections::HashMap<&'static str, Vec<(&'static str, String)>>>,
+    /// The updates' details (when built, its commit) shown.
+    details_open: std::cell::Cell<bool>,
     cable_plug: Vec<gtk::Picture>,
     /// A half's width and the body's height, px.
     duo_size: (f32, f32),
@@ -1327,6 +1329,7 @@ fn build(app: &adw::Application) {
         wallpaper_mix: std::cell::Cell::new(0.0),
         zoom: std::cell::Cell::new((1.0, 1.0)),
         section_words: RefCell::default(),
+        details_open: std::cell::Cell::new(false),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
         fold: std::cell::Cell::new((180.0, 180.0)),
@@ -1681,6 +1684,28 @@ fn build(app: &adw::Application) {
                         // Into the wallpaper or back (the boards closed on the
                         // way).
                         "set:wallpaper" => wallpaper(&ui),
+                        // The updates' details: opened or closed (their lines
+                        // turning up, or gone).
+                        "more:updates" => {
+                            ui.details_open.set(!ui.details_open.get());
+                            let lines = updates_lines(&ui);
+                            if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
+                                let now = std::time::Instant::now();
+                                b.lines.truncate(2.min(lines.len()));
+                                for (i, mut l) in lines.into_iter().enumerate() {
+                                    if i < b.lines.len() {
+                                        if b.lines[i].text != l.text {
+                                            b.set_line(i, l.text);
+                                        }
+                                    } else {
+                                        l.since = Some(now);
+                                        b.lines.push(l);
+                                    }
+                                }
+                            }
+                            show_fold(&ui, ui.fold.get().0);
+                            return;
+                        }
                         _ => return,
                     }
                     trace(format_args!("setting {key} turned"));
@@ -1714,7 +1739,7 @@ fn build(app: &adw::Application) {
                     if let Some(b) = ui.board.borrow_mut().as_mut() {
                         b.chosen = line;
                     }
-                    let lines = table_lines(&rows);
+                    let lines = if key == "updates" { updates_lines(&ui) } else { table_lines(&rows) };
                     trace(format_args!("board: {key} on the table"));
                     *ui.page.borrow_mut() = Some((key, board::Board::open(lines)));
                     return;
@@ -4394,6 +4419,33 @@ fn table_lines(rows: &[(&str, String)]) -> Vec<board::Line> {
         if !cur.is_empty() {
             lines.push(board::Line::new(k.clone(), cur));
         }
+    }
+    lines
+}
+
+/// The updates on the table: item's version on the phone - green and
+/// "(fresh)" if item's tree here has nothing newer, "(3 newer)" if it has
+/// (nothing said if it is not here) - and its details (when built, its
+/// commit) under "› details", opened and closed by a click.
+fn updates_lines(ui: &Ui) -> Vec<board::Line> {
+    let rows = ui.section_words.borrow().get("updates").cloned().unwrap_or_default();
+    let get = |k: &str| rows.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+    let version = get("item").unwrap_or_else(|| "?".to_owned());
+    let newer = get("commit").as_deref().and_then(itemgrid_core::update::newer_than);
+    let tag = match newer {
+        Some(0) => " (fresh)".to_owned(),
+        Some(n) => format!(" ({n} newer)"),
+        None => String::new(),
+    };
+    let mut first = board::Line::new("", format!("item  {version}{tag}"));
+    if newer == Some(0) {
+        first.accent = Some((6, 6 + version.chars().count(), (0.10, 0.60, 0.34)));
+    }
+    let open = ui.details_open.get();
+    let mut lines = vec![first, board::Line::new("more:updates", if open { "⌄ details" } else { "› details" })];
+    if open {
+        let details: Vec<(&str, String)> = ["built", "commit"].into_iter().filter_map(|k| get(k).map(|v| (k, v))).collect();
+        lines.extend(table_lines(&details));
     }
     lines
 }

@@ -59,11 +59,13 @@ pub struct Line {
     pub text: String,
     /// Set again since (its own turning up, the board's others left).
     pub since: Option<Instant>,
+    /// Letters (from, to: their places in it) in a colour of their own.
+    pub accent: Option<(usize, usize, (f64, f64, f64))>,
 }
 
 impl Line {
     pub fn new(key: impl Into<String>, text: impl Into<String>) -> Line {
-        Line { key: key.into(), text: text.into(), since: None }
+        Line { key: key.into(), text: text.into(), since: None, accent: None }
     }
 }
 
@@ -140,10 +142,14 @@ impl Board {
                     continue;
                 }
                 let p = (t - r_after - c as f32 * LETTER_AFTER) / TURN_S;
+                let (cr, cg, cb) = match line.accent {
+                    Some((from, to, colour)) if (from..to).contains(&c) => colour,
+                    _ => (grey, grey, grey * 1.02),
+                };
                 out.push(Tile {
                     at: (origin.0 + c as f32 * side, origin.1 + r as f32 * side),
                     flap: flap(r * 13 + c, ch, p),
-                    rgba: (grey, grey, grey * 1.02, 0.9 * fade as f64),
+                    rgba: (cr, cg, cb, 0.9 * fade as f64),
                 });
             }
         }

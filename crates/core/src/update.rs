@@ -40,6 +40,17 @@ pub fn item_tree() -> Result<PathBuf, String> {
     }
 }
 
+/// How many commits item's tree has past `commit` (the one on the phone):
+/// 0, nothing fresher; none if the tree is not here or does not know it.
+pub fn newer_than(commit: &str) -> Option<usize> {
+    let tree = item_tree().ok()?;
+    let out = Command::new("git").arg("-C").arg(&tree).args(["rev-list", "--count", &format!("{commit}..HEAD")]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 fn cargo() -> PathBuf {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let local = home.join(".cargo/bin/cargo");
