@@ -33,7 +33,6 @@ mod journey;
 mod place;
 mod saver;
 mod scene;
-mod editor;
 mod sections;
 
 const APP_ID: &str = "lab.agentsco.ItemGrid";
@@ -49,7 +48,7 @@ const DUO_SCREEN_X: (f64, f64) = (4.1, 96.146);
 const DUO_SCREEN_TOP: f64 = 14.831;
 // Small enough for the sections under it (#169; was 2.35).
 const DUO_PX_PER_MM: f64 = 2.0;
-/// The eye's middle in the frame (its px, editor::REF): where the
+/// The eye's middle in the frame (its px, scene::REF): where the
 /// 1000×800 window had it (the Duo's room's middle).
 const FRAME_MIDDLE: (f32, f32) = (500.0, 410.0);
 /// Transparent room round each drawn half and its shadow, px: their edges
@@ -518,21 +517,14 @@ struct Ui {
     /// Where the Duo lies on the table's sheet (table px, its middle open
     /// flat), and where that is in its own drawing (for its GL room).
     duo_on_sheet: std::cell::Cell<Option<(f32, f32)>>,
-    /// Where things are laid on the sheet (layout file), whether it is
-    /// being edited (dragged about: F2 or the settings), what is being
-    /// dragged, and the boxes they take now (table px: the words', the
-    /// Duo's open flat) to pick them.
+    /// The frames' layout (scene.rs: each step's places and eye).
     layout: std::cell::Cell<scene::Layout>,
-    layout_edit: std::cell::Cell<bool>,
-    layout_boxes: std::cell::Cell<[[f32; 4]; 6]>,
-    /// The step the frame is at now (scene.rs), and the layout editor
-    /// (editor.rs).
+    /// The step the frame is at now (scene.rs).
     step_now: std::cell::Cell<usize>,
     /// The steps after the start that the app has no way of its own for:
     /// looked for, not found, opened (on Wi-Fi), on the cable - each's way
     /// (0..1, not yet eased) as it goes.
     marks_raw: std::cell::Cell<[f32; 4]>,
-    ed: editor::Editor,
     /// The Duo put away while the menu is open (eased 0 .. 1).
     duo_away: std::cell::Cell<f32>,
     duo_drawn_at: std::cell::Cell<Option<(f32, f32)>>,
@@ -672,12 +664,12 @@ fn build(app: &adw::Application) {
     NIGHT.store(night_due(), std::sync::atomic::Ordering::Relaxed);
     adw::StyleManager::default().set_color_scheme(if night() { adw::ColorScheme::ForceDark } else { adw::ColorScheme::ForceLight });
     let css = gtk::CssProvider::new();
-    css.load_from_string(&format!("{CSS}{}{}{}", card::CSS, sections::CSS, editor::CSS));
+    css.load_from_string(&format!("{CSS}{}{}", card::CSS, sections::CSS));
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         STYLE_CSS.with(|s| gtk::style_context_add_provider_for_display(&display, s, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1));
     }
-    set_style(scene::read_saved().style);
+    set_style(scene::layout().style);
     let window = adw::ApplicationWindow::builder().application(app).title("item/grid").default_width(1000).default_height(800).build();
     if night() {
         window.add_css_class("night");
@@ -1085,10 +1077,6 @@ fn build(app: &adw::Application) {
             static FRAMES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             let t = std::time::Instant::now();
             draw_floor(&fv.borrow(), cr, w, h);
-            draw_outlines(&fv.borrow(), cr);
-            if let Some((window, frame)) = fv.borrow().frame {
-                editor::draw_frame(cr, window, frame, (w as f64, h as f64));
-            }
             if *FRAMES.get_or_init(|| std::env::var_os("ITEMGRID_FRAMES").is_some()) {
                 trace(format_args!("floor drawn in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0));
             }
@@ -1102,11 +1090,6 @@ fn build(app: &adw::Application) {
     home_page.set_child(Some(&floor_gl));
     home_page.add_overlay(&floor);
     home_page.add_overlay(scroll);
-    // The layout editor (F2): its bar over the page's top, its panel at the
-    // right.
-    let ed = editor::build();
-    home_page.add_overlay(&ed.bar);
-    home_page.add_overlay(&ed.panel);
     // Nothing on the way to the page cuts the drawn Duo off: held up and
     // tipped it reaches far past its room (an overlay clipped it there).
     {
@@ -1331,12 +1314,9 @@ fn build(app: &adw::Application) {
         wall_t: std::cell::Cell::new(None),
         wifi_open: std::cell::Cell::new(false),
         duo_on_sheet: std::cell::Cell::new(None),
-        layout: std::cell::Cell::new(scene::read_saved()),
-        layout_edit: std::cell::Cell::new(false),
-        layout_boxes: std::cell::Cell::new([[0.0; 4]; 6]),
+        layout: std::cell::Cell::new(scene::layout()),
         step_now: std::cell::Cell::new(0),
         marks_raw: std::cell::Cell::new([0.0; 4]),
-        ed,
         duo_away: std::cell::Cell::new(0.0),
         duo_drawn_at: std::cell::Cell::new(None),
         shown: view.clone().upcast(),
@@ -1524,12 +1504,6 @@ fn build(app: &adw::Application) {
         page.add_controller(wheel_at);
         wheel.connect_scroll(move |c, _, dy| {
             let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
-            // Layout editing: over the Duo its size, elsewhere the eye's
-            // lens - both kept.
-            if ui.layout_edit.get() {
-                editor::wheel(&ui, pointer.get(), dy);
-                return glib::Propagation::Stop;
-            }
             // The wheel: the eye nearer or further, as a lens (a tenth a
             // notch), eased there.
             if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
@@ -1566,11 +1540,6 @@ fn build(app: &adw::Application) {
                 return;
             }
             f.set((grid_at(), table_under(&ui.floor_view.borrow(), (x, y)), (x, y)));
-            // Layout editing: a part dragged, or the step's eye.
-            if ui.layout_edit.get() && editor::drag_begin(&ui, (x, y)) {
-                grid_drag.set(false);
-                return;
-            }
             // With Ctrl the squares are dragged (for now); else, once it
             // moves, the window is (no header at home).
             grid_drag.set(g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK));
@@ -1578,9 +1547,6 @@ fn build(app: &adw::Application) {
         let (weak, f, pg, gd) = (Rc::downgrade(&ui), from, page.clone(), grid_drag2);
         drag.connect_drag_update(move |g, dx, dy| {
             let Some(ui) = weak.upgrade() else { return };
-            if editor::drag_update(&ui, dx, dy) {
-                return;
-            }
             if !gd.get() {
                 if dx.hypot(dy) > 4.0 {
                     let ((_, _), _, (x, y)) = f.get();
@@ -1612,32 +1578,7 @@ fn build(app: &adw::Application) {
             redraw(&ui);
             say(&ui, format!("Squares moved {:.0}, {:.0} mm", at.0, at.1));
         });
-        drag.connect_drag_end({
-            let weak = Rc::downgrade(&ui);
-            move |_, _, _| {
-                let Some(ui) = weak.upgrade() else { return };
-                editor::drag_end(&ui);
-            }
-        });
         page.add_controller(drag);
-        // F2: the layout edited (or fixed again).
-        let keys = gtk::EventControllerKey::new();
-        keys.connect_key_pressed({
-            let weak = Rc::downgrade(&ui);
-            move |_, key, _, state| {
-                let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
-                if key == gdk::Key::F2 {
-                    editor::set_on(&ui, !ui.layout_edit.get());
-                    return glib::Propagation::Stop;
-                }
-                if ui.layout_edit.get() && editor::key(&ui, key, state) {
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
-            }
-        });
-        ui.window.add_controller(keys);
-        editor::connect(&ui);
         // The table's buttons: raised under the pointer, the hand there.
         let motion = gtk::EventControllerMotion::new();
         let (weak, pg) = (Rc::downgrade(&ui), page.clone());
@@ -1649,11 +1590,6 @@ fn build(app: &adw::Application) {
             // A line of the open board: darker under the pointer.
             let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
             drop(fv);
-            if ui.layout_edit.get() {
-                let on_part = editor::hover(&ui, (x, y));
-                pg.set_cursor_from_name(on_part.then_some("grab"));
-                return;
-            }
             let changed = ui.board.borrow_mut().as_mut().is_some_and(|b| std::mem::replace(&mut b.hover, line) != line);
             if changed {
                 show_fold(&ui, ui.fold.get().0);
@@ -1671,12 +1607,6 @@ fn build(app: &adw::Application) {
         let (win, right, nav) = (ui.window.clone(), right.clone(), nav.clone());
         click.connect_released(move |g, n, x, y| {
             let Some(ui) = weak.upgrade() else { return };
-            // Editing: a part chosen (nothing of the app's).
-            if ui.layout_edit.get() {
-                g.set_state(gtk::EventSequenceState::Claimed);
-                editor::click(&ui, (x, y));
-                return;
-            }
             // The drawn Duo (over Wi-Fi: opened or shut).
             if duo_clicked(&ui, (x, y)) {
                 g.set_state(gtk::EventSequenceState::Claimed);
@@ -1736,7 +1666,6 @@ fn build(app: &adw::Application) {
                         // Into the wallpaper or back (the boards closed on the
                         // way).
                         "set:wallpaper" => wallpaper(&ui),
-                        "set:layout" => editor::set_on(&ui, !ui.layout_edit.get()),
                         _ => return,
                     }
                     trace(format_args!("setting {key} turned"));
@@ -1804,9 +1733,7 @@ fn build(app: &adw::Application) {
                 return;
             }
             let standing = ui.intro.borrow().done() && ui.intro.borrow().duo() < 0.5;
-            // Editing the layout, a click on the table is the editor's (it
-            // looked for the phone, and its note stayed on every step).
-            if n != 1 || !standing || ui.layout_edit.get() {
+            if n != 1 || !standing {
                 return;
             }
             let fv = ui.floor_view.borrow();
@@ -2304,7 +2231,7 @@ fn build(app: &adw::Application) {
                 ui.intro.borrow_mut().begin();
             }
             // Waiting for the phone: the drawn one opens and closes, slowly.
-            if ui.idle.get() && !ui.shut_away.get() && !ui.layout_edit.get() && std::env::var_os("ITEMGRID_FOLD").is_none() {
+            if ui.idle.get() && !ui.shut_away.get() && std::env::var_os("ITEMGRID_FOLD").is_none() {
                 let t = clock.frame_time() as f64 / 1e6;
                 ui.fold.set((ui.fold.get().0, 135.0 + 40.0 * (t * 0.6).sin()));
             }
@@ -2395,20 +2322,16 @@ fn build(app: &adw::Application) {
                     _ => false,
                 };
                 // The menu's step (the Duo away) and a section's (the eye
-                // drawn back) on their way, as the layout has them (the
-                // editor's script sets them itself).
+                // drawn back) on their way, as the layout has them.
                 let timing = ui.layout.get().timing();
-                let scripted = ui.layout_edit.get();
                 let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
                 let (a, a_to) = (ui.duo_away.get(), if menu_open { 1.0 } else { 0.0 });
-                let a_step = if scripted { 0.0 } else { (a_to - a).signum() * (dt.clamp(0.0, 0.1) / timing[scene::MENU].all()).min((a_to - a).abs()) };
+                let a_step = (a_to - a).signum() * (dt.clamp(0.0, 0.1) / timing[scene::MENU].all()).min((a_to - a).abs());
                 if a_step != 0.0 {
                     ui.duo_away.set(a + a_step);
                 }
                 // Looked for, not found, opened, on the cable: as they are.
-                let marked = if scripted {
-                    false
-                } else {
+                let marked = {
                     let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
                     let intro = ui.intro.borrow();
                     let to = [intro.searching(), intro.note().is_some(), wifi && ui.wifi_open.get(), ui.cable.is_visible()];
@@ -2423,7 +2346,7 @@ fn build(app: &adw::Application) {
                     next != now
                 };
                 let (now, to) = (ui.page_back.get(), if open { 1.0 } else { 0.0 });
-                let step = if scripted { 0.0 } else { (to - now).signum() * (dt.clamp(0.0, 0.1) / timing[scene::SECTION].all()).min((to - now).abs()) };
+                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / timing[scene::SECTION].all()).min((to - now).abs());
                 if step != 0.0 {
                     ui.page_back.set(now + step);
                 }
@@ -2458,17 +2381,15 @@ fn build(app: &adw::Application) {
             // to the monitor or comes back.
             let walling = {
                 let (now, to) = (ui.wallpaper_mix.get(), if ui.wallpaper.get().is_some() { 1.0 } else { 0.0 });
-                let step = if ui.layout_edit.get() { 0.0 } else { (to - now).signum() * (dt.clamp(0.0, 0.1) / WALL_S).min((to - now).abs()) };
+                let step = (to - now).signum() * (dt.clamp(0.0, 0.1) / WALL_S).min((to - now).abs());
                 ui.wallpaper_mix.set(now + step);
                 step != 0.0
             };
             let walling = wall_step(&ui, now_us) || walling;
             let pressing = pressing || boarding || paging || saving || zooming || walling;
-            // The start as the layout times it; editing, the editor's script
-            // played on.
+            // The start as the layout times it.
             ui.intro.borrow_mut().timing = ui.layout.get().timing();
-            let scripting = ui.layout_edit.get() && editor::tick(&ui, dt);
-            let far = ui.intro.borrow_mut().step() || resized || pressing || far || scripting;
+            let far = ui.intro.borrow_mut().step() || resized || pressing || far;
             if far {
                 ui.orbit.set(([0, 1].map(|i| orbit[i] + (orbit_to[i] - orbit[i]) * k as f32), orbit_to));
                 let now = shown + (to - shown) * k;
@@ -3317,10 +3238,6 @@ fn say_pose(ui: &Ui) {
 /// across, y toward its top, z out of its screen): pitch, its top raised;
 /// roll, its outer edge raised; eased there.
 fn tilt_to(ui: &Ui, g: [f64; 2 + 1]) {
-    // The editor's frames hold the sample's pose (editor::hold_sample).
-    if ui.layout_edit.get() {
-        return;
-    }
     let pitch = g[1].atan2(g[2]).to_degrees();
     let roll = (-g[0]).atan2((g[1] * g[1] + g[2] * g[2]).sqrt()).to_degrees();
     let (shown, _) = ui.tilt.get();
@@ -3332,9 +3249,6 @@ fn fold_to(ui: &Ui, angle: f64) {
     // ITEMGRID_FOLD=degrees: shown at that angle whatever the phone says (to
     // picture a posture).
     let angle = std::env::var("ITEMGRID_FOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(angle);
-    if ui.layout_edit.get() {
-        return;
-    }
     let (shown, _) = ui.fold.get();
     ui.fold.set((shown, angle.clamp(0.0, 360.0)));
 }
@@ -3459,14 +3373,8 @@ struct FloorView {
     /// The sheet things are laid on (its left, top, right, bottom, table
     /// px), outlined.
     sheet: Option<[f32; 4]>,
-    /// Layout editing: the boxes that can be dragged (outlined).
-    edit_boxes: Option<Vec<([f32; 4], bool)>>,
-    /// The frame's rect on the page (editing: outlined, the rest dimmed).
-    frame: Option<([f32; 4], [f32; 4])>,
     /// The word's and the buttons' strength as the step has them.
     part_alpha: [f32; 6],
-    /// The sheet outlined (the editor's guide while dragging).
-    sheet_drawn: bool,
     grid_mid: (f32, f32),
 }
 
@@ -3638,33 +3546,6 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
             pattern.set_matrix(gtk::cairo::Matrix::new(1.0 / MASK as f64, 0.0, 0.0, 1.0 / MASK as f64, 0.0, 0.0));
             let _ = cr.set_source(&pattern);
             let _ = cr.stroke();
-        }
-    }
-    // The sheet things are laid on, outlined.
-    // Open below: its sides go on down into the field, fading as they go.
-    if let Some([l, t, r, b]) = fv.sheet.filter(|_| fv.sheet_drawn) {
-        // (The editor's guide: as strong at any step.)
-        let strength = 0.28;
-        cr.set_line_width(1.6);
-        if let (Some(a), Some(bb)) = (project(l, t), project(r, t)) {
-            cr.move_to(a.0, a.1);
-            cr.line_to(bb.0, bb.1);
-            ink(cr, strength);
-            let _ = cr.stroke();
-        }
-        // Full as far as the sheet went, then fading over as far again.
-        let (long, n) = ((b - t) * 2.0, 32);
-        for x in [l, r] {
-            for i in 0..n {
-                let (y0, y1) = (t + long * i as f32 / n as f32, t + long * (i + 1) as f32 / n as f32);
-                let fade = (2.0 - 2.0 * ((y0 + y1) / 2.0 - t) / long).clamp(0.0, 1.0) as f64;
-                if let (Some(p0), Some(p1)) = (project(x, y0), project(x, y1)) {
-                    cr.move_to(p0.0, p0.1);
-                    cr.line_to(p1.0, p1.1);
-                    ink(cr, strength * fade);
-                    let _ = cr.stroke();
-                }
-            }
         }
     }
     draw_cubes(fv, cr);
@@ -3854,35 +3735,6 @@ fn inside(q: &[(f64, f64)], p: (f64, f64)) -> bool {
         }
     }
     odd
-}
-
-/// Layout editing: the part chosen (solid) and the one under the pointer
-/// (dashed) outlined - over all else (the cubes standing hid it).
-fn draw_outlines(fv: &FloorView, cr: &gtk::cairo::Context) {
-    use gtk::graphene;
-    let Some(m) = fv.matrix else { return };
-    let project = |x: f32, y: f32| -> Option<(f64, f64)> {
-        let v = m.transform_vec4(&graphene::Vec4::new(x, y, fv.table, 1.0));
-        (v.w() > 0.05).then(|| ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64))
-    };
-    for ([l, t, r, b], chosen) in fv.edit_boxes.iter().flatten().copied() {
-        if let (Some(a), Some(bb), Some(c), Some(d)) = (project(l, t), project(r, t), project(r, b), project(l, b)) {
-            cr.move_to(a.0, a.1);
-            cr.line_to(bb.0, bb.1);
-            cr.line_to(c.0, c.1);
-            cr.line_to(d.0, d.1);
-            cr.close_path();
-            cr.set_line_width(2.0);
-            if chosen {
-                cr.set_source_rgba(0.21, 0.52, 0.89, 0.9);
-            } else {
-                cr.set_dash(&[6.0, 4.0], 0.0);
-                ink(cr, 0.55);
-            }
-            let _ = cr.stroke();
-            cr.set_dash(&[], 0.0);
-        }
-    }
 }
 
 /// The cube under a point of the page, the nearest one drawn over others.
@@ -4501,7 +4353,7 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
 /// The menu's lines: without the phone only item/grid's own (its
 /// settings, about it); with it, the phone's sections, then those.
 fn menu_lines(ui: &Ui) -> Vec<board::Line> {
-    let phone = ui.state.borrow().host.is_some() || ui.layout_edit.get();
+    let phone = ui.state.borrow().host.is_some();
     let mut lines: Vec<board::Line> = if phone {
         NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
     } else {
@@ -4512,50 +4364,6 @@ fn menu_lines(ui: &Ui) -> Vec<board::Line> {
         lines.push(board::Line::new("itemgrid", "about"));
     }
     lines
-}
-
-/// A section's board lines (the editor's section steps; a click on the
-/// menu sets them so): item/grid's own, or the phone's facts in words (none
-/// yet: so said).
-fn section_page(ui: &Ui, key: &str) -> Vec<board::Line> {
-    match key {
-        "settings" => return settings_lines(ui),
-        "itemgrid" => return vec![board::Line::new("", format!("itemgrid  {}", env!("CARGO_PKG_VERSION")))],
-        _ => {}
-    }
-    let rows = ui.section_words.borrow().get(key).cloned().unwrap_or_else(|| vec![("", "no duo yet".to_owned())]);
-    let wide = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
-    rows.iter()
-        .map(|(k, v)| {
-            let k = k.to_lowercase();
-            let v: String = v.chars().take(36).collect();
-            board::Line::new(k.clone(), if k.is_empty() { v } else { format!("{k:wide$}  {v}") })
-        })
-        .collect()
-}
-
-/// The menu's lines with the phone or with none.
-fn menu_lines_for(phone: bool) -> Vec<board::Line> {
-    let mut lines: Vec<board::Line> = if phone {
-        NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
-    } else {
-        Vec::new()
-    };
-    lines.push(board::Line::new("settings", "settings"));
-    if !phone {
-        lines.push(board::Line::new("itemgrid", "about"));
-    }
-    lines
-}
-
-/// The menu and the section on the table closed.
-fn close_boards(ui: &Ui) {
-    if let Some(b) = ui.board.borrow_mut().as_mut() {
-        b.close();
-    }
-    if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
-        p.close();
-    }
 }
 
 /// The settings' board, if open, set to the settings as they are now: its
@@ -4583,7 +4391,7 @@ fn refresh_settings(ui: &Ui) {
 fn duo_clicked(ui: &Ui, p: (f64, f64)) -> bool {
     let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
     let Some(d) = ui.duo_on_sheet.get() else { return false };
-    if !wifi || ui.intro.borrow().duo() <= 0.0 || ui.layout_edit.get() || ui.duo_away.get() > 0.5 {
+    if !wifi || ui.intro.borrow().duo() <= 0.0 || ui.duo_away.get() > 0.5 {
         return false;
     }
     let Some(t) = table_under(&ui.floor_view.borrow(), p) else { return false };
@@ -4621,7 +4429,6 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     let mut lines = vec![
         board::Line::new("set:night", format!("night      {night}")),
         board::Line::new("set:wallpaper", format!("wallpaper  {}", onoff(ui.wallpaper.get().is_some()))),
-        board::Line::new("set:layout", format!("layout     {}", if ui.layout_edit.get() { "edit" } else { "fixed" })),
     ];
     lines.push(board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode()))));
     lines
@@ -4629,10 +4436,6 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
 
 /// Night or day shown as due: the table, the window.
 fn show_night(ui: &Ui) {
-    // (The editor's night shown instead, while it is.)
-    if ui.ed.night_preview().is_some() {
-        return;
-    }
     let on = night_due();
     if on == night() {
         return;
@@ -5356,14 +5159,14 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // view moves so that they stay there. The Duo is in the middle.
         const START_AT: (f32, f32) = (0.25, 0.25);
         let off_page = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
-        // The frame is laid out at its own size (editor::REF) and shown
-        // scaled into its room (the page, or what the editor leaves): all
+        // The frame is laid out at its own size (scene::REF) and shown
+        // scaled into the page: all
         // below in the frame's px (`page`: its size; `off` the Duo's room's
         // corner in them), the eye scaled into the page's at the end.
-        let room_rect = editor::frame_room(ui);
+        let room_rect = [0.0, 0.0, ui.floor.width().max(1) as f32, ui.floor.height().max(1) as f32];
         // As the wallpaper, a screen's frame (16:9).
         let wall_e = ui.layout.get().steps[scene::WALLPAPER].trans.ease.at(ui.wallpaper_mix.get());
-        let frame_size = (editor::REF.0 + (editor::REF_WALL.0 - editor::REF.0) * wall_e, editor::REF.1 + (editor::REF_WALL.1 - editor::REF.1) * wall_e);
+        let frame_size = (scene::REF.0 + (scene::REF_WALL.0 - scene::REF.0) * wall_e, scene::REF.1 + (scene::REF_WALL.1 - scene::REF.1) * wall_e);
         let frame_s = (room_rect[2] / frame_size.0).min(room_rect[3] / frame_size.1).max(0.05);
         let frame_at = (room_rect[0] + (room_rect[2] - frame_size.0 * frame_s) / 2.0, room_rect[1] + (room_rect[3] - frame_size.1 * frame_s) / 2.0);
         let off = ((off_page.0 - frame_at.0) / frame_s, (off_page.1 - frame_at.1) / frame_s);
@@ -5381,7 +5184,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         };
         // The eye's middle: the frame's as the 1000×800 window had it (the
         // Duo's room's middle there).
-        let middle = (FRAME_MIDDLE.0 * page_w / editor::REF.0 - off.0, FRAME_MIDDLE.1 * page_h / editor::REF.1 - off.1);
+        let middle = (FRAME_MIDDLE.0 * page_w / scene::REF.0 - off.0, FRAME_MIDDLE.1 * page_h / scene::REF.1 - off.1);
         if std::env::var_os("ITEMGRID_SHEET").is_some() {
             trace(format_args!("frame: room middle on the page {:?} page {}x{} frame at {frame_at:?} scale {frame_s}", (holder.min(width) / 2.0 + off_page.0, room / 2.0 + off_page.1), ui.floor.width(), ui.floor.height()));
         }
@@ -5451,9 +5254,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         };
         let (step, step_now) = layout.at([intro.grid(), eye, intro.button(0)], marks);
         let (place, shot) = (step.place, step.shot);
-        if ui.step_now.replace(step_now) != step_now && ui.layout_edit.get() {
-            editor::show(ui);
-        }
+        ui.step_now.set(step_now);
         let word_home = cubes_at;
         let cubes_at = (word_home.0 + place.word.0 * square() * k, word_home.1 + place.word.1 * square() * k);
         for (i, v) in [cubes_at.0, cubes_at.1].into_iter().enumerate() {
@@ -5680,10 +5481,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // the perspective all but goes: the cubes go down into the table,
         // letters in its squares again (as the start begins).
         // The steps' eyes, one into the next as the start and what comes
-        // after go on (each as the layout editor kept it).
+        // after go on (each as the layout has it).
         // The step's lens and how far its eye has risen toward straight
-        // above (each the step's own; the wheel's lens, out of the editor,
-        // still raises it as it draws back).
+        // above (each the step's own; the wheel's lens still raises it as
+        // it draws back).
         let lens = (ui.zoom.get().0 * shot.zoom).powf(1.0 - ui.saver_mix.get());
         e.near *= lens;
         let up = ((1.0 - ui.zoom.get().0) / 0.6).clamp(0.0, 1.0);
@@ -5792,18 +5593,6 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         // A section's board beside the menu, two squares apart.
         let page_at = (board_at.0 + (menu_cols + 2) as f32 * cur, board_at.1);
-        // What the layout can drag, as it lies now: (the phone's words, set
-        // with them) the Duo open flat, the word, the buttons, the menu.
-        {
-            let menu_rows = ui.board.borrow().as_ref().map_or(3, |b| b.lines.len()) as f32;
-            let mut b = ui.layout_boxes.get();
-            b[1] = [duo_on_sheet.0 - mid_px, duo_on_sheet.1 - duo_h / 2.0, duo_on_sheet.0 + mid_px, duo_on_sheet.1 + duo_h / 2.0];
-            b[2] = [cubes_at.0 - WORD_HALF * cur, cubes_at.1 - 0.5 * cur, cubes_at.0 + WORD_HALF * cur, cubes_at.1 + 0.5 * cur];
-            b[3] = [buttons_at.0, buttons_at.1, buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur, buttons_at.1 + cur];
-            b[4] = [board_at.0, board_at.1, board_at.0 + menu_cols as f32 * cur, board_at.1 + menu_rows * cur];
-            b[5] = [credit_at.0, credit_at.1, credit_at.0 + intro::CREDIT.chars().count() as f32 * cur, credit_at.1 + cur];
-            ui.layout_boxes.set(b);
-        }
         if let Some((_, b)) = ui.page.borrow().as_ref() {
             tiles.extend(b.tiles(page_at, cur).into_iter().map(|t| board::Tile { rgba: (t.rgba.0, t.rgba.1, t.rgba.2, (t.rgba.3 * part_alpha[4] as f64).min(1.0)), ..t }));
         }
@@ -5812,7 +5601,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // system, its charge, how it is linked (or, on the cable, held), and
         // what is wrong if anything is. Under what is seen of it: shut, its
         // right half.
-        if intro.duo() > 0.0 && (ui.state.borrow().host.is_some() || ui.layout_edit.get()) {
+        if intro.duo() > 0.0 && ui.state.borrow().host.is_some() {
             let low = |s: glib::GString| s.to_lowercase();
             // "Surface Duo · 00001": its club number.
             let name = low(ui.name.label());
@@ -5831,12 +5620,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let link = if wifi { "on wi-fi".to_owned() } else { low(ui.pose.label()).split(" · ").next().unwrap_or("").to_owned() };
             let title = low(ui.status_title.label());
             let wrong = if title.contains("fine") { String::new() } else { title.strip_prefix("your duo is ").or(title.strip_prefix("your duo ")).unwrap_or(&title).to_owned() };
-            let lines: Vec<String> = if ui.layout_edit.get() {
-                // The editor's frames: a sample's (not the phone there is).
-                editor::SAMPLE_PHONE.iter().map(|l| l.to_string()).collect()
-            } else {
-                [name, system, charge, link, wrong].into_iter().filter(|l| !l.is_empty()).collect()
-            };
+            let lines: Vec<String> = [name, system, charge, link, wrong].into_iter().filter(|l| !l.is_empty()).collect();
             // Left of it, a square clear of where its left half lies open
             // flat (opened by a click on Wi-Fi), its top at the phone's.
             let (mid, _) = ui.duo_size;
@@ -5846,9 +5630,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let _ = (mid, wide);
             let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
             let rows = lines.len() as f32;
-            let mut b = ui.layout_boxes.get();
-            b[0] = [x, top, x + wide, top + rows * cur];
-            ui.layout_boxes.set(b);
+            let _ = rows;
             let (head, rest) = lines.split_at(1);
             let strength = (intro.duo() * part_alpha[0]).min(1.0);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
@@ -5870,7 +5652,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         // Away, the clicks go through it to the boards.
         if let Some(holder) = ui.duo.parent() {
-            let target = !ui.layout_edit.get() && away < 0.5;
+            let target = away < 0.5;
             if holder.can_target() != target {
                 holder.set_can_target(target);
             }
@@ -5882,12 +5664,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             l.set_opacity(intro.duo() as f64);
         }
         drop(intro);
-        // Editing: the frame outlined, the table round it dimmed.
-        let frame = ui.layout_edit.get().then_some((room_rect, [frame_at.0, frame_at.1, frame_size.0 * frame_s, frame_size.1 * frame_s]));
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.sheet_drawn != editor::sheet_shown(ui) || fv.edit_boxes != editor::outlines(ui) || fv.frame != frame || fv.part_alpha != part_alpha;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), sheet_drawn: editor::sheet_shown(ui), edit_boxes: editor::outlines(ui), frame, part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
@@ -5964,12 +5744,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
 }
 
 fn fill(ui: &Ui, s: &status::Status, link: &str) {
-    // (Editing, the frames' sample has it.)
-    if !ui.layout_edit.get() {
-        ui.cable.set_visible(link == "cable");
-        for p in &ui.cable_plug {
-            p.set_visible(link == "cable");
-        }
+    ui.cable.set_visible(link == "cable");
+    for p in &ui.cable_plug {
+        p.set_visible(link == "cable");
     }
     // Over Wi-Fi drawn shut, lying on the table, still: it comes to life on
     // the cable.

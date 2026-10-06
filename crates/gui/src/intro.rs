@@ -66,20 +66,9 @@ pub struct Intro {
     tapped: Option<((f32, f32), Instant)>,
     /// How near the eye is to the note (eased toward 1 while it shows).
     near_note: f32,
-    /// Held at these seconds from the start (the layout editor's steps).
-    pub hold: Option<f32>,
-    /// Where the cubes go, whatever the phone says (the editor's steps).
-    pub force_sink: Option<f32>,
     /// The steps' ways in (the layout's).
     pub timing: [Trans; crate::scene::STEPS.len()],
-    /// The editor's: the wave held at these seconds; the note (not found)
-    /// held this strong.
-    pub wave_hold: Option<f32>,
-    pub note_hold: Option<f32>,
 }
-
-/// The note when the phone is not found.
-pub const NOT_FOUND: &str = "plug in usb\nor wi-fi on";
 
 /// The wave goes on at least so long (a look over the cable alone is over
 /// in a moment, and the cubes would only twitch).
@@ -94,7 +83,7 @@ impl Default for Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(30.0));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, hold: None, force_sink: None, timing: TRANS, wave_hold: None, note_hold: None }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, near_note: 0.0, timing: TRANS }
     }
 }
 
@@ -111,9 +100,6 @@ fn smoother(x: f32) -> f32 {
 
 impl Intro {
     fn t(&self) -> f32 {
-        if let Some(t) = self.hold {
-            return t;
-        }
         self.start.map_or(0.0, |s| s.elapsed().as_secs_f32())
     }
 
@@ -123,7 +109,7 @@ impl Intro {
     }
 
     pub fn begun(&self) -> bool {
-        self.start.is_some() || self.hold.is_some()
+        self.start.is_some()
     }
 
     pub fn begin(&mut self) {
@@ -173,10 +159,6 @@ impl Intro {
 
     /// The eye near the note (not found): 0 .. 1.
     pub fn near_note(&self) -> f32 {
-        // (Held by the editor: each step's own eye.)
-        if self.hold.is_some() {
-            return 0.0;
-        }
         smoother(self.near_note)
     }
 
@@ -251,9 +233,6 @@ impl Intro {
     /// The square jumping: its middle and its height now (a part of its
     /// side).
     pub fn tapped(&self) -> Option<((f32, f32), f32)> {
-        if self.hold.is_some() {
-            return None;
-        }
         let (at, when) = self.tapped?;
         let t = when.elapsed().as_secs_f32() / TAP_S;
         (t < 1.0).then(|| (at, 0.6 * (t * std::f32::consts::PI).sin().powf(0.7)))
@@ -275,11 +254,6 @@ impl Intro {
 
     /// The wave still going (looking, or not yet long enough).
     pub fn searching(&self) -> bool {
-        // Held by the editor: only its own wave (the app's looking, its
-        // note, a press are not in its frames).
-        if self.hold.is_some() {
-            return self.wave_hold.is_some();
-        }
         match self.search {
             Some((since, None)) => since.elapsed().as_secs_f32() < 30.0,
             Some((since, Some(_))) => since.elapsed().as_secs_f32() < SEARCH_MIN_S,
@@ -305,13 +279,13 @@ impl Intro {
     /// wave along the word.
     fn hop(&self, i: usize) -> f32 {
         let mut lift = 0.0;
-        if let Some((p, at)) = self.pressed.filter(|_| self.hold.is_none()) {
+        if let Some((p, at)) = self.pressed {
             let t = at.elapsed().as_secs_f32() / PRESS_S;
             if p == i && t < 1.0 {
                 lift -= 0.25 * (t * std::f32::consts::PI).sin();
             }
         }
-        let wave_t = if self.hold.is_some() { self.wave_hold } else { self.search.filter(|_| self.searching()).map(|(since, _)| since.elapsed().as_secs_f32()) };
+        let wave_t = self.search.filter(|_| self.searching()).map(|(since, _)| since.elapsed().as_secs_f32());
         {
             if let Some(t) = wave_t {
                 // Softly in at the start; along the word, a hop a cube.
@@ -325,9 +299,6 @@ impl Intro {
 
     /// The note under the word (not found) and its strength.
     pub fn note(&self) -> Option<(&str, f32)> {
-        if self.hold.is_some() {
-            return self.note_hold.map(|strength| (NOT_FOUND, strength));
-        }
         let (text, at) = self.note.as_ref()?;
         let t = Instant::now().saturating_duration_since(*at).as_secs_f32();
         (Instant::now() >= *at).then_some((text.as_str(), smooth(t / 0.4)))
@@ -361,7 +332,7 @@ impl Intro {
             || self.note.as_ref().is_some_and(|(_, at)| Instant::now().saturating_duration_since(*at).as_secs_f32() < 0.5);
         // Toward the note while it shows (as it comes), away when it goes:
         // a second each way.
-        let sink_to = self.force_sink.unwrap_or(self.sink_to);
+        let sink_to = self.sink_to;
         let to = if self.note().is_some() && sink_to < 0.5 { 1.0 } else { 0.0 };
         let near_moving = (to - self.near_note).abs() > 1e-4;
         if near_moving {

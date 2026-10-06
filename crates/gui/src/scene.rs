@@ -1,15 +1,18 @@
 //! What item/grid's frames are laid out by: its steps from the start on,
 //! each with where its parts lie (in the table's squares) and how the eye
-//! looks at them, and the table's looks for all of them. Laid in the
-//! layout editor (F2, editor.rs); kept in ~/.config/itemgrid/layout (and
-//! the editor's draft beside it, layout.draft).
-//!
-//! The file, a line each (older files - a part's place for all the steps,
-//! `shot` lines - are read too):
+//! looks at them and how it comes on, and the table's looks for all of
+//! them - the layout in data/layout (laid out with the owner, kept in the
+//! app; a line each):
 //!
 //!   paper white | lines black | line-width 1.6 | font lato
-//!   step logo zoom 0.75 pan 0.1 0.1 top 0.36 words 0 15 duo 11 4 ...
-//!   fixed logo agentsco
+//!   step logo zoom 0.75 pan 0.1 0.1 top 0.36 tilt 0 turn 0 delay 0 secs 0.5
+//!       ease smooth words 0 15 duo 11 4 word 0 0 ... [show .. bright ..
+//!       height ..]
+
+/// The frame's own size: laid out at this, shown scaled to the page.
+pub const REF: (f32, f32) = (1000.0, 800.0);
+/// As the wallpaper: a screen's (16:9).
+pub const REF_WALL: (f32, f32) = (1600.0, 900.0);
 
 /// The steps, as the start and what comes after show them: the word alone,
 /// the credit come with the squares, the eye down (the cubes standing), the
@@ -25,14 +28,8 @@ pub const STEPS: [&str; 14] = [
 /// eye from: the one it comes from.
 const PARENT: [usize; STEPS.len()] = [0, 0, 1, 2, 3, 4, 3, 6, 6, 6, 9, 9, 10, 3];
 
-/// The steps in the editor's line of time: the start, the phone looked for
-/// and not found, the menu and a section with none, then the phone found,
-/// opened, on the cable, the menu and a section with it, the wallpaper.
-pub const ORDER: [usize; STEPS.len()] = [0, 1, 2, 3, 4, 5, 11, 12, 6, 7, 8, 9, 10, 13];
-
-/// The parts the editor moves (their index is the part's number
-/// everywhere): the phone's words, the Duo, the word, the buttons, the
-/// menu, the credit.
+/// The parts laid out (their index is the part's number everywhere): the
+/// phone's words, the Duo, the word, the buttons, the menu, the credit.
 pub const PARTS: [&str; 6] = ["phone words", "duo", "logo", "buttons", "menu", "credit"];
 
 /// The table's paper (by day; the night keeps its dark), the lines' ink (by
@@ -86,10 +83,6 @@ pub const FONTS: [(&str, &str); 20] = [
     ("playfair", "Playfair Display"),
     ("merri", "Merriweather"),
 ];
-
-/// The sections a section step can show (the menu's keys; with no phone
-/// only the first two are there).
-pub const SECTIONS: [&str; 10] = ["settings", "itemgrid", "overview", "agent", "look", "battery", "storage", "about", "updates", "repair"];
 
 /// The looks chosen: indices into PAPERS, INKS, WIDTHS, FONTS.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -177,30 +170,6 @@ impl Place {
             height: lerp_all(self.height, to.height, f),
         }
     }
-
-    /// Part `i`'s place (the Duo's: none while it is where it comes by
-    /// itself).
-    pub fn part(&self, i: usize) -> Option<(f32, f32)> {
-        match i {
-            0 => Some(self.words),
-            1 => self.duo,
-            2 => Some(self.word),
-            3 => Some(self.buttons),
-            4 => Some(self.menu),
-            _ => Some(self.credit),
-        }
-    }
-
-    pub fn set_part(&mut self, i: usize, to: (f32, f32)) {
-        match i {
-            0 => self.words = to,
-            1 => self.duo = Some(to),
-            2 => self.word = to,
-            3 => self.buttons = to,
-            4 => self.menu = to,
-            _ => self.credit = to,
-        }
-    }
 }
 
 /// A step's eye: its lens (1 as it comes by itself), how far it is moved
@@ -256,6 +225,7 @@ impl Ease {
         }
     }
 
+    #[cfg(test)]
     pub fn name(self) -> &'static str {
         EASES.iter().find(|e| e.1 == self).map_or("smooth", |e| e.0)
     }
@@ -309,7 +279,6 @@ pub const TRANS: [Trans; STEPS.len()] = [
 ];
 
 /// The steps by name (their index).
-pub const LOGO: usize = 0;
 pub const SEARCH: usize = 4;
 pub const NOT_FOUND: usize = 5;
 pub const PHONE: usize = 6;
@@ -345,31 +314,6 @@ impl Step {
     }
 }
 
-/// The steps one after the other on one line of time (the editor's play,
-/// its scrubber; ORDER).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Script {
-    /// When each step's way begins to be due, and when it is all there.
-    pub due: [f32; STEPS.len()],
-    pub reached: [f32; STEPS.len()],
-    pub end: f32,
-}
-
-/// What the script has at a moment (each step's way: 0..1, its delay and
-/// all, not yet eased): the start's seconds; the wave's seconds and the
-/// note while they show; the steps' ways; the boards open (the menu, a
-/// section; with the phone's lines or with none).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct ScriptAt {
-    pub start_s: f32,
-    pub wave: Option<f32>,
-    pub note: bool,
-    pub raw: Marks,
-    pub menu_open: bool,
-    pub section_open: bool,
-    pub phone_boards: bool,
-}
-
 /// How far each step after the start has come (0..1): its way, not yet
 /// eased (the start's own come from its seconds).
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -384,8 +328,6 @@ pub struct Marks {
     pub wall: f32,
 }
 
-/// Seconds between one event step being there and the next being brought.
-const PAUSE: f32 = 0.8;
 
 /// The steps' weights in a frame (summing to 1).
 #[derive(Clone, Copy, Debug)]
@@ -412,15 +354,11 @@ impl Blend {
 pub struct Layout {
     pub steps: [Step; STEPS.len()],
     pub style: Style,
-    /// The section the editor's section steps open (SECTIONS).
-    pub section: usize,
-    /// The steps fixed (ok pressed on them, nothing changed since).
-    pub fixed: [bool; STEPS.len()],
 }
 
 impl Default for Layout {
     fn default() -> Layout {
-        Layout { steps: std::array::from_fn(|i| Step { trans: TRANS[i], ..Step::default() }), style: Style::default(), section: 0, fixed: [false; STEPS.len()] }
+        Layout { steps: std::array::from_fn(|i| Step { trans: TRANS[i], ..Step::default() }), style: Style::default() }
     }
 }
 
@@ -430,56 +368,6 @@ impl Layout {
         self.steps.map(|s| s.trans)
     }
 
-    /// The steps on one line of time (ORDER).
-    pub fn script(&self) -> Script {
-        let t = self.timing();
-        let mut due = [0.0f32; STEPS.len()];
-        let mut reached = [0.0f32; STEPS.len()];
-        // The start's: each after the one before began.
-        let mut began = 0.0;
-        for i in 0..START_STEPS {
-            began += t[i].delay;
-            due[i] = began;
-            reached[i] = began + t[i].secs;
-        }
-        // Then each brought a little after the one before is there.
-        let mut at = reached[START_STEPS - 1] + PAUSE;
-        for &i in &ORDER[START_STEPS..] {
-            due[i] = at;
-            reached[i] = at + t[i].all();
-            at = reached[i] + PAUSE;
-        }
-        Script { due, reached, end: at }
-    }
-}
-
-impl Script {
-    /// The script at `t` seconds.
-    pub fn at(&self, timing: &[Trans; STEPS.len()], t: f32) -> ScriptAt {
-        let raw = |i: usize| ((t - self.due[i]) / timing[i].all()).clamp(0.0, 1.0);
-        // The boards with no phone close over the pause before the phone
-        // comes; the phone's before the wallpaper.
-        let close_bare = ((t - self.reached[SECTION_BARE]) / PAUSE).clamp(0.0, 1.0);
-        let close_phone = ((t - self.reached[SECTION]) / PAUSE).clamp(0.0, 1.0);
-        let phone_side = t >= self.due[PHONE];
-        let (menu, section) = if phone_side { (raw(MENU) * (1.0 - close_phone), raw(SECTION) * (1.0 - close_phone)) } else { (raw(MENU_BARE) * (1.0 - close_bare), raw(SECTION_BARE) * (1.0 - close_bare)) };
-        let (menu_due, section_due, closing) = if phone_side { (self.due[MENU], self.due[SECTION], close_phone) } else { (self.due[MENU_BARE], self.due[SECTION_BARE], close_bare) };
-        ScriptAt {
-            start_s: t.min(self.reached[START_STEPS - 1] + 0.2),
-            wave: (t >= self.due[SEARCH] && t < self.due[NOT_FOUND]).then(|| t - self.due[SEARCH]),
-            note: t >= self.due[NOT_FOUND] && t < self.due[MENU_BARE],
-            raw: Marks { search: raw(SEARCH), not_found: raw(NOT_FOUND), phone: raw(PHONE), open: raw(PHONE_OPEN), cable: raw(CABLE), menu, section, wall: raw(WALLPAPER) },
-            menu_open: t >= menu_due && closing < 0.5,
-            section_open: t >= section_due && closing < 0.5,
-            phone_boards: phone_side,
-        }
-    }
-
-    /// The step all there at `t` (the last reached in the script's order;
-    /// before the first, it).
-    pub fn step_at(&self, t: f32) -> usize {
-        ORDER.iter().rev().copied().find(|&i| t + 1e-3 >= self.reached[i]).unwrap_or(LOGO)
-    }
 }
 
 impl Layout {
@@ -596,18 +484,10 @@ impl Layout {
                     }
                     steps[i] = Some(s);
                 }
-                Some(&"fixed") => {
-                    for n in &w[1..] {
-                        if let Some(i) = STEPS.iter().position(|s| s.replace(' ', "-") == *n) {
-                            l.fixed[i] = true;
-                        }
-                    }
-                }
                 Some(&"paper") => l.style.paper = named(&PAPERS.map(|p| p.0), &w[1..]).unwrap_or(l.style.paper),
                 Some(&"lines") => l.style.ink = named(&INKS.map(|p| p.0), &w[1..]).unwrap_or(l.style.ink),
                 Some(&"line-width") => l.style.width = num(1).and_then(|v| WIDTHS.iter().position(|w| (*w - v as f64).abs() < 0.01)).unwrap_or(l.style.width),
                 Some(&"font") => l.style.font = named(&FONTS.map(|p| p.0), &w[1..]).unwrap_or(l.style.font),
-                Some(&"section") => l.section = w.get(1).and_then(|n| SECTIONS.iter().position(|s| s == n)).unwrap_or(l.section),
                 _ => {}
             }
         }
@@ -632,9 +512,10 @@ impl Layout {
     }
 
     /// The layout in its file's words.
+    #[cfg(test)]
     pub fn write(&self) -> String {
         let s = self.style;
-        let mut text = format!("paper {}\nlines {}\nline-width {}\nfont {}\nsection {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0, SECTIONS[self.section.min(SECTIONS.len() - 1)]);
+        let mut text = format!("paper {}\nlines {}\nline-width {}\nfont {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0);
         for (i, st) in self.steps.iter().enumerate() {
             let (p, e) = (st.place, st.shot);
             let t = st.trans;
@@ -654,17 +535,7 @@ impl Layout {
             }
             text.push_str(&format!(" word {} {} buttons {} {} menu {} {} credit {} {} duo-scale {:.3}\n", p.word.0, p.word.1, p.buttons.0, p.buttons.1, p.menu.0, p.menu.1, p.credit.0, p.credit.1, p.duo_scale));
         }
-        let fixed: Vec<String> = (0..STEPS.len()).filter(|&i| self.fixed[i]).map(|i| STEPS[i].replace(' ', "-")).collect();
-        if !fixed.is_empty() {
-            text.push_str(&format!("fixed {}\n", fixed.join(" ")));
-        }
         text
-    }
-
-    /// Whether `other` lays the frames out the same (the fixed marks
-    /// aside).
-    pub fn same(&self, other: &Layout) -> bool {
-        self.steps == other.steps && self.style == other.style && self.section == other.section
     }
 }
 
@@ -674,32 +545,9 @@ fn named(names: &[&str], w: &[&str]) -> Option<usize> {
     names.iter().position(|n| *n == name)
 }
 
-fn dir() -> std::path::PathBuf {
-    gtk::glib::user_config_dir().join("itemgrid")
-}
-
-/// The layout kept, else the default.
-pub fn read_saved() -> Layout {
-    Layout::read(&std::fs::read_to_string(dir().join("layout")).unwrap_or_default())
-}
-
-pub fn save(l: &Layout) {
-    let _ = std::fs::create_dir_all(dir());
-    let _ = std::fs::write(dir().join("layout"), l.write());
-}
-
-/// The editor's draft (what it shows, not yet kept with ok), if any.
-pub fn read_draft() -> Option<Layout> {
-    std::fs::read_to_string(dir().join("layout.draft")).ok().map(|t| Layout::read(&t))
-}
-
-pub fn save_draft(l: &Layout) {
-    let _ = std::fs::create_dir_all(dir());
-    let _ = std::fs::write(dir().join("layout.draft"), l.write());
-}
-
-pub fn drop_draft() {
-    let _ = std::fs::remove_file(dir().join("layout.draft"));
+/// The layout laid out with the owner (data/layout).
+pub fn layout() -> Layout {
+    Layout::read(include_str!("../data/layout"))
 }
 
 #[cfg(test)]
@@ -708,7 +556,7 @@ mod tests {
 
     #[test]
     fn an_older_file_is_read_for_every_step() {
-        let l = Layout::read("words 0 15\nduo 11 4\nmenu 0 1\nzoom 0.751\npaper lilac\nfont open sans\nfixed logo\n");
+        let l = Layout::read("words 0 15\nduo 11 4\nmenu 0 1\nzoom 0.751\npaper lilac\nfont open sans\n");
         for s in &l.steps {
             assert_eq!(s.place.words, (0.0, 15.0));
             assert_eq!(s.place.duo, Some((11.0, 4.0)));
@@ -718,7 +566,6 @@ mod tests {
         }
         assert_eq!(PAPERS[l.style.paper].0, "lilac");
         assert_eq!(FONTS[l.style.font].0, "open sans");
-        assert!(l.fixed[0] && !l.fixed[1]);
         // The new steps from the ones they come from.
         assert_eq!(l.steps[PHONE_OPEN].place.duo, Some((11.0, 4.0)));
         assert_eq!(l.steps[PHONE_OPEN].trans, TRANS[PHONE_OPEN]);
@@ -732,29 +579,18 @@ mod tests {
         l.steps[4].shot = Shot { zoom: 0.8, pan: (1.5, -2.25), top: 0.2, tilt: -5.0, turn: 12.5 };
         l.steps[7].place.show[3] = 0.0;
         l.steps[7].place.height[3] = 0.5;
-        l.fixed[13] = true;
         l.style.font = 18;
         l.steps[3].trans = Trans { delay: 2.0, secs: 0.75, ease: Ease::Out };
-        l.fixed[4] = true;
         let back = Layout::read(&l.write());
         assert_eq!(back, l);
     }
 
     #[test]
-    fn the_script_keeps_the_start_as_it_was() {
-        let l = Layout::default();
-        let s = l.script();
-        // The eye down at 1.9 .. 3.6 s, the buttons from 3.6 s.
-        assert!((s.due[2] - 1.9).abs() < 1e-4 && (s.reached[2] - 3.6).abs() < 1e-4);
-        assert!((s.due[3] - 3.6).abs() < 1e-4);
-        assert_eq!(s.step_at(0.0), 0);
-        assert_eq!(s.step_at(s.reached[MENU]), MENU);
-        let at = s.at(&l.timing(), s.reached[PHONE]);
-        assert!(at.raw.phone > 0.999 && !at.menu_open && at.phone_boards);
-        let bare = s.at(&l.timing(), s.reached[MENU_BARE]);
-        assert!(bare.menu_open && !bare.phone_boards && bare.raw.phone == 0.0);
-        // The Duo seen in the last moment of its way, as before.
-        assert!(l.steps[PHONE].trans.eased(0.8) == 0.0 && l.steps[PHONE].trans.eased(1.0) == 1.0);
+    fn the_layout_kept_in_the_app_is_read() {
+        let l = layout();
+        assert_eq!(FONTS[l.style.font].0, "open sans");
+        assert_eq!(l.steps[PHONE].place.duo, Some((11.0, 4.0)));
+        assert_eq!(Layout::read(&l.write()), l);
     }
 
     #[test]
@@ -770,3 +606,4 @@ mod tests {
         assert_eq!(now, MENU_BARE);
     }
 }
+
