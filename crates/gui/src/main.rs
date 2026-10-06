@@ -2075,7 +2075,9 @@ fn build(app: &adw::Application) {
                 return;
             }
             let standing = ui.intro.borrow().done() && ui.intro.borrow().duo() < 0.5;
-            if n != 1 || !standing {
+            // Editing the layout, a click on the table is the editor's (it
+            // looked for the phone, and its note stayed on every step).
+            if n != 1 || !standing || ui.layout_edit.get() {
                 return;
             }
             let fv = ui.floor_view.borrow();
@@ -4964,6 +4966,7 @@ fn preview_step(ui: &Ui, i: Option<usize>) {
     ui.preview.set(i);
     {
         let mut intro = ui.intro.borrow_mut();
+        intro.clear_note();
         match i {
             Some(i) => {
                 intro.hold = Some(intro::Intro::STEP_S[i.min(3)]);
