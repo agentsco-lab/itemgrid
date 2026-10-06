@@ -44,6 +44,7 @@ fn main() {
         Some("reboot") => cmd_reboot(),
         Some("backup") => cmd_backup(&args[1..]),
         Some("backups") => cmd_backups(),
+        Some("android-plan") => cmd_android_plan(),
         Some("slots") => cmd_slots(),
         Some("confirm") => cmd_confirm(&args[1..]),
         Some("ramboot") => cmd_ramboot(&args[1..]),
@@ -879,4 +880,30 @@ fn usage() {
     println!("  restore      a slot's boot chain from a backup: [BACKUP] --slot a|b (shows the plan; --yes;");
     println!("               --rewrite writes the same bytes, to try the writing on the spare slot)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/itemgrid-shots/ by default; --hinge keeps its strip)");
+}
+
+/// What a clean return to Android would do on the phone in Linux now -
+/// reading only: the build in super, what would be written to its slot,
+/// what stops it.
+fn cmd_android_plan() -> i32 {
+    let host = itemgrid_core::phone::hosts().into_iter().next().unwrap_or_default();
+    match itemgrid_core::android::clean_plan(&host) {
+        Ok(p) => {
+            if let Some(b) = &p.build {
+                println!("android  {} on slot {}", b.fingerprint, b.slot);
+            }
+            println!("battery  {:?}", p.battery);
+            for part in &p.chain {
+                println!("write    {} <- {} ({} bytes, {})", part.name, part.file.display(), part.size, &part.sha256[..16]);
+            }
+            for s in &p.stops {
+                println!("STOP     {s}");
+            }
+            if p.stops.is_empty() { 0 } else { 1 }
+        }
+        Err(e) => {
+            eprintln!("itemgrid android-plan: {e}");
+            1
+        }
+    }
 }
