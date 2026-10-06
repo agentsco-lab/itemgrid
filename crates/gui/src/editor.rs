@@ -78,6 +78,9 @@ pub struct Editor {
     /// The cable as the app had it before editing (the frames have their
     /// own).
     cable_was: Cell<Option<bool>>,
+    /// The window the frame is seen in (its size), night or day.
+    window: gtk::DropDown,
+    night: gtk::ToggleButton,
     /// The step shown (held there; none: as it goes), the part chosen and
     /// the one under the pointer.
     pub preview: Cell<Option<usize>>,
@@ -118,6 +121,17 @@ fn heading(text: &str) -> gtk::Label {
     gtk::Label::builder().label(text).xalign(0.0).css_classes(["heading"]).margin_top(10).build()
 }
 
+/// The windows the frame can be seen in: this one, small, as it opens,
+/// large, a screen (the wallpaper's).
+const WINDOWS: [(&str, (f32, f32)); 5] = [("this window", (0.0, 0.0)), ("800×600", (800.0, 600.0)), ("1000×800", (1000.0, 800.0)), ("1600×1000", (1600.0, 1000.0)), ("1920×1080", (1920.0, 1080.0))];
+
+impl Editor {
+    /// Night (or day) as the editor shows it, if it does.
+    pub fn night_preview(&self) -> Option<bool> {
+        self.bar.is_visible().then(|| self.night.is_active())
+    }
+}
+
 /// The editor's bar and panel (hidden until F2).
 pub fn build() -> Editor {
     // Two rows: the steps and the keeping; the line of time.
@@ -154,6 +168,12 @@ pub fn build() -> Editor {
     time_row.append(&play);
     time_row.append(&scrub);
     time_row.append(&speed);
+    let window = gtk::DropDown::from_strings(&WINDOWS.map(|w| w.0));
+    window.set_valign(gtk::Align::Center);
+    window.set_tooltip_text(Some("The window the frame is seen in: as large as it fits, more table round it"));
+    let night = gtk::ToggleButton::builder().icon_name("weather-clear-night-symbolic").css_classes(["flat"]).valign(gtk::Align::Center).tooltip_text("Seen by night (the night setting not changed)").build();
+    time_row.append(&window);
+    time_row.append(&night);
     for w in [undo_button.upcast_ref::<gtk::Widget>(), redo_button.upcast_ref(), state.upcast_ref(), cancel.upcast_ref(), ok.upcast_ref()] {
         time_row.append(w);
     }
@@ -283,6 +303,8 @@ pub fn build() -> Editor {
         height,
         looks,
         cable_was: Cell::new(None),
+        window,
+        night,
         preview: Cell::new(None),
         t: Cell::new(0.0),
         playing: Cell::new(false),
@@ -325,6 +347,18 @@ pub fn connect(ui: &std::rc::Rc<Ui>) {
     ed.play.connect_clicked(move |_| {
         if let Some(ui) = w.upgrade() {
             play_pause(&ui);
+        }
+    });
+    let w = weak(ui);
+    ed.window.connect_selected_notify(move |_| {
+        if let Some(ui) = w.upgrade() {
+            show_fold(&ui, ui.fold.get().0);
+        }
+    });
+    let w = weak(ui);
+    ed.night.connect_toggled(move |b| {
+        if let Some(ui) = w.upgrade() {
+            super::set_night_now(&ui, b.is_active());
         }
     });
     let w = weak(ui);
@@ -508,6 +542,7 @@ pub fn set_on(ui: &std::rc::Rc<Ui>, on: bool) {
     ed.hover.set(None);
     trace(format_args!("layout: {}", if on { "editing" } else { "fixed" }));
     if on {
+        ed.night.set_active(super::night());
         if ed.cable_was.get().is_none() {
             ed.cable_was.set(Some(ui.cable.is_visible()));
         }
@@ -525,6 +560,8 @@ pub fn set_on(ui: &std::rc::Rc<Ui>, on: bool) {
         if let Some(c) = ed.cable_was.take() {
             set_cable(ui, c);
         }
+        // Night as the setting has it.
+        super::set_night_now(ui, super::night_due());
         close_boards(ui);
         show_fold(ui, ui.fold.get().0);
     }
@@ -546,7 +583,15 @@ pub fn frame_room(ui: &Ui) -> [f32; 4] {
         // Left of the panel as it is laid (its words make it wider than
         // asked).
         let panel_left = ui.ed.panel.compute_point(&ui.floor, &gtk::graphene::Point::new(0.0, 0.0)).map_or(w - PANEL_W, |p| p.x()).min(w - PANEL_W);
-        [ROOM, BAR_H + ROOM, (panel_left - 2.0 * ROOM).max(100.0), (h - BAR_H - 2.0 * ROOM).max(80.0)]
+        let room = [ROOM, BAR_H + ROOM, (panel_left - 2.0 * ROOM).max(100.0), (h - BAR_H - 2.0 * ROOM).max(80.0)];
+        // The window chosen (this one: the page as it is), as large as it
+        // fits there.
+        let (ww, wh) = match WINDOWS[(ui.ed.window.selected() as usize).min(WINDOWS.len() - 1)].1 {
+            (0.0, _) => (w, h),
+            size => size,
+        };
+        let s = (room[2] / ww).min(room[3] / wh);
+        [room[0] + (room[2] - ww * s) / 2.0, room[1] + (room[3] - wh * s) / 2.0, ww * s, wh * s]
     } else {
         [0.0, 0.0, w, h]
     }
@@ -1050,18 +1095,34 @@ fn step_by(ui: &Ui, by: i32) -> bool {
 
 /// Over the frame's room, outside the frame: the table dimmed, the frame
 /// outlined (editing only; `frame` the floor's px).
-pub fn draw_frame(cr: &gtk::cairo::Context, frame: [f32; 4], size: (f64, f64)) {
-    let [x, y, w, h] = frame.map(|v| v as f64);
+pub fn draw_frame(cr: &gtk::cairo::Context, window: [f32; 4], frame: [f32; 4], size: (f64, f64)) {
+    let [x, y, w, h] = window.map(|v| v as f64);
     cr.save().ok();
     cr.set_fill_rule(gtk::cairo::FillRule::EvenOdd);
     cr.rectangle(0.0, 0.0, size.0, size.1);
     cr.rectangle(x, y, w, h);
-    cr.set_source_rgba(0.5, 0.5, 0.52, 0.18);
+    // (By night the dimming darker, the lines light.)
+    let night = super::night();
+    let ink = if night { 1.0 } else { 0.0 };
+    if night {
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.3);
+    } else {
+        cr.set_source_rgba(0.5, 0.5, 0.52, 0.18);
+    }
     let _ = cr.fill();
     cr.rectangle(x - 0.5, y - 0.5, w + 1.0, h + 1.0);
     cr.set_line_width(1.0);
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
+    cr.set_source_rgba(ink, ink, ink, 0.35);
     let _ = cr.stroke();
+    // The frame laid out (1000×800) inside the window, if the window is
+    // another shape: dotted.
+    let [fx, fy, fw, fh] = frame.map(|v| v as f64);
+    if (fw - w).abs() > 1.0 || (fh - h).abs() > 1.0 {
+        cr.rectangle(fx + 0.5, fy + 0.5, fw - 1.0, fh - 1.0);
+        cr.set_dash(&[2.0, 4.0], 0.0);
+        cr.set_source_rgba(ink, ink, ink, 0.3);
+        let _ = cr.stroke();
+    }
     cr.restore().ok();
 }
 

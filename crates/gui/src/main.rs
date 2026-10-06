@@ -1086,8 +1086,8 @@ fn build(app: &adw::Application) {
             let t = std::time::Instant::now();
             draw_floor(&fv.borrow(), cr, w, h);
             draw_outlines(&fv.borrow(), cr);
-            if let Some(frame) = fv.borrow().frame {
-                editor::draw_frame(cr, frame, (w as f64, h as f64));
+            if let Some((window, frame)) = fv.borrow().frame {
+                editor::draw_frame(cr, window, frame, (w as f64, h as f64));
             }
             if *FRAMES.get_or_init(|| std::env::var_os("ITEMGRID_FRAMES").is_some()) {
                 trace(format_args!("floor drawn in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0));
@@ -3462,7 +3462,7 @@ struct FloorView {
     /// Layout editing: the boxes that can be dragged (outlined).
     edit_boxes: Option<Vec<([f32; 4], bool)>>,
     /// The frame's rect on the page (editing: outlined, the rest dimmed).
-    frame: Option<[f32; 4]>,
+    frame: Option<([f32; 4], [f32; 4])>,
     /// The word's and the buttons' strength as the step has them.
     part_alpha: [f32; 6],
     /// The sheet outlined (the editor's guide while dragging).
@@ -4629,10 +4629,19 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
 
 /// Night or day shown as due: the table, the window.
 fn show_night(ui: &Ui) {
+    // (The editor's night shown instead, while it is.)
+    if ui.ed.night_preview().is_some() {
+        return;
+    }
     let on = night_due();
     if on == night() {
         return;
     }
+    set_night_now(ui, on);
+}
+
+/// Night (or day) shown now: the window's colours, the table's.
+fn set_night_now(ui: &Ui, on: bool) {
     NIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
     if on {
         ui.window.add_css_class("night");
@@ -5874,7 +5883,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         drop(intro);
         // Editing: the frame outlined, the table round it dimmed.
-        let frame = ui.layout_edit.get().then_some([frame_at.0, frame_at.1, frame_size.0 * frame_s, frame_size.1 * frame_s]);
+        let frame = ui.layout_edit.get().then_some((room_rect, [frame_at.0, frame_at.1, frame_size.0 * frame_s, frame_size.1 * frame_s]));
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.sheet_drawn != editor::sheet_shown(ui) || fv.edit_boxes != editor::outlines(ui) || fv.frame != frame || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
