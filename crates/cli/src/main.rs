@@ -594,23 +594,6 @@ fn cmd_recovery_exit() -> i32 {
 fn cmd_club(args: &[String]) -> i32 {
     use itemgrid_core::club;
     match args.first().map(String::as_str) {
-        Some("token") => {
-            println!("Paste the registry token from {} (Settings -> Device registry), then Enter:", club::server());
-            let mut line = String::new();
-            if std::io::stdin().read_line(&mut line).is_err() {
-                return 2;
-            }
-            match club::set_token(&line) {
-                Ok(()) => {
-                    println!("Kept in the keyring.");
-                    0
-                }
-                Err(e) => {
-                    eprintln!("itemgrid: {e}");
-                    1
-                }
-            }
-        }
         Some("forget") => match club::forget_token() {
             Ok(()) => {
                 println!("The token is gone from the keyring.");
@@ -623,7 +606,7 @@ fn cmd_club(args: &[String]) -> i32 {
         },
         _ => {
             println!("The club: {}", club::server());
-            println!("Token: {}", if club::token().is_some() { "in the keyring" } else { "none - itemgrid club token" });
+            println!("Numbers are claimed quietly, by the serial's hash (no token).");
             0
         }
     }

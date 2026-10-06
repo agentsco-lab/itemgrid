@@ -445,6 +445,8 @@ struct Ui {
     name: gtk::Label,
     join: gtk::Button,
     serial: RefCell<String>,
+    /// Serials whose club number was asked for this run (once each).
+    claimed: RefCell<Vec<String>>,
     name_sub: gtk::Label,
     battery: gtk::Label,
     software: gtk::Label,
@@ -1291,6 +1293,7 @@ fn build(app: &adw::Application) {
         name,
         join: join.clone(),
         serial: RefCell::default(),
+        claimed: RefCell::default(),
         name_sub,
         battery,
         software,
@@ -2091,7 +2094,11 @@ fn build(app: &adw::Application) {
     });
     join.connect_clicked({
         let ui = ui.clone();
-        move |_| join_club(&ui)
+        move |_| {
+            let serial = ui.serial.borrow().clone();
+            ui.claimed.borrow_mut().retain(|s| *s != serial);
+            claim_quietly(&ui, &serial, ui.state.borrow().host.clone());
+        }
     });
     restore.connect_clicked({
         let ui = ui.clone();
@@ -2777,6 +2784,12 @@ fn show_now(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status
         st.place = place.clone();
     }
     let Place::Linux(host) = &place else {
+        // Seen by its serial (Android, bootloader, recovery): its number
+        // asked for quietly too.
+        if let Some(serial) = place.serial() {
+            *ui.serial.borrow_mut() = serial.to_owned();
+            claim_quietly(ui, serial, None);
+        }
         away_from_linux(ui, &place, guest);
         return;
     };
@@ -6355,7 +6368,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
     }
 }
 
-fn fill(ui: &Ui, s: &status::Status, link: &str) {
+fn fill(ui: &Rc<Ui>, s: &status::Status, link: &str) {
     // Running Droidian: its swirl on the drawn Duo's back (for the logo).
     let droidian = s.os.to_lowercase().contains("droidian");
     if ui.scene3d.borrow().sticker != droidian {
@@ -6399,15 +6412,14 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
     // The club's number, if this computer knows it.
     *ui.serial.borrow_mut() = s.serial.clone();
     match itemgrid_core::club::known(&s.serial) {
-        Some(d) => {
-            ui.name.set_label(&format!("Surface Duo · {}", d.number));
-            ui.join.set_visible(false);
-        }
-        None => {
-            ui.name.set_label("Surface Duo");
-            ui.join.set_visible(!s.serial.is_empty());
-        }
+        Some(d) => ui.name.set_label(&format!("Surface Duo · {}", d.number)),
+        None => ui.name.set_label("Surface Duo"),
     }
+    ui.join.set_visible(false);
+    // Its number: asked for quietly if not known yet, written onto it if
+    // not there.
+    let host = ui.state.borrow().host.clone();
+    claim_quietly(ui, &s.serial, host);
     let problems: Vec<String> = s.warnings().into_iter().chain(s.failed.iter().map(|u| format!("{u} failed"))).collect();
     let dev = developer_mode();
     ui.banner.set_title(&problems.join(" · "));
@@ -6988,45 +7000,35 @@ fn choose_ram_image(ui: &Rc<Ui>) {
     });
 }
 
-/// This Duo into the club: the token asked for first if the keyring has none.
-fn join_club(ui: &Rc<Ui>) {
-    if itemgrid_core::club::token().is_some() {
-        register_now(ui);
+/// The phone's club number, quietly (once a run per serial): claimed if
+/// this computer does not know it, and written onto the phone (on Linux)
+/// if it is not there. Nothing said if it cannot be had now: next run.
+fn claim_quietly(ui: &Rc<Ui>, serial: &str, host: Option<String>) {
+    if serial.is_empty() || ui.claimed.borrow().iter().any(|s| s == serial) {
         return;
     }
-    let entry = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("creg_…").build();
-    let dialog = adw::AlertDialog::new(
-        Some("Join the owners' club"),
-        Some(&format!("Paste a registry token from {} (Settings → Device registry). item/grid keeps it in your keyring; the phone's serial number never leaves this computer.", itemgrid_core::club::server())),
-    );
-    dialog.set_extra_child(Some(&entry));
-    dialog.add_responses(&[("cancel", "Cancel"), ("go", "Join")]);
-    dialog.set_response_appearance("go", adw::ResponseAppearance::Suggested);
-    dialog.set_default_response(Some("go"));
-    let ui2 = ui.clone();
-    dialog.connect_response(None, move |_, response| {
-        if response != "go" {
-            return;
-        }
-        match itemgrid_core::club::set_token(&entry.text()) {
-            Ok(()) => register_now(&ui2),
-            Err(e) => stopped(&ui2, &e),
-        }
-    });
-    dialog.present(Some(&ui.window));
-}
-
-fn register_now(ui: &Rc<Ui>) {
-    let Some(host) = ui.state.borrow().host.clone() else { return };
-    let ui = ui.clone();
+    ui.claimed.borrow_mut().push(serial.to_owned());
+    let (ui, serial) = (ui.clone(), serial.to_owned());
     glib::spawn_future_local(async move {
-        match gio::spawn_blocking(move || itemgrid_core::club::register(&host)).await.unwrap_or_else(|_| Err("the work stopped".into())) {
-            Ok(d) => {
-                ui.name.set_label(&format!("Surface Duo · {}", d.number));
-                ui.join.set_visible(false);
-                ui.toasts.add_toast(adw::Toast::new(&format!("This Duo is {} in the club", d.number)));
+        let s = serial.clone();
+        let got = gio::spawn_blocking(move || {
+            let d = itemgrid_core::club::claim(&s)?;
+            if let Some(h) = host {
+                let _ = itemgrid_core::club::put_on_phone(&h, &d);
             }
-            Err(e) => stopped(&ui, &e),
+            Ok::<_, String>(d)
+        })
+        .await
+        .unwrap_or_else(|_| Err("the work stopped".into()));
+        match got {
+            Ok(d) => {
+                trace(format_args!("club: {}", d.number));
+                if *ui.serial.borrow() == serial {
+                    ui.name.set_label(&format!("Surface Duo · {}", d.number));
+                }
+                show_fold(&ui, ui.fold.get().0);
+            }
+            Err(e) => trace(format_args!("club: not now ({e})")),
         }
     });
 }

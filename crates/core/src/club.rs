@@ -2,9 +2,10 @@
 //! AC-191). Each Duo gets a number there, in order (00001, 00002, ...),
 //! written onto the phone (/etc/item/device-id) and shown by item/grid.
 //!
-//! - The token: a personal registry token made on the site (Settings ->
-//!   Device registry), kept in the desktop's keyring (Secret Service), never
-//!   in a file.
+//! - Quiet: no account and no token - the number is claimed by the
+//!   serial's hash when item/grid first sees the phone (`claim`). A token
+//!   kept in the keyring from before is used only with a club that has no
+//!   quiet way yet.
 //! - The serial number never leaves this computer: what is sent is
 //!   sha256("cradle-device:" + serial), and the server keeps only its own
 //!   keyed hash of that.
@@ -110,37 +111,62 @@ fn remember(serial: &str, device: &Device) {
     }
 }
 
-/// Registers the phone at `host` in the club - or finds its number if it is
-/// there already - and writes the number onto the phone.
-pub fn register(host: &str) -> Result<Device, String> {
-    let token = token().ok_or("no registry token yet: make one on the site (Settings -> Device registry) and give it to item/grid")?;
-    let serial = crate::backup::serial(host)?;
-    let st = crate::status::read(host)?;
-    let body = serde_json::json!({
-        "serial_hash": serial_hash(&serial),
-        "model": "surfaceduo",
-        "info": {"item": st.item, "port": st.port, "os": st.os},
-    });
-    let resp = ureq::post(&format!("{}/api/registry/devices", server()))
-        .header("Authorization", &format!("Bearer {token}"))
-        .config()
-        .http_status_as_error(false)
-        .build()
-        .send_json(&body)
-        .map_err(|e| format!("the club: {e}"))?;
-    let status = resp.status().as_u16();
-    let mut resp = resp;
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
+/// The phone's number in the club, asked for quietly - no account, no
+/// token: the serial's hash sent, the number the club keeps for it given
+/// back (the next free one the first time - 00001, 00002, ... - and the same
+/// one for good after). Known here already, nothing is sent.
+///
+/// The club's side (POST /api/registry/claim, docs/REGISTRY.md): one number
+/// per hash, never given again; new hashes limited per address.
+pub fn claim(serial: &str) -> Result<Device, String> {
+    if serial.trim().is_empty() {
+        return Err("no serial".into());
+    }
+    if let Some(d) = known(serial) {
+        return Ok(d);
+    }
+    let body = serde_json::json!({"serial_hash": serial_hash(serial), "model": "surfaceduo"});
+    let (status, text) = post(&format!("{}/api/registry/claim", server()), &body, None)?;
+    // A club without the quiet way yet: the old one, with a token kept from
+    // before (the owner's).
+    let (status, text) = match (status, token()) {
+        (404 | 405, Some(t)) => post(&format!("{}/api/registry/devices", server()), &body, Some(&t))?,
+        other => (other.0, text),
+    };
     match status {
         200 | 201 => {}
-        401 => return Err("the club refused the token (revoked, or not this site's)".into()),
-        409 => return Err("this Duo is registered to someone else".into()),
+        429 => return Err("the club: too many new phones from here just now".into()),
+        409 => return Err("the club: this Duo's number is held elsewhere".into()),
         s => return Err(format!("the club answered {s}: {}", text.trim())),
     }
     let device: Device = serde_json::from_str(&text).map_err(|e| format!("the club's answer: {e}"))?;
-    remember(&serial, &device);
-    // The phone knows its number too.
-    crate::phone::run(host, &format!("mkdir -p /etc/item && printf '%s\\n' {} > /etc/item/device-id\n", crate::logs::quote(&device.number)))?;
+    remember(serial, &device);
+    Ok(device)
+}
+
+fn post(url: &str, body: &serde_json::Value, token: Option<&str>) -> Result<(u16, String), String> {
+    let mut req = ureq::post(url);
+    if let Some(t) = token {
+        req = req.header("Authorization", &format!("Bearer {t}"));
+    }
+    let mut resp = req.config().http_status_as_error(false).timeout_global(Some(std::time::Duration::from_secs(15))).build().send_json(body).map_err(|e| format!("the club: {e}"))?;
+    Ok((resp.status().as_u16(), resp.body_mut().read_to_string().unwrap_or_default()))
+}
+
+/// The number written onto the phone at `host` (/etc/item/device-id), if it
+/// is not there yet.
+pub fn put_on_phone(host: &str, device: &Device) -> Result<(), String> {
+    if on_phone(host).as_deref() == Some(device.number.as_str()) {
+        return Ok(());
+    }
+    crate::phone::run(host, &format!("mkdir -p /etc/item && printf '%s\\n' {} > /etc/item/device-id\n", crate::logs::quote(&device.number))).map(|_| ())
+}
+
+/// The phone at `host`: its number claimed and written onto it.
+pub fn register(host: &str) -> Result<Device, String> {
+    let serial = crate::backup::serial(host)?;
+    let device = claim(&serial)?;
+    put_on_phone(host, &device)?;
     Ok(device)
 }
 
