@@ -2730,6 +2730,14 @@ fn shots_dir() -> std::path::PathBuf {
 
 /// Looks at the phone again, off the main thread, and shows what it found.
 fn look(ui: &Rc<Ui>) {
+    // A job on the phone: it is not asked anything meanwhile (a bootloader
+    // spoken to by two at once hangs) - the job says where it is.
+    {
+        let st = ui.state.borrow();
+        if st.busy || st.job.as_ref().is_some_and(|j| j.ended.is_none()) {
+            return;
+        }
+    }
     let ui = ui.clone();
     ui.looking.set(true);
     glib::spawn_future_local(async move {
@@ -6185,6 +6193,13 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                         lines.extend(wrapped(stages[at].title));
                         let left = (journey::left(&stages, at, 0.0) / 60.0).ceil();
                         lines.push(if left <= 1.0 { "a minute left".to_owned() } else { format!("{left} min left") });
+                    }
+                    // What the hands do meanwhile: nothing - unless the
+                    // phone asks (its bootloader's unlock, by its keys).
+                    if jlines.last().is_some_and(|l| l.starts_with("unlocking")) {
+                        lines.extend(wrapped("on the phone: unlock, with the volume keys, then power"));
+                    } else {
+                        lines.push("hands off the phone".to_owned());
                     }
                 }
                 Some(None) => lines.push("done".to_owned()),

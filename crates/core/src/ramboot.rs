@@ -132,6 +132,8 @@ pub(crate) fn fastboot(args: &[&str], limit: Duration) -> Result<String, String>
         }
         if start.elapsed() > limit {
             let _ = child.kill();
+            // Reaped (no zombie left behind).
+            let _ = child.wait();
             return Err(format!("fastboot {} took longer than {} s", args.join(" "), limit.as_secs()));
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -140,7 +142,24 @@ pub(crate) fn fastboot(args: &[&str], limit: Duration) -> Result<String, String>
 
 /// `fastboot getvar all`, read (step 4).
 pub fn probe() -> Result<Fastboot, String> {
-    let all = fastboot(&["getvar", "all"], Duration::from_secs(20))?;
+    // Just come up, the bootloader may not answer yet (its USB settling):
+    // a moment, then asked again a few times - never a second command on
+    // top of one it did not answer (it hangs then till restarted).
+    std::thread::sleep(Duration::from_secs(3));
+    let mut all = String::new();
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        all = fastboot(&["getvar", "all"], Duration::from_secs(30))?;
+        if all.contains("(bootloader) serialno:") && all.contains("(bootloader) product:") {
+            break;
+        }
+    }
+    if !all.contains("(bootloader) serialno:") {
+        let said = all.lines().map(str::trim).filter(|l| !l.is_empty()).take(2).collect::<Vec<_>>().join(" / ");
+        return Err(format!("the bootloader did not answer (fastboot: {said})"));
+    }
     let var = |name: &str| {
         all.lines()
             .find_map(|l| l.trim().strip_prefix("(bootloader) ").and_then(|r| r.strip_prefix(name)).and_then(|r| r.strip_prefix(':')))
@@ -258,6 +277,8 @@ fn adb(args: &[&str], limit: Duration) -> Result<String, String> {
         }
         if start.elapsed() > limit {
             let _ = child.kill();
+            // Reaped (no zombie left behind).
+            let _ = child.wait();
             return Err(format!("adb {} took longer than {} s", args.join(" "), limit.as_secs()));
         }
         std::thread::sleep(Duration::from_millis(100));
