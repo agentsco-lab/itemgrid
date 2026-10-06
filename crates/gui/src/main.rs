@@ -4561,17 +4561,13 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
     Some(match &st.place {
         Place::Android(_) if guest => vec!["android".into(), "started by item/grid".into()],
         Place::Android(_) => vec!["android".into(), "on the cable".into()],
-        Place::Quiet(_) => vec!["android".into(), "not reached".into()],
+        Place::Quiet(_) => vec!["android".into(), "turn on".into(), "usb debugging".into()],
         Place::Fastboot(_) => vec!["bootloader".into()],
         Place::Recovery(_) => vec!["recovery".into()],
         Place::NoSystem => vec!["no system".into(), "install item again".into()],
         _ => return None,
     })
 }
-
-/// Android without USB debugging: how to let item/grid reach it - under
-/// the phone (the menu closed).
-const DEBUGGING_STEPS: [&str; 5] = ["turn on usb debugging", "tap build number 7 times", "developer options", "› usb debugging on", "then allow on the phone"];
 
 /// The way back to the phone's stock Android ("stock" on the menu) - on
 /// the cable only (off it, said so, not to be clicked).
@@ -6189,18 +6185,6 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
                 texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
             }
-        }
-        // Android without USB debugging: the way, in the words' column
-        // under the phone (a square clear of it: nothing over it or its
-        // words).
-        let quiet = matches!(ui.state.borrow().place, Place::Quiet(_));
-        if quiet && job_lines.is_none() && intro.duo() > 0.0 && ui.board.borrow().as_ref().is_none_or(|b| b.closing()) {
-            let row = (duo_corner.1 + duo_h / cur).ceil() + 1.0;
-            let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + row * cur);
-            let strength = (intro.duo() * part_alpha[0]).min(1.0);
-            let (head, rest) = DEBUGGING_STEPS.split_at(1);
-            texts.push(TableText { at: (x, top), cell: cur, lines: head.iter().map(|l| l.to_string()).collect(), grey: 0.16, bold: false, set: 1.0, strength });
-            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.iter().map(|l| l.to_string()).collect(), grey: 0.45, bold: false, set: 1.0, strength });
         }
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
