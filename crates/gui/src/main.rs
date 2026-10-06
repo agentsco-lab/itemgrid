@@ -454,6 +454,10 @@ struct Ui {
     /// Over Wi-Fi (not followed, drawn shut): opened by a click on it, shut
     /// by another - a picture of opening, nothing asked of the phone.
     wifi_open: std::cell::Cell<bool>,
+    /// Where the Duo lies on the table's sheet (table px, its middle open
+    /// flat), and where that is in its own drawing (for its GL room).
+    duo_on_sheet: std::cell::Cell<Option<(f32, f32)>>,
+    duo_drawn_at: std::cell::Cell<Option<(f32, f32)>>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
     shown: gtk::Widget,
@@ -1237,6 +1241,8 @@ fn build(app: &adw::Application) {
         wall_move: std::cell::Cell::new(None),
         wall_t: std::cell::Cell::new(None),
         wifi_open: std::cell::Cell::new(false),
+        duo_on_sheet: std::cell::Cell::new(None),
+        duo_drawn_at: std::cell::Cell::new(None),
         shown: view.clone().upcast(),
         stage: stage.clone(),
         wallpaper_mix: std::cell::Cell::new(0.0),
@@ -1518,6 +1524,11 @@ fn build(app: &adw::Application) {
         let (win, right, nav) = (ui.window.clone(), right.clone(), nav.clone());
         click.connect_released(move |g, n, x, y| {
             let Some(ui) = weak.upgrade() else { return };
+            // The drawn Duo (over Wi-Fi: opened or shut).
+            if duo_clicked(&ui, (x, y)) {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                return;
+            }
             // A button of the table's.
             let pressed = button_at(&ui.floor_view.borrow(), (x, y));
             if let Some(i) = pressed {
@@ -2096,17 +2107,15 @@ fn build(app: &adw::Application) {
             ui.fold.set((a + 0.1, b));
         }
     });
-    // Over Wi-Fi a click opens the drawn Duo flat, another shuts it (a drag
-    // is no click).
+    // Over Wi-Fi a click on the drawn Duo opens it flat, another shuts it
+    // (a drag is no click; the room round it is no Duo).
     turn_back.connect_released({
         let ui = Rc::downgrade(&ui);
-        move |_, n, _, _| {
+        move |g, n, x, y| {
             let Some(ui) = ui.upgrade() else { return };
-            let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
-            if n == 1 && wifi {
-                let open = !ui.wifi_open.get();
-                ui.wifi_open.set(open);
-                fold_to(&ui, if open { 180.0 } else { 0.0 });
+            let on_floor = g.widget().and_then(|w| w.compute_point(&ui.floor, &gtk::graphene::Point::new(x as f32, y as f32)));
+            if n == 1 && on_floor.is_some_and(|p| duo_clicked(&ui, (p.x() as f64, p.y() as f64))) {
+                g.set_state(gtk::EventSequenceState::Claimed);
             }
         }
     });
@@ -3266,6 +3275,9 @@ struct FloorView {
     /// How far the squares are drawn (px) round where the eye looks:
     /// further on a larger page and as the eye draws back.
     reach: f32,
+    /// The sheet things are laid on (its left, top, right, bottom, table
+    /// px), outlined.
+    sheet: Option<[f32; 4]>,
     grid_mid: (f32, f32),
 }
 
@@ -3435,6 +3447,20 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
             pattern.set_filter(gtk::cairo::Filter::Bilinear);
             pattern.set_matrix(gtk::cairo::Matrix::new(1.0 / MASK as f64, 0.0, 0.0, 1.0 / MASK as f64, 0.0, 0.0));
             let _ = cr.set_source(&pattern);
+            let _ = cr.stroke();
+        }
+    }
+    // The sheet things are laid on, outlined.
+    if let Some([l, t, r, b]) = fv.sheet {
+        let corner = |x: f32, y: f32| project(x, y);
+        if let (Some(a), Some(bb), Some(c), Some(d)) = (corner(l, t), corner(r, t), corner(r, b), corner(l, b)) {
+            cr.move_to(a.0, a.1);
+            cr.line_to(bb.0, bb.1);
+            cr.line_to(c.0, c.1);
+            cr.line_to(d.0, d.1);
+            cr.close_path();
+            cr.set_line_width(1.6);
+            ink(cr, 0.28 * fv.grid.min(1.0) as f64);
             let _ = cr.stroke();
         }
     }
@@ -4240,6 +4266,26 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
     }
 }
 
+/// A click at `p` on the page (the floor's px): on the drawn Duo over Wi-Fi,
+/// it is opened flat or shut (a picture only); whether it was on it.
+fn duo_clicked(ui: &Ui, p: (f64, f64)) -> bool {
+    let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
+    let Some(d) = ui.duo_on_sheet.get() else { return false };
+    if !wifi || ui.intro.borrow().duo() <= 0.0 {
+        return false;
+    }
+    let Some(t) = table_under(&ui.floor_view.borrow(), p) else { return false };
+    let (mid, h) = ui.duo_size;
+    let left = if ui.wifi_open.get() { d.0 - mid } else { d.0 };
+    let on = (left..=d.0 + mid).contains(&t.0) && (d.1 - h / 2.0..=d.1 + h / 2.0).contains(&t.1);
+    if on {
+        let open = !ui.wifi_open.get();
+        ui.wifi_open.set(open);
+        fold_to(ui, if open { 180.0 } else { 0.0 });
+    }
+    on
+}
+
 /// The saver off: the window back where it was.
 fn saver_off(ui: &Ui) {
     if ui.saver.take().is_none() {
@@ -4775,27 +4821,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
     let quad = graphene::Rect::new(0.0, 0.0, mid + 2.0 * DUO_PAD, h + 2.0 * DUO_PAD);
     let holder = ui.duo.parent().map_or(width, |p| p.width().max(1) as f32);
     let first = (holder.min(width) / 2.0, room / 2.0);
-    // Centred: not the phone as it is now (opening, it moved the whole view)
-    // but the place it has - open flat, and left of it its words on the
-    // table (show_fold's texts: a square clear of it, some 13 across) - as
-    // the table sees it, the hand's tilt aside.
-    let _ = quad;
-    let [yaw, more] = ui.orbit.get().0;
-    let stand = gsk::Transform::new()
-        .translate(&graphene::Point::new(first.0, first.1))
-        .perspective(3.2 * h)
-        .rotate_3d((TILT + more).clamp(5.0, 85.0), &graphene::Vec3::x_axis())
-        .rotate_3d(yaw, &graphene::Vec3::z_axis())
-        .translate(&graphene::Point::new(-mid, -h / 2.0));
-    let words = 14.0 * square() * DUO_PX_PER_MM as f32;
-    let b = stand.transform_bounds(&graphene::Rect::new(-words, 0.0, 2.0 * mid + words, h));
-    // The eye drawn back for that place to fit the page (the table's rest,
-    // below), about the phone: its offset from the place's middle as near.
-    let shown = ui.intro.borrow().duo();
-    let fit = 1.0 + ((ui.floor.width() as f32 * 0.86 / b.width().max(1.0)).min(1.0) - 1.0) * shown;
-    // Its middle at the page's (the room is not: the window's sidebar).
-    let page_mid = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map_or(width / 2.0, |o| ui.floor.width() as f32 / 2.0 - o.x());
-    let at = (page_mid + (first.0 - (b.x() + b.width() / 2.0)) * fit, first.1 + room / 2.0 - (b.y() + b.height() / 2.0));
+    // Where it is drawn in its own view: where the table's sheet has it (as
+    // the frame before saw it - the table's eye turns it there exactly,
+    // `duo_fix`; this only keeps it in its GL room), else the room's middle.
+    let _ = (quad, room);
+    let at = ui.duo_drawn_at.get().unwrap_or(first);
     let duo_at = at;
     let mut depth = [0.0f32; 2];
     for (i, half) in ui.halves.iter().enumerate() {
@@ -4992,7 +5022,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         const START_AT: (f32, f32) = (0.25, 0.25);
         let off = ui.duo.compute_point(&ui.floor, &graphene::Point::new(0.0, 0.0)).map(|p| (p.x(), p.y())).unwrap_or((0.0, 0.0));
         let intro = ui.intro.borrow();
-        let (seen, eye) = (intro.duo(), intro.eye());
+        let eye = intro.eye();
         // As the wallpaper the eye nearly straight above (the word and the
         // buttons laid for that view).
         let w_mix = ui.wallpaper_mix.get();
@@ -5006,8 +5036,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // Where the eye at rest is on the page (the room's middle before the
         // Duo is seen, the Duo's place after), and how near: the word's place
         // as that eye shows it.
-        let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
-        let want = ((ui.floor.width() as f32 * START_AT.0 - off.0 - middle_seen.0) / fit, (ui.floor.height() as f32 * START_AT.1 - off.1 - middle_seen.1) / fit);
+        // The sheet: the eye at rest on the room's middle, the word in the
+        // page's upper left - fixed once there, whatever comes on the table
+        // after (the Duo, its words): they are laid on it.
+        let middle_seen = middle;
+        let want = (ui.floor.width() as f32 * START_AT.0 - off.0 - middle.0, ui.floor.height() as f32 * START_AT.1 - off.1 - middle.1);
         // The table's point shown there (Newton's way, a few steps).
         let down = looking(1.0);
         let mut p = want;
@@ -5028,11 +5061,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // a square at a time as the page's size changed).
         let moved = grid_at();
         let cubes_at = (p.0 + moved.0 * k, p.1 + moved.1 * k);
-        // The Duo seen, the word's left edge in the column of its words
-        // (thirteen squares left of where the phone lies open: show_fold's
-        // texts), going there as it comes.
-        let column = -ui.duo_size.0 - 13.0 * square() * k;
-        let cubes_at = (cubes_at.0 + (column + WORD_HALF * square() * k - cubes_at.0) * seen, cubes_at.1);
+
         // On the card's way into the wallpaper the buttons (kept to whole
         // squares, counted from the page's right) go along smoothly, kept
         // to them only at its first and last quarter.
@@ -5088,9 +5117,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let v = m.transform_vec4(&graphene::Vec4::new(p.0, p.1, -DUO_THICK, 1.0));
             (v.x() / v.w(), v.y() / v.w())
         };
-        // The Duo seen, a little farther back: its words under it on the
-        // table too.
-        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: tilt_rest, near: fit, far: 3.2 };
+        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: tilt_rest, near: 1.0, far: 3.2 };
         // Where the word is once the eye is down (its cubes in the
         // table's squares, a little off the page's point): kept there all
         // the way, so that nothing moves as the eye stops.
@@ -5221,6 +5248,37 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let end = squared(on_squares(k, (x, cubes_at.1 - 0.5 * cur)), (x, cubes_at.1 - 0.5 * cur));
             (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
+        // The sheet: from the word's left edge to the buttons' right, from
+        // the word's row down to near the page's bottom (in whole squares).
+        // What comes after is laid on it: the Duo right of its words, its
+        // top two rows under the word's; its words at its left, in the
+        // word's column.
+        let sheet = {
+            let top = cubes_at.1 - 0.5 * cur;
+            let (left, right) = (cubes_at.0 - WORD_HALF * cur, buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur);
+            // The table's row at the page's bottom (Newton's way, down the
+            // sheet's middle).
+            let want_y = ui.floor.height() as f32 * 0.9 - off.1;
+            let mut y = top + 4.0 * cur;
+            for _ in 0..12 {
+                let f = on_page(&rest_m, ((left + right) / 2.0, y)).1 - want_y;
+                let d = on_page(&rest_m, ((left + right) / 2.0, y + 1.0)).1 - on_page(&rest_m, ((left + right) / 2.0, y)).1;
+                if d.abs() < 1e-4 {
+                    break;
+                }
+                y -= f / d;
+            }
+            let bottom = top + ((y - top) / cur).floor().max(4.0) * cur;
+            [left, top, right, bottom]
+        };
+        let (mid_px, duo_h) = ui.duo_size;
+        // In the middle of what is left of the sheet right of its words'
+        // column (twelve letters and a square clear), open flat.
+        let duo_on_sheet = ((sheet[0] + 13.0 * cur + sheet[2]) / 2.0, sheet[1] + 2.0 * cur + duo_h / 2.0);
+        ui.duo_on_sheet.set(Some(duo_on_sheet));
+        if std::env::var_os("ITEMGRID_SHEET").is_some() {
+            trace(format_args!("sheet {sheet:?} duo {duo_on_sheet:?} mid {mid_px} h {duo_h} cur {cur} word {cubes_at:?} buttons {buttons_at:?} off {off:?} D on page {:?} origin on page {:?} duo_at {duo_at:?}", on_page(&rest_m, duo_on_sheet), on_page(&rest_m, (0.0, 0.0))));
+        }
         if (ui.wall_t.get().is_some() || w_mix > 0.0) && std::env::var_os("ITEMGRID_FRAMES").is_some() {
             trace(format_args!(
                 "wall laid: t {:?} mix {w_mix:.3} kept {kept:.2} floor {}x{} off {off:?} word {cubes_at:?} buttons {buttons_at:?} on page {:?}",
@@ -5265,7 +5323,15 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // seen from `at`) into this eye's.
         let duo_rest = gsk::Transform::new().translate(&graphene::Point::new(duo_at.0, duo_at.1)).perspective(3.2 * h).rotate_3d(TILT, &graphene::Vec3::x_axis()).to_matrix();
         if let Some(inv) = duo_rest.inverse() {
-            duo_fix.set(Some(gsk::Transform::new().matrix(&rest).matrix(&inv).to_matrix()));
+            duo_fix.set(Some(gsk::Transform::new().matrix(&rest).translate_3d(&graphene::Point3D::new(duo_on_sheet.0, duo_on_sheet.1, 0.0)).matrix(&inv).to_matrix()));
+        }
+        // Where that is in the Duo's own drawing, for the next frame (its GL
+        // room follows it).
+        {
+            let v = rest.transform_vec4(&graphene::Vec4::new(duo_on_sheet.0, duo_on_sheet.1, -DUO_THICK, 1.0));
+            if v.w() > 0.05 {
+                ui.duo_drawn_at.set(Some((v.x() / v.w(), v.y() / v.w())));
+            }
         }
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
@@ -5337,7 +5403,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // Its left edge in the word's column (the i of item: the word is
             // put there, above), its top at the phone's.
             let _ = (mid, wide);
-            let (x, top) = (cubes_at.0 - WORD_HALF * cur, on_squares(k, (0.0, -h / 2.0)).1);
+            let (x, top) = (sheet[0], sheet[1] + 2.0 * cur);
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
@@ -5356,9 +5422,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet);
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some((hole, depth)), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] + duo_on_sheet.0, hole[1] + duo_on_sheet.1, hole[2] + duo_on_sheet.0, hole[3] + duo_on_sheet.1], depth)), sheet: Some(sheet), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
