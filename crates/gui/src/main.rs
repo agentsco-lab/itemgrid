@@ -4559,9 +4559,9 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
 fn repair_lines(ui: &Ui) -> Vec<board::Line> {
     let cable = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable);
     if cable {
-        vec![board::Line::new("do:android", "› back to android")]
+        vec![board::Line::new("do:android", "› android")]
     } else {
-        vec![board::Line::new("", "back to android"), board::Line::new("", "plug in the cable")]
+        vec![board::Line::new("", "android"), board::Line::new("", "plug in the cable")]
     }
 }
 
