@@ -6236,6 +6236,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // put away.
         let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
         let wanted = act_wanted && !menu_open && ui.asking.borrow().is_none();
+        if wanted != ui.act.borrow().as_ref().is_some_and(|b| !b.closing()) {
+            trace(format_args!("act: wanted {wanted} (stock {act_wanted}, menu {menu_open}, asking {}) at {act_at:?}", ui.asking.borrow().is_some()));
+        }
         {
             let mut a = ui.act.borrow_mut();
             match (a.as_mut(), wanted) {
