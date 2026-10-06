@@ -4554,14 +4554,14 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
     })
 }
 
-/// What can be done about the phone (repair): reinstalled, or back to
-/// Android - both on the cable only (off it, said so, not to be clicked).
+/// The way back to the phone's stock Android ("stock" on the menu) - on
+/// the cable only (off it, said so, not to be clicked).
 fn repair_lines(ui: &Ui) -> Vec<board::Line> {
     let cable = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable);
     if cable {
-        vec![board::Line::new("do:reinstall", "› reinstall"), board::Line::new("do:android", "› android")]
+        vec![board::Line::new("do:android", "› back to android")]
     } else {
-        vec![board::Line::new("", "reinstall"), board::Line::new("", "android"), board::Line::new("", "plug in the cable")]
+        vec![board::Line::new("", "back to android"), board::Line::new("", "plug in the cable")]
     }
 }
 
@@ -4832,7 +4832,8 @@ fn menu_lines(ui: &Ui) -> Vec<board::Line> {
         return vec![board::Line::new("do:install", "install item"), board::Line::new("settings", "settings"), board::Line::new("itemgrid", "about")];
     }
     let mut lines: Vec<board::Line> = if phone {
-        NAV.iter().filter(|(key, ..)| !MENU_LATER.contains(key) && (*key != "developer" || developer_mode())).map(|(key, ..)| board::Line::new(*key, *key)).collect()
+        // (repair shown as "stock": the way back to the phone's Android.)
+        NAV.iter().filter(|(key, ..)| !MENU_LATER.contains(key) && (*key != "developer" || developer_mode())).map(|(key, ..)| board::Line::new(*key, if *key == "repair" { "stock" } else { *key })).collect()
     } else {
         Vec::new()
     };
