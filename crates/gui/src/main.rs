@@ -4352,10 +4352,14 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
 
 /// The menu's lines: without the phone only item/grid's own (its
 /// settings, about it); with it, the phone's sections, then those.
+/// The phone's sections not on the menu for now (the owner, 2026-10-06:
+/// not needed yet).
+const MENU_LATER: [&str; 6] = ["overview", "agent", "look", "battery", "storage", "about"];
+
 fn menu_lines(ui: &Ui) -> Vec<board::Line> {
     let phone = ui.state.borrow().host.is_some();
     let mut lines: Vec<board::Line> = if phone {
-        NAV.iter().filter(|(key, ..)| *key != "developer" || developer_mode()).map(|(key, ..)| board::Line::new(*key, *key)).collect()
+        NAV.iter().filter(|(key, ..)| !MENU_LATER.contains(key) && (*key != "developer" || developer_mode())).map(|(key, ..)| board::Line::new(*key, *key)).collect()
     } else {
         Vec::new()
     };
