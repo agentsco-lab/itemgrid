@@ -2046,17 +2046,17 @@ fn build(app: &adw::Application) {
                 let st = ui.state.borrow();
                 (st.busy, st.elsewhere)
             };
-            // Over Wi-Fi a look costs the phone's radio: every 10 s with the
-            // window in front, every 30 s behind it.
+            // Over Wi-Fi a look costs the phone's radio, and only its state
+            // is shown there: every 30 s.
             let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
-            let every = if !wifi { 1 } else if ui.window.is_active() { 2 } else { 6 };
+            let every = if !wifi { 1 } else { 6 };
             if !busy && !elsewhere && !ui.resting.get() && ticks % every == 0 {
                 look(&ui);
                 live_sync(&ui);
                 // Without the live view (an item without a mirror), a picture
                 // now and then.
                 let front = ui.window.is_active() && ui.tabs.visible_child_name().as_deref() == Some("general");
-                if front && ui.live.borrow().is_none() && ticks % SCREENS_EVERY == 0 {
+                if front && !wifi && ui.live.borrow().is_none() && ticks % SCREENS_EVERY == 0 {
                     take_screens(&ui, false);
                 }
             }
@@ -2583,10 +2583,17 @@ fn show(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status::St
         None => {}
     }
     bottom_shown(ui);
-    // The screens and the storage, once each time the phone comes.
+    // The screens and the storage, once each time the phone comes (the
+    // screens on the cable only: over Wi-Fi it is drawn shut).
     if was.is_none() || !ui.state.borrow().pictured {
         ui.state.borrow_mut().pictured = true;
-        take_screens(ui, false);
+        if cable {
+            take_screens(ui, false);
+        } else {
+            for s in &ui.screens {
+                s.set_paintable(gdk::Paintable::NONE);
+            }
+        }
         count_storage(ui);
         show_backups(ui);
         show_slots(ui);
@@ -2857,10 +2864,11 @@ fn follow_hinge(ui: &Rc<Ui>) {
         let st = ui.state.borrow();
         st.host.clone().filter(|_| !st.busy && !st.elsewhere)
     };
-    // Shut off the cable it goes to sleep: not followed again (started, it
-    // opened the sensors just as the phone went down) until a look sees it
-    // open (fill).
-    let want = want.filter(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable || ui.lid_shut_at.get().is_none());
+    // Followed on the cable only: over Wi-Fi the Duo is drawn shut and still
+    // (following there kept its sensors, its radio and its sleep busy - the
+    // battery, the sensors hung asleep, slow back from sleep); the cable
+    // brings it to life.
+    let want = want.filter(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable);
     // Nothing done at the computer for a while: let go (on the cable the
     // phone may sleep again; on Wi-Fi its radio saves again).
     let want = want.filter(|_| !ui.resting.get());
@@ -3077,7 +3085,10 @@ fn say_pose(ui: &Ui) {
         _ if (200.0..340.0).contains(&angle) => "Tent",
         _ => "Partly open",
     };
+    let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
     let line = match (words, held) {
+        // Over Wi-Fi not followed: drawn shut (fill).
+        _ if wifi => "On Wi-Fi · plug in the cable to see it move".to_owned(),
         ("", _) => String::new(),
         (w, true) => format!("{w} · in your hand"),
         (w, false) => w.to_owned(),
@@ -5298,16 +5309,33 @@ fn fill(ui: &Ui, s: &status::Status, link: &str) {
     for p in &ui.cable_plug {
         p.set_visible(link == "cable");
     }
-    // Seen open by a look after it was shut (followed again: follow_hinge).
-    if s.hinge.is_some_and(|a| a > 20.0) && ui.lid_shut_at.get().is_some() {
-        ui.lid_shut_at.set(None);
-        ui.shut_away.set(false);
-        if ui.pose_name.borrow().as_str() == "closed" {
-            ui.pose_name.borrow_mut().clear();
+    // Over Wi-Fi drawn shut, lying on the table, still: it comes to life on
+    // the cable.
+    if link != "cable" {
+        ui.shut_away.set(true);
+        ui.orient.set((ui.orient.get().0, ui.orient.get().1, false));
+        ui.motion_on.set(false);
+        fold_to(ui, 0.0);
+        tilt_to(ui, [0.0, 0.0, 1.0]);
+        ui.pose_name.borrow_mut().clear();
+        ui.pose.set_label("On Wi-Fi · plug in the cable to see it move");
+    } else {
+        // Seen open by a look after it was shut (followed again:
+        // follow_hinge).
+        if s.hinge.is_some_and(|a| a > 20.0) && ui.lid_shut_at.get().is_some() {
+            ui.lid_shut_at.set(None);
+            ui.shut_away.set(false);
+            if ui.pose_name.borrow().as_str() == "closed" {
+                ui.pose_name.borrow_mut().clear();
+            }
         }
-    }
-    if let Some(a) = s.hinge {
-        fold_to(ui, if ui.pose_name.borrow().as_str() == "closed" { 0.0 } else { a });
+        if ui.shut_away.get() && ui.lid_shut_at.get().is_none() {
+            // Come on the cable from Wi-Fi (drawn shut there): itself again.
+            ui.shut_away.set(false);
+        }
+        if let Some(a) = s.hinge {
+            fold_to(ui, if ui.pose_name.borrow().as_str() == "closed" { 0.0 } else { a });
+        }
     }
     // The club's number, if this computer knows it.
     *ui.serial.borrow_mut() = s.serial.clone();
