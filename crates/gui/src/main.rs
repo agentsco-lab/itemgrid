@@ -457,6 +457,14 @@ struct Ui {
     /// Where the Duo lies on the table's sheet (table px, its middle open
     /// flat), and where that is in its own drawing (for its GL room).
     duo_on_sheet: std::cell::Cell<Option<(f32, f32)>>,
+    /// Where things are laid on the sheet (layout file), whether it is
+    /// being edited (dragged about: F2 or the settings), what is being
+    /// dragged, and the boxes they take now (table px: the words', the
+    /// Duo's open flat) to pick them.
+    layout: std::cell::Cell<Layout>,
+    layout_edit: std::cell::Cell<bool>,
+    layout_drag: std::cell::Cell<Option<(usize, (f32, f32), (f32, f32))>>,
+    layout_boxes: std::cell::Cell<[[f32; 4]; 2]>,
     duo_drawn_at: std::cell::Cell<Option<(f32, f32)>>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
@@ -1242,6 +1250,10 @@ fn build(app: &adw::Application) {
         wall_t: std::cell::Cell::new(None),
         wifi_open: std::cell::Cell::new(false),
         duo_on_sheet: std::cell::Cell::new(None),
+        layout: std::cell::Cell::new(read_layout()),
+        layout_edit: std::cell::Cell::new(false),
+        layout_drag: std::cell::Cell::new(None),
+        layout_boxes: std::cell::Cell::new([[0.0; 4]; 2]),
         duo_drawn_at: std::cell::Cell::new(None),
         shown: view.clone().upcast(),
         stage: stage.clone(),
@@ -1457,6 +1469,30 @@ fn build(app: &adw::Application) {
                 return;
             }
             f.set((grid_at(), table_under(&ui.floor_view.borrow(), (x, y)), (x, y)));
+            // Layout editing: the words or the Duo under the pointer dragged
+            // about the sheet (the Duo first: it is over its room).
+            let under = table_under(&ui.floor_view.borrow(), (x, y));
+            if ui.layout_edit.get() {
+                if let Some(t) = under {
+                    let boxes = ui.layout_boxes.get();
+                    let inside = |b: [f32; 4]| (b[0]..=b[2]).contains(&t.0) && (b[1]..=b[3]).contains(&t.1);
+                    let l = ui.layout.get();
+                    let picked = if inside(boxes[1]) {
+                        let cur = square() * DUO_PX_PER_MM as f32;
+                        let sheet = ui.floor_view.borrow().sheet.unwrap_or([0.0; 4]);
+                        Some((1, l.duo.unwrap_or(((boxes[1][0] - sheet[0]) / cur, (boxes[1][1] - sheet[1]) / cur)), t))
+                    } else if inside(boxes[0]) {
+                        Some((0, l.words, t))
+                    } else {
+                        None
+                    };
+                    if picked.is_some() {
+                        ui.layout_drag.set(picked);
+                        grid_drag.set(false);
+                        return;
+                    }
+                }
+            }
             // With Ctrl the squares are dragged (for now); else, once it
             // moves, the window is (no header at home).
             grid_drag.set(g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK));
@@ -1464,6 +1500,27 @@ fn build(app: &adw::Application) {
         let (weak, f, pg, gd) = (Rc::downgrade(&ui), from, page.clone(), grid_drag2);
         drag.connect_drag_update(move |g, dx, dy| {
             let Some(ui) = weak.upgrade() else { return };
+            // A part of the layout dragged: whole squares from where it was.
+            if let Some((item, from, began)) = ui.layout_drag.get() {
+                let ((_, _), _, (x, y)) = f.get();
+                // Let go of the view before it is drawn anew below.
+                let now = table_under(&ui.floor_view.borrow(), (x + dx, y + dy));
+                if let Some(now) = now {
+                    let cur = square() * DUO_PX_PER_MM as f32;
+                    let to = ((from.0 + (now.0 - began.0) / cur).round(), (from.1 + (now.1 - began.1) / cur).round());
+                    let mut l = ui.layout.get();
+                    if item == 0 {
+                        l.words = to;
+                    } else {
+                        l.duo = Some(to);
+                    }
+                    if l != ui.layout.get() {
+                        ui.layout.set(l);
+                        show_fold(&ui, ui.fold.get().0);
+                    }
+                }
+                return;
+            }
             if !gd.get() {
                 if dx.hypot(dy) > 4.0 {
                     let ((_, _), _, (x, y)) = f.get();
@@ -1495,7 +1552,31 @@ fn build(app: &adw::Application) {
             redraw(&ui);
             say(&ui, format!("Squares moved {:.0}, {:.0} mm", at.0, at.1));
         });
+        drag.connect_drag_end({
+            let weak = Rc::downgrade(&ui);
+            move |_, _, _| {
+                let Some(ui) = weak.upgrade() else { return };
+                if ui.layout_drag.take().is_some() {
+                    save_layout(ui.layout.get());
+                    trace(format_args!("layout kept: {:?}", ui.layout.get()));
+                }
+            }
+        });
         page.add_controller(drag);
+        // F2: the layout edited (or fixed again).
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed({
+            let weak = Rc::downgrade(&ui);
+            move |_, key, _, _| {
+                let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
+                if key == gdk::Key::F2 {
+                    set_layout_edit(&ui, !ui.layout_edit.get());
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        ui.window.add_controller(keys);
         // The table's buttons: raised under the pointer, the hand there.
         let motion = gtk::EventControllerMotion::new();
         let (weak, pg) = (Rc::downgrade(&ui), page.clone());
@@ -1594,6 +1675,7 @@ fn build(app: &adw::Application) {
                         // Into the wallpaper or back (the boards closed on the
                         // way).
                         "set:wallpaper" => wallpaper(&ui),
+                        "set:layout" => set_layout_edit(&ui, !ui.layout_edit.get()),
                         _ => return,
                     }
                     trace(format_args!("setting {key} turned"));
@@ -3278,6 +3360,8 @@ struct FloorView {
     /// The sheet things are laid on (its left, top, right, bottom, table
     /// px), outlined.
     sheet: Option<[f32; 4]>,
+    /// Layout editing: the boxes that can be dragged (outlined).
+    edit_boxes: Option<[[f32; 4]; 2]>,
     grid_mid: (f32, f32),
 }
 
@@ -3462,6 +3546,21 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
             cr.set_line_width(1.6);
             ink(cr, 0.28 * fv.grid.min(1.0) as f64);
             let _ = cr.stroke();
+        }
+    }
+    // Layout editing: what can be dragged, outlined darker.
+    for [l, t, r, b] in fv.edit_boxes.iter().flatten().copied() {
+        if let (Some(a), Some(bb), Some(c), Some(d)) = (project(l, t), project(r, t), project(r, b), project(l, b)) {
+            cr.move_to(a.0, a.1);
+            cr.line_to(bb.0, bb.1);
+            cr.line_to(c.0, c.1);
+            cr.line_to(d.0, d.1);
+            cr.close_path();
+            cr.set_line_width(2.0);
+            cr.set_dash(&[6.0, 4.0], 0.0);
+            ink(cr, 0.55);
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
         }
     }
     draw_cubes(fv, cr);
@@ -4266,12 +4365,66 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
     }
 }
 
+/// Where things are laid on the table's sheet, in its squares from its top
+/// left: the phone's words (their first letter's square), the Duo (its
+/// top left open flat; none: in the middle of what is right of its words).
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Layout {
+    words: (f32, f32),
+    duo: Option<(f32, f32)>,
+}
+
+impl Default for Layout {
+    fn default() -> Layout {
+        Layout { words: (0.0, 4.0), duo: None }
+    }
+}
+
+fn layout_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("itemgrid/layout")
+}
+
+/// The layout kept (lines: "words X Y", "duo X Y"), else the default.
+fn read_layout() -> Layout {
+    let mut l = Layout::default();
+    for line in std::fs::read_to_string(layout_file()).unwrap_or_default().lines() {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        let xy = || Some((w.get(1)?.parse().ok()?, w.get(2)?.parse().ok()?));
+        match w.first() {
+            Some(&"words") => l.words = xy().unwrap_or(l.words),
+            Some(&"duo") => l.duo = xy().or(l.duo),
+            _ => {}
+        }
+    }
+    l
+}
+
+fn save_layout(l: Layout) {
+    let mut text = format!("words {} {}\n", l.words.0, l.words.1);
+    if let Some(d) = l.duo {
+        text.push_str(&format!("duo {} {}\n", d.0, d.1));
+    }
+    let _ = std::fs::create_dir_all(layout_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(layout_file(), text);
+}
+
+/// Layout editing on or off: the Duo's own room lets the pointer through
+/// to the table then (its parts dragged there).
+fn set_layout_edit(ui: &Ui, on: bool) {
+    ui.layout_edit.set(on);
+    if let Some(holder) = ui.duo.parent() {
+        holder.set_can_target(!on);
+    }
+    trace(format_args!("layout: {}", if on { "editing" } else { "fixed" }));
+    show_fold(ui, ui.fold.get().0);
+}
+
 /// A click at `p` on the page (the floor's px): on the drawn Duo over Wi-Fi,
 /// it is opened flat or shut (a picture only); whether it was on it.
 fn duo_clicked(ui: &Ui, p: (f64, f64)) -> bool {
     let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
     let Some(d) = ui.duo_on_sheet.get() else { return false };
-    if !wifi || ui.intro.borrow().duo() <= 0.0 {
+    if !wifi || ui.intro.borrow().duo() <= 0.0 || ui.layout_edit.get() {
         return false;
     }
     let Some(t) = table_under(&ui.floor_view.borrow(), p) else { return false };
@@ -4309,6 +4462,7 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     vec![
         board::Line::new("set:night", format!("night      {night}")),
         board::Line::new("set:wallpaper", format!("wallpaper  {}", onoff(ui.wallpaper.get().is_some()))),
+        board::Line::new("set:layout", format!("layout     {}", if ui.layout_edit.get() { "edit" } else { "fixed" })),
         board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode()))),
     ]
 }
@@ -5272,9 +5426,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             [left, top, right, bottom]
         };
         let (mid_px, duo_h) = ui.duo_size;
-        // In the middle of what is left of the sheet right of its words'
-        // column (twelve letters and a square clear), open flat.
-        let duo_on_sheet = ((sheet[0] + 13.0 * cur + sheet[2]) / 2.0, sheet[1] + 2.0 * cur + duo_h / 2.0);
+        // Where the layout puts it (its top left open flat, in the sheet's
+        // squares); by default in the middle of what is left of the sheet
+        // right of its words' column (twelve letters and a square clear).
+        let layout = ui.layout.get();
+        let duo_corner = layout.duo.unwrap_or_else(|| ((((13.0 * cur + sheet[2] - sheet[0]) / 2.0 - mid_px) / cur).round(), 4.0));
+        let duo_on_sheet = (sheet[0] + duo_corner.0 * cur + mid_px, sheet[1] + duo_corner.1 * cur + duo_h / 2.0);
         ui.duo_on_sheet.set(Some(duo_on_sheet));
         if std::env::var_os("ITEMGRID_SHEET").is_some() {
             trace(format_args!("sheet {sheet:?} duo {duo_on_sheet:?} mid {mid_px} h {duo_h} cur {cur} word {cubes_at:?} buttons {buttons_at:?} off {off:?} D on page {:?} origin on page {:?} duo_at {duo_at:?}", on_page(&rest_m, duo_on_sheet), on_page(&rest_m, (0.0, 0.0))));
@@ -5403,7 +5560,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // Its left edge in the word's column (the i of item: the word is
             // put there, above), its top at the phone's.
             let _ = (mid, wide);
-            let (x, top) = (sheet[0], sheet[1] + 2.0 * cur);
+            let (x, top) = (sheet[0] + layout.words.0 * cur, sheet[1] + layout.words.1 * cur);
+            let rows = lines.len() as f32;
+            ui.layout_boxes.set([[x, top, x + wide, top + rows * cur], [duo_on_sheet.0 - mid, duo_on_sheet.1 - h / 2.0, duo_on_sheet.0 + mid, duo_on_sheet.1 + h / 2.0]]);
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
@@ -5422,9 +5581,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet);
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.edit_boxes != ui.layout_edit.get().then(|| ui.layout_boxes.get());
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] + duo_on_sheet.0, hole[1] + duo_on_sheet.1, hole[2] + duo_on_sheet.0, hole[3] + duo_on_sheet.1], depth)), sheet: Some(sheet), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] + duo_on_sheet.0, hole[1] + duo_on_sheet.1, hole[2] + duo_on_sheet.0, hole[3] + duo_on_sheet.1], depth)), sheet: Some(sheet), edit_boxes: ui.layout_edit.get().then(|| ui.layout_boxes.get()), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
