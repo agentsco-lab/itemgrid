@@ -8,6 +8,7 @@ pub mod agent;
 pub mod android;
 pub mod backup;
 pub mod battery;
+pub mod bootchain;
 pub mod club;
 pub mod detect;
 pub mod flash;

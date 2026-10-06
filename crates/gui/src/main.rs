@@ -4618,7 +4618,7 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
             glib::spawn_future_local(async move {
                 let h = host.clone();
                 let read = gio::spawn_blocking(move || {
-                    let plan = itemgrid_core::android::plan(&h)?;
+                    let plan = itemgrid_core::android::clean_plan(&h)?;
                     let serial = itemgrid_core::backup::serial(&h)?;
                     Ok::<_, String>((plan, itemgrid_core::android::confirm_word(&serial)))
                 })
@@ -4632,13 +4632,10 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                     Err(e) => Ask::new("back to android", wrapped(&format!("cannot just now: {e}"))),
                     Ok((plan, _)) if !plan.stops.is_empty() => Ask::new("back to android", plan.stops.iter().flat_map(|s| wrapped(s)).take(6).collect()),
                     Ok((plan, word)) => {
-                        let mut info = vec!["stock android back".to_owned(), "linux's data erased".to_owned(), format!("about {} min", if plan.full_fresh { 15 } else { 35 }), "keep the cable in".to_owned()];
-                        if !plan.losses.is_empty() {
-                            info.extend(wrapped(&format!("lost: {}", plan.losses.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "))));
-                        }
-                        let mut ask = Ask::new("back to android", info);
+                        let mut ask = Ask::new("back to android", vec!["the phone as it came".into(), "item and all in it go".into(), "about 10 min".into(), "keep the cable in".into()]);
+                        ask.choices = vec![("plain", "just go".into()), ("copy", "copy my files 1 min".into())];
                         ask.word = Some(word);
-                        ask.go = Some(Rc::new(move |ui, _| run_job(ui, Job::AndroidGo(Box::new(plan.clone())))));
+                        ask.go = Some(Rc::new(move |ui, choice| run_job(ui, Job::AndroidClean(Box::new(plan.clone()), choice == "copy"))));
                         ask
                     }
                 };
@@ -6573,6 +6570,9 @@ enum Job {
     RecoveryExit(String),
     LeaveFastboot(String),
     AndroidGo(Box<itemgrid_core::android::Plan>),
+    /// Back to stock Android for good (its boot on the phone again), the
+    /// owner's files copied first if asked.
+    AndroidClean(Box<itemgrid_core::android::CleanPlan>, bool),
     AndroidStart(String),
     AndroidBack(String),
     /// Microsoft's package from a link, then its boot chain taken out.
@@ -6593,6 +6593,7 @@ impl Job {
             Job::Restore(_) => "restore",
             Job::RecoveryExit(_) | Job::LeaveFastboot(_) => "recovery-exit",
             Job::AndroidGo(_) => "android-go",
+            Job::AndroidClean(..) => "android-clean",
             Job::AndroidStart(_) => "android-start",
             Job::AndroidBack(_) => "android-back",
             Job::StockDownload(..) => "stock-download",
@@ -6862,7 +6863,7 @@ fn ask(ui: &Rc<Ui>, heading: &str, body: &str, yes: &str, job: Job) {
 /// another item/grid too.
 fn run_job(ui: &Rc<Ui>, job: Job) {
     let host = ui.state.borrow().host.clone();
-    let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_) | Job::Install(..));
+    let needs_linux = matches!(job, Job::Update | Job::Reboot | Job::Backup | Job::FullBackup | Job::RamBoot(_) | Job::Restore(_) | Job::AndroidGo(_) | Job::AndroidClean(..) | Job::Install(..));
     if needs_linux && host.is_none() {
         stopped(ui, "The phone is not in Linux just now.");
         return;
@@ -6901,6 +6902,15 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
                 // The number was typed in the window already; the losses shown.
                 itemgrid_core::android::go(&host, &plan, &word, true, &mut say)
             }
+            Job::AndroidClean(plan, copy_first) => (|| {
+                let word = itemgrid_core::backup::serial(&host).map(|s| itemgrid_core::android::confirm_word(&s))?;
+                if copy_first {
+                    say("copying your files to this computer".into());
+                    itemgrid_core::backup::take(&host, itemgrid_core::backup::Kind::Quick, &mut say)?;
+                }
+                // The number was typed on the table already.
+                itemgrid_core::android::go_clean(&host, &plan, &word, &mut say)
+            })(),
             Job::AndroidStart(serial) => itemgrid_core::android::start(&host, &serial, &mut say),
             Job::AndroidBack(serial) => itemgrid_core::android::back(&host, &serial, false, &mut say),
             Job::Install(release, mode) => {

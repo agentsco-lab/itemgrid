@@ -721,3 +721,84 @@ pub fn fresh_full(host: &str, serial: &str) -> Result<Option<Backup>, String> {
         taken > booted && phone_now - taken < FRESH_SECS
     }))
 }
+
+// ---- clean: the phone as it came, for good ------------------------------------
+
+/// What a clean return to Android would do (reading only): the build in
+/// super, its stock boot chain on this computer (boot, dtbo, vbmeta from
+/// Microsoft's package, beside the stock kernel that belongs to it), and
+/// what stops it.
+#[derive(Debug, Clone)]
+pub struct CleanPlan {
+    pub build: Option<SuperBuild>,
+    pub chain: Vec<crate::bootchain::Part>,
+    pub battery: Option<u32>,
+    pub stops: Vec<String>,
+}
+
+/// The clean return's plan, from the running port.
+pub fn clean_plan(host: &str) -> Result<CleanPlan, String> {
+    let p = plan(host)?;
+    let mut stops: Vec<String> = Vec::new();
+    // What the old way needed and this one does not: the device data's
+    // backup (radio calibration, IMEI - left on the phone, not touched).
+    stops.extend(p.stops.iter().filter(|s| !s.contains("device data")).cloned());
+    let mut chain = Vec::new();
+    if let Some((k, _)) = &p.kernel {
+        let dir = k.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        for (name, file) in [("boot", k.path.clone()), ("dtbo", dir.join("dtbo.img")), ("vbmeta", dir.join("vbmeta.img"))] {
+            match crate::bootchain::Part::of(name, &file) {
+                Ok(part) => chain.push(part),
+                Err(_) => stops.push(format!("no stock {name} beside the stock kernel ({}): Microsoft's package for this phone gives it", dir.display())),
+            }
+        }
+    }
+    Ok(CleanPlan { build: p.kernel.map(|(_, b)| b), chain, battery: p.battery, stops })
+}
+
+/// Back to the phone's stock Android for good, as it came: TWRP from RAM,
+/// metadata and userdata zeroed (Linux and all it held go), the stock boot
+/// chain written to both slots (the port's kernel gone from the phone: a
+/// plain restart starts Android), misc cleared, and a restart. About ten
+/// minutes. `confirm` must be confirm_word's word.
+pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    crate::link::need_cable(host)?;
+    let _ = crate::phone::keep_awake(host, true);
+    if !plan.stops.is_empty() {
+        return Err(format!("stopped before anything: {}", plan.stops.join("; ")));
+    }
+    let serial = crate::backup::serial(host)?;
+    if confirm.trim() != confirm_word(&serial) {
+        return Err(format!("the confirmation does not match ({} expected) - nothing is changed", confirm_word(&serial)));
+    }
+    let build = plan.build.clone().ok_or("no Android build in super")?;
+    // The stock kernel checked as any image the phone is given.
+    let boot = plan.chain.iter().find(|p| p.name == "boot").ok_or("no stock boot")?;
+    crate::ramboot::check_image(&boot.file)?;
+    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let _ = crate::ramboot::check_image(&twrp)?;
+    crate::flash::log(&serial, &format!("clean return to Android begun ({}) - itemgrid", build.fingerprint))?;
+
+    say("into TWRP".into());
+    crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
+    crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - itemgrid", build.fingerprint))?;
+    erase(&serial, say)?;
+    // Android's own slot first, then the other: the port's kernel left on
+    // neither (a slot drifting to it would find no system).
+    let other = if build.slot == 'a' { 'b' } else { 'a' };
+    for slot in [build.slot, other] {
+        say(format!("the stock boot on slot {slot}"));
+        crate::bootchain::write(&serial, slot, &plan.chain, say)?;
+    }
+    say("clearing misc".into());
+    adb(&serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync"))?;
+    let _ = std::fs::remove_file(guest_path(&serial));
+    crate::flash::log(&serial, "the phone is stock Android again, for good - itemgrid")?;
+    say("starting Android: it sets itself up (a few minutes), its welcome screens open".into());
+    adb(&serial, "reboot").ok();
+    Ok(())
+}
+
+fn adb(serial: &str, cmd: &str) -> Result<String, String> {
+    crate::full::adb_shell(serial, cmd)
+}

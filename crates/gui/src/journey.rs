@@ -77,6 +77,13 @@ pub fn stages(job: &str) -> Vec<Stage> {
             st("Copying the rest", "Android apps' data and the other files on the data partition are copied too.", "TWRP", &["taking the Android container", "taking the rest of userdata"], 240.0),
             BACK_TO_LINUX,
         ],
+        "android-clean" => vec![
+            st("Copying your files", "Your home folder and settings, to this computer.", "Linux", &["copying your files"], 60.0),
+            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP"], 60.0),
+            st("Erasing", "Linux and everything in it are erased from the phone.", "Recovery", &["zeroing"], 480.0),
+            st("Stock boot", "The phone's own boot from Microsoft goes back on, on both slots, each read back.", "Recovery", &["the stock boot"], 60.0),
+            st("Android starting", "Android sets itself up and opens its welcome screens.", "Restarting", &["starting Android"], 120.0),
+        ],
         "android-go" => vec![
             st("Backing up everything", "Everything on the phone is copied to this computer first - or a fresh copy is checked - so the way back is certain.", "TWRP", &["checking ", "taking the whole system's backup first"], 1250.0),
             st("Starting the recovery", "TWRP starts from RAM to do what Linux cannot do to itself.", "TWRP", &["=into TWRP"], 50.0),
@@ -134,6 +141,7 @@ pub fn title(job: &str) -> &'static str {
         "ramboot" => "Trying an image from RAM",
         "recovery-exit" => "Back to Linux",
         "full-backup" => "Backing up the whole system",
+        "android-clean" => "Back to Android",
         "android-go" => "Returning to Android",
         "android-start" => "Starting Android",
         "android-back" => "Back to the full backup",
