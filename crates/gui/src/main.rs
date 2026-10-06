@@ -593,6 +593,11 @@ struct Ui {
     /// the one the eye is at now, their bar (over the page's top) and its
     /// buttons and words.
     preview: std::cell::Cell<Option<usize>>,
+    /// The layout as kept in its file (what ok kept; cancel goes back to
+    /// it), the part under the pointer (outlined), the looks' choosers.
+    layout_saved: std::cell::Cell<Layout>,
+    layout_hover: std::cell::Cell<Option<usize>>,
+    looks: Vec<gtk::DropDown>,
     step_now: std::cell::Cell<usize>,
     steps_bar: gtk::Box,
     steps_buttons: Vec<gtk::ToggleButton>,
@@ -1199,9 +1204,13 @@ fn build(app: &adw::Application) {
         .collect();
     let steps_play = gtk::Button::builder().label("play").css_classes(["flat"]).build();
     let steps_reset = gtk::Button::builder().label("reset step").css_classes(["flat"]).build();
+    let steps_ok = gtk::Button::builder().label("ok").css_classes(["suggested-action"]).build();
+    let steps_cancel = gtk::Button::builder().label("cancel").css_classes(["flat"]).build();
     let steps_label = gtk::Label::builder().css_classes(["dim-label"]).margin_start(10).build();
     steps_row.append(&steps_play);
     steps_row.append(&steps_reset);
+    steps_row.append(&steps_cancel);
+    steps_row.append(&steps_ok);
     looks_row.append(&steps_label);
     steps_bar.set_tooltip_text(Some("A step shown and held. Its eye: the wheel on the table (not on the Duo) - nearer or further; drag the table - moved. Kept for that step."));
     home_page.add_overlay(&steps_bar);
@@ -1434,6 +1443,9 @@ fn build(app: &adw::Application) {
         layout_drag: std::cell::Cell::new(None),
         layout_boxes: std::cell::Cell::new([[0.0; 4]; 6]),
         preview: std::cell::Cell::new(None),
+        layout_saved: std::cell::Cell::new(read_layout()),
+        layout_hover: std::cell::Cell::new(None),
+        looks: looks.clone(),
         step_now: std::cell::Cell::new(0),
         steps_bar: steps_bar.clone(),
         steps_buttons: steps_buttons.clone(),
@@ -1643,8 +1655,7 @@ fn build(app: &adw::Application) {
                     l.shots[i].zoom = (l.shots[i].zoom * 1.1f32.powf(-dy as f32)).clamp(0.3, 3.0);
                 }
                 ui.layout.set(l);
-                save_layout(l);
-                show_steps(&ui);
+                layout_changed(&ui);
                 show_fold(&ui, ui.fold.get().0);
                 return glib::Propagation::Stop;
             }
@@ -1801,8 +1812,8 @@ fn build(app: &adw::Application) {
             move |_, _, _| {
                 let Some(ui) = weak.upgrade() else { return };
                 if ui.layout_drag.take().is_some() {
-                    save_layout(ui.layout.get());
-                    trace(format_args!("layout kept: {:?}", ui.layout.get()));
+                    layout_changed(&ui);
+                    show_fold(&ui, ui.fold.get().0);
                 }
             }
         });
@@ -1846,7 +1857,7 @@ fn build(app: &adw::Application) {
                 if l != ui.layout.get() {
                     ui.layout.set(l);
                     set_style(l.style);
-                    save_layout(l);
+                    layout_changed(&ui);
                     ui.floor.queue_draw();
                     ui.floor_gl.queue_render();
                     show_fold(&ui, ui.fold.get().0);
@@ -1862,14 +1873,42 @@ fn build(app: &adw::Application) {
                 show_fold(&ui, ui.fold.get().0);
             }
         });
+        // ok: the step as it is now kept (the layout's file written), the
+        // step marked fixed; cancel: back to what was kept.
+        let weak = Rc::downgrade(&ui);
+        steps_ok.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                let mut l = ui.layout.get();
+                l.fixed[current_step(&ui)] = true;
+                ui.layout.set(l);
+                save_layout(l);
+                ui.layout_saved.set(l);
+                trace(format_args!("step {} fixed: {l:?}", STEPS[current_step(&ui)]));
+                show_steps(&ui);
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        steps_cancel.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                let l = ui.layout_saved.get();
+                ui.layout.set(l);
+                set_style(l.style);
+                for (d, at) in ui.looks.iter().zip([l.style.paper, l.style.ink, l.style.width, l.style.font]) {
+                    d.set_selected(at as u32);
+                }
+                show_steps(&ui);
+                ui.floor.queue_draw();
+                ui.floor_gl.queue_render();
+                show_fold(&ui, ui.fold.get().0);
+            }
+        });
         let weak = Rc::downgrade(&ui);
         steps_reset.connect_clicked(move |_| {
             if let Some(ui) = weak.upgrade() {
                 let mut l = ui.layout.get();
                 l.shots[current_step(&ui)] = Shot::default();
                 ui.layout.set(l);
-                save_layout(l);
-                show_steps(&ui);
+                layout_changed(&ui);
                 show_fold(&ui, ui.fold.get().0);
             }
         });
@@ -1883,7 +1922,15 @@ fn build(app: &adw::Application) {
             ui.buttons.borrow_mut().hover = on;
             // A line of the open board: darker under the pointer.
             let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
+            let part = if ui.layout_edit.get() { table_under(&fv, (x, y)).and_then(|t| box_at(&ui, t)) } else { None };
             drop(fv);
+            if ui.layout_hover.replace(part) != part {
+                show_fold(&ui, ui.fold.get().0);
+            }
+            if part.is_some() {
+                pg.set_cursor_from_name(Some("grab"));
+                return;
+            }
             let changed = ui.board.borrow_mut().as_mut().is_some_and(|b| std::mem::replace(&mut b.hover, line) != line);
             if changed {
                 show_fold(&ui, ui.fold.get().0);
@@ -3651,6 +3698,8 @@ struct FloorView {
     sheet: Option<[f32; 4]>,
     /// Layout editing: the boxes that can be dragged (outlined).
     edit_boxes: Option<Vec<[f32; 4]>>,
+    /// The sheet outlined (the editor's guide while dragging).
+    sheet_drawn: bool,
     grid_mid: (f32, f32),
 }
 
@@ -3826,8 +3875,9 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     }
     // The sheet things are laid on, outlined.
     // Open below: its sides go on down into the field, fading as they go.
-    if let Some([l, t, r, b]) = fv.sheet {
-        let strength = 0.28 * fv.grid.min(1.0) as f64;
+    if let Some([l, t, r, b]) = fv.sheet.filter(|_| fv.sheet_drawn) {
+        // (The editor's guide: as strong at any step.)
+        let strength = 0.28;
         cr.set_line_width(1.6);
         if let (Some(a), Some(bb)) = (project(l, t), project(r, t)) {
             cr.move_to(a.0, a.1);
@@ -4687,6 +4737,8 @@ struct Layout {
     style: Style,
     /// The eye at each of the steps (STEPS): how near, how moved.
     shots: [Shot; STEPS.len()],
+    /// The steps fixed (ok pressed on them, nothing changed since).
+    fixed: [bool; STEPS.len()],
 }
 
 /// The steps from the start on, as they are seen, each with its own eye
@@ -4718,7 +4770,7 @@ impl Shot {
 
 impl Default for Layout {
     fn default() -> Layout {
-        Layout { words: (0.0, 4.0), duo: None, word: (0.0, 0.0), buttons: (0.0, 0.0), menu: (0.0, 0.0), credit: (0.0, 0.0), duo_scale: 1.0, zoom: None, style: Style::default(), shots: [Shot::default(); STEPS.len()] }
+        Layout { words: (0.0, 4.0), duo: None, word: (0.0, 0.0), buttons: (0.0, 0.0), menu: (0.0, 0.0), credit: (0.0, 0.0), duo_scale: 1.0, zoom: None, style: Style::default(), shots: [Shot::default(); STEPS.len()], fixed: [false; STEPS.len()] }
     }
 }
 
@@ -4740,6 +4792,13 @@ fn read_layout() -> Layout {
             Some(&"buttons") => l.buttons = xy().unwrap_or(l.buttons),
             Some(&"menu") => l.menu = xy().unwrap_or(l.menu),
             Some(&"credit") => l.credit = xy().unwrap_or(l.credit),
+            Some(&"fixed") => {
+                for n in &w[1..] {
+                    if let Some(i) = STEPS.iter().position(|s| s == n) {
+                        l.fixed[i] = true;
+                    }
+                }
+            }
             Some(&"duo-scale") => l.duo_scale = one().unwrap_or(l.duo_scale),
             Some(&"zoom") => l.zoom = one().or(l.zoom),
             // The looks by name (the rest of the line: a name may have a
@@ -4786,6 +4845,10 @@ fn save_layout(l: Layout) {
     }
     for (i, shot) in l.shots.iter().enumerate().filter(|(_, s)| **s != Shot::default()) {
         text.push_str(&format!("shot {} {:.3} {:.2} {:.2}\n", STEPS[i], shot.zoom, shot.pan.0, shot.pan.1));
+    }
+    let fixed: Vec<&str> = (0..STEPS.len()).filter(|&i| l.fixed[i]).map(|i| STEPS[i]).collect();
+    if !fixed.is_empty() {
+        text.push_str(&format!("fixed {}\n", fixed.join(" ")));
     }
     let s = l.style;
     text.push_str(&format!("paper {}\nlines {}\nline-width {}\nfont {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0));
@@ -4835,9 +4898,38 @@ fn box_shown(ui: &Ui, i: usize) -> bool {
 }
 
 /// The parts' outlines to draw (editing only): those the step shows.
+/// (Only the one under the pointer or dragged: the step otherwise as it
+/// is seen.)
 fn edit_boxes(ui: &Ui) -> Option<Vec<[f32; 4]>> {
     let boxes = ui.layout_boxes.get();
-    ui.layout_edit.get().then(|| (0..boxes.len()).filter(|&i| box_shown(ui, i)).map(|i| boxes[i]).collect())
+    let on = ui.layout_drag.get().map(|d| d.0).filter(|i| *i < boxes.len()).or(ui.layout_hover.get());
+    ui.layout_edit.get().then(|| on.filter(|&i| box_shown(ui, i)).map(|i| boxes[i]).into_iter().collect())
+}
+
+/// The sheet outlined: only as a guide while a part is dragged in the
+/// editor (never seen otherwise).
+fn sheet_shown(ui: &Ui) -> bool {
+    ui.layout_edit.get() && ui.layout_drag.get().is_some_and(|d| d.0 < 10)
+}
+
+/// The layout's part (shown at the step) at a point of the table.
+fn box_at(ui: &Ui, t: (f32, f32)) -> Option<usize> {
+    let boxes = ui.layout_boxes.get();
+    [1, 0, 2, 3, 4, 5].into_iter().find(|&i| box_shown(ui, i) && (boxes[i][0]..=boxes[i][2]).contains(&t.0) && (boxes[i][1]..=boxes[i][3]).contains(&t.1))
+}
+
+/// Something of the layout changed in the editor: not kept until ok, the
+/// step not fixed any more (if anything differs from what was kept).
+fn layout_changed(ui: &Ui) {
+    let mut l = ui.layout.get();
+    let i = current_step(ui);
+    let mut saved = ui.layout_saved.get();
+    saved.fixed = l.fixed;
+    if l != saved {
+        l.fixed[i] = false;
+        ui.layout.set(l);
+    }
+    show_steps(ui);
 }
 
 /// The step the editor's wheel and drag set: the one shown, else the one
@@ -4850,14 +4942,19 @@ fn current_step(ui: &Ui) -> usize {
 /// eye in words.
 fn show_steps(ui: &Ui) {
     let shown = ui.preview.get();
+    let l = ui.layout.get();
     for (i, b) in ui.steps_buttons.iter().enumerate() {
         if b.is_active() != (shown == Some(i)) {
             b.set_active(shown == Some(i));
         }
+        b.set_label(&format!("{}{} {}", if l.fixed[i] { "✓ " } else { "" }, i + 1, STEPS[i]));
     }
     let i = current_step(ui);
-    let shot = ui.layout.get().shots[i];
-    ui.steps_label.set_label(&format!("{} · zoom {:.2} · moved {:.1}, {:.1}", STEPS[i], shot.zoom, shot.pan.0, shot.pan.1));
+    let shot = l.shots[i];
+    let mut saved = ui.layout_saved.get();
+    saved.fixed = l.fixed;
+    let state = if l != saved { "not kept - ok to keep" } else if l.fixed[i] { "fixed" } else { "kept" };
+    ui.steps_label.set_label(&format!("{} · zoom {:.2} · moved {:.1}, {:.1} · {state}", STEPS[i], shot.zoom, shot.pan.0, shot.pan.1));
 }
 
 /// Step `i` shown and held (none: the start going as it goes again): the
@@ -6188,9 +6285,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         drop(intro);
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.edit_boxes != edit_boxes(ui);
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != ui.cable.is_visible() || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.sheet_drawn != sheet_shown(ui) || fv.edit_boxes != edit_boxes(ui);
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] * layout.duo_scale + duo_on_sheet.0, hole[1] * layout.duo_scale + duo_on_sheet.1, hole[2] * layout.duo_scale + duo_on_sheet.0, hole[3] * layout.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), edit_boxes: edit_boxes(ui), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: ui.cable.is_visible().then_some(([hole[0] * layout.duo_scale + duo_on_sheet.0, hole[1] * layout.duo_scale + duo_on_sheet.1, hole[2] * layout.duo_scale + duo_on_sheet.0, hole[3] * layout.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), sheet_drawn: sheet_shown(ui), edit_boxes: edit_boxes(ui), grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
