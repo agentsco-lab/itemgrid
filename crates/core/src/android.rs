@@ -170,7 +170,13 @@ pub fn stock_kernels() -> Vec<Kernel> {
 /// The plan for returning to Android - reading only.
 pub fn plan(host: &str) -> Result<Plan, String> {
     let serial = crate::backup::serial(host)?;
-    let builds = super_builds(host)?;
+    let mut builds = super_builds(host)?;
+    // Android's own slot first: the one the phone starts (Linux runs from
+    // it), then the newer build - after an update both slots hold one, and
+    // the old one is only Android's spare.
+    let cmdline = crate::phone::run(host, "cat /proc/cmdline\n")?;
+    let running = cmdline.split_whitespace().find_map(|w| w.strip_prefix("androidboot.slot_suffix=_")).and_then(|s| s.chars().next());
+    builds.sort_by_key(|b| (Some(b.slot) != running, std::cmp::Reverse(b.vendor_utc)));
     let kernels_seen = stock_kernels();
     // A kernel built with a vendor in super: after it, within a day.
     let kernel = builds.iter().find_map(|b| {
