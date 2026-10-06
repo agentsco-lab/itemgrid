@@ -512,8 +512,7 @@ struct Ui {
     last_angle: std::cell::Cell<Option<f64>>,
     /// The hinge followed (posture.rs): where, and its stop.
     following: RefCell<Option<(String, itemgrid_core::posture::Stop)>>,
-    /// The simple page and its parts.
-    home: gtk::Box,
+    /// The simple page's status (not shown: said on the table, show_fold).
     status_dot: gtk::Box,
     status_title: gtk::Label,
     status_lines: gtk::Label,
@@ -785,6 +784,12 @@ fn build(app: &adw::Application) {
     device.append(&name_sub);
     device.append(&battery);
     device.append(&join);
+    // Kept for what they say (set as ever), not shown: the table says it, in
+    // its squares, under the Duo (show_fold). Shown, their first layout came
+    // in the frame the phone appeared in (a 100 ms hitch).
+    for l in [&pose, &name, &name_sub, &battery] {
+        l.set_visible(false);
+    }
     // The sections, as item Settings has them on the phone: what the phone
     // is and what is set from here, Repair & Reset at the bottom, apart.
     let nav = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).css_classes(["navigation-sidebar"]).width_request(230).build();
@@ -1256,7 +1261,6 @@ fn build(app: &adw::Application) {
         pose: pose.clone(),
         pose_name: RefCell::default(),
         gravities: RefCell::default(),
-        home,
         status_dot,
         status_title,
         status_lines,
@@ -2554,7 +2558,6 @@ fn show_now(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status
     }
     ui.mode.set_visible(false);
     ui.linux_only.set_visible(dev);
-    ui.home.set_visible(true);
     let mut i = 0;
     while let Some(row) = ui.nav.row_at_index(i) {
         if row.widget_name() == "developer" {
@@ -2637,7 +2640,6 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         ui.mode.set_visible(false);
         ui.duo_mode.set_visible(false);
         ui.card.hide();
-        ui.home.set_visible(true);
         ui.updates_row.set_visible(false);
         ui.name_sub.set_label("Asleep");
         ui.battery.set_label("");
@@ -2658,7 +2660,6 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         ui.duo_mode.set_visible(false);
         // The status along the bottom only when the Duo is drawn (asleep);
         // looked for, the table and the word only.
-        ui.home.set_visible(ui.shut_away.get());
         ui.updates_row.set_visible(false);
         for s in &ui.screens {
             s.set_paintable(gdk::Paintable::NONE);
@@ -2682,7 +2683,6 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     ui.tabs.set_visible_child_name("general");
     ui.switcher.set_visible(false);
     ui.linux_only.set_visible(false);
-    ui.home.set_visible(false);
     ui.mode.set_visible(true);
     bottom_shown(ui);
     for s in &ui.screens {
@@ -5049,7 +5049,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             (v.x() / v.w(), v.y() / v.w())
         };
         let middle_seen = (middle.0 + (at.0 - middle.0) * seen, middle.1 + (at.1 - middle.1) * seen);
-        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: tilt_rest, near: 1.0, far: 3.2 };
+        // The Duo seen, a little farther back: its words under it on the
+        // table too.
+        let rest = Eye { look: (0.0, 0.0), on: middle_seen, tilt: tilt_rest, near: 1.0 - 0.12 * seen, far: 3.2 };
         // Where the word is once the eye is down (its cubes in the
         // table's squares, a little off the page's point): kept there all
         // the way, so that nothing moves as the eye stops.
@@ -5263,6 +5265,42 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let page_at = (board_at.0 + (menu_cols + 2) as f32 * cur, board_at.1);
         if let Some((_, b)) = ui.page.borrow().as_ref() {
             tiles.extend(b.tiles(page_at, cur));
+        }
+        // The phone's words under it, in the table's squares (a letter a
+        // half square): its name, its system, how it is; on Wi-Fi how to
+        // bring it to life. Under what is seen of it: shut, its right half.
+        if intro.duo() > 0.0 && ui.state.borrow().host.is_some() {
+            let low = |s: glib::GString| s.to_lowercase();
+            let name = low(ui.name.label());
+            // The system, without the build's date ("(dev, 5 oct)").
+            let system = {
+                let s = low(ui.name_sub.label());
+                match (s.find(" ("), s.find(')')) {
+                    (Some(a), Some(b)) if b > a => format!("{}{}", &s[..a], &s[b + 1..]),
+                    _ => s,
+                }
+            };
+            let status = {
+                let title = low(ui.status_title.label());
+                let title = title.strip_prefix("your duo is ").unwrap_or(&title).to_owned();
+                // "Battery 77% · charging · Wi-Fi": the charge and what it
+                // does (the link is said below).
+                let first = ui.status_lines.label().lines().next().unwrap_or("").to_lowercase();
+                let first = first.strip_prefix("battery ").unwrap_or(&first).replace(" · wi-fi", "").replace(" · cable", "");
+                if first.is_empty() { title } else { format!("{title} · {first}") }
+            };
+            let pose = low(ui.pose.label());
+            let pose: Vec<String> = if pose.starts_with("on wi-fi") { vec!["on wi-fi".into(), "plug in to see it move".into()] } else { vec![pose] };
+            let lines: Vec<String> = [name, system, status].into_iter().chain(pose).filter(|l| !l.is_empty()).collect();
+            let half = cur / 2.0;
+            let (mid, _) = ui.duo_size;
+            let (left, right) = if ui.fold.get().0 < 90.0 { (0.0, mid) } else { (-mid, mid) };
+            let wide = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * half;
+            let top = on_squares(k, (0.0, h / 2.0 + 1.2 * cur)).1;
+            let x = on_squares(k, ((left + right) / 2.0 - wide / 2.0, top)).0;
+            let (head, rest) = lines.split_at(1);
+            texts.push(TableText { at: (x, top), cell: half, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: intro.duo() });
+            texts.push(TableText { at: (x, top + half), cell: half, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: intro.duo() });
         }
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
@@ -5609,7 +5647,9 @@ fn show_slots(ui: &Rc<Ui>) {
 /// The bottom bar on General only, with the phone there.
 fn bottom_shown(ui: &Ui) {
     let general = ui.tabs.visible_child_name().as_deref() == Some("general");
-    ui.bottom.set_visible(general && ui.state.borrow().host.is_some());
+    // The status is said on the table now (show_fold): the bar stays hidden.
+    let _ = general;
+    ui.bottom.set_visible(false);
 }
 
 /// The live view on while the window is in front on General with the phone
