@@ -4577,12 +4577,14 @@ struct Ask {
     typed: String,
     /// Read yet (a plan read off the phone first: "checking").
     ready: bool,
+    /// The go line's word ("erase", "install", "update").
+    verb: &'static str,
     go: Option<Rc<dyn Fn(&Rc<Ui>, &'static str)>>,
 }
 
 impl Ask {
     fn new(title: &str, info: Vec<String>) -> Ask {
-        Ask { title: title.into(), info, choices: Vec::new(), chosen: 0, word: None, typed: String::new(), ready: true, go: None }
+        Ask { title: title.into(), info, choices: Vec::new(), chosen: 0, word: None, typed: String::new(), ready: true, verb: "go", go: None }
     }
 
     fn can_go(&self) -> bool {
@@ -4616,12 +4618,13 @@ impl Ask {
         }
         if let (true, Some(w)) = (self.ready && self.go.is_some(), &self.word) {
             lines.push(board::Line::new("", ""));
-            lines.push(board::Line::new("", "to go on, type"));
-            lines.push(board::Line::new("", "this phone's number:"));
-            // The number, what is typed over it: right so far dark, wrong red.
+            lines.push(dark(String::new(), format!("type {w}")));
+            lines.push(board::Line::new("", "on the keyboard:"));
+            // Where it goes: a blank a digit, the typed ones in them (right
+            // so far dark, wrong red).
             let n = w.chars().count();
             let typed: Vec<char> = self.typed.chars().collect();
-            let text: String = (0..n).map(|i| typed.get(i).copied().unwrap_or_else(|| w.chars().nth(i).unwrap_or('_'))).collect();
+            let text: String = (0..n).map(|i| typed.get(i).copied().unwrap_or('_')).collect();
             let mut num = board::Line::new("", text);
             if !typed.is_empty() {
                 let right = w.starts_with(&self.typed);
@@ -4631,8 +4634,9 @@ impl Ask {
         }
         lines.push(board::Line::new("", ""));
         if self.can_go() {
-            let mut go = board::Line::new("ask:go", "› go");
-            go.accent = Some((2, 4, WRONG));
+            let text = format!("› {}", self.verb);
+            let mut go = board::Line::new("ask:go", text.clone());
+            go.accent = Some((2, text.chars().count(), WRONG));
             lines.push(go);
         }
         lines.push(board::Line::new("ask:cancel", "› cancel"));
@@ -4695,7 +4699,8 @@ fn close_ask(ui: &Rc<Ui>) {
 fn board_action(ui: &Rc<Ui>, key: &str) {
     match key {
         "do:update" => {
-            let mut ask = Ask::new("update item", vec!["the newest from here".into(), "keeps your files".into(), "the phone restarts".into(), "about 3 min".into()]);
+            let mut ask = Ask::new("update item", vec!["keeps your files".into(), "restarts the phone".into(), "about 3 min".into()]);
+            ask.verb = "update";
             ask.go = Some(Rc::new(|ui, _| run_job(ui, Job::Update)));
             open_ask(ui, ask);
         }
@@ -4740,9 +4745,9 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                     Err(e) => Ask::new("back to android", wrapped(&format!("cannot just now: {e}"))),
                     Ok((plan, _)) if !plan.stops.is_empty() => Ask::new("back to android", plan.stops.iter().flat_map(|s| wrapped(s)).take(6).collect()),
                     Ok((plan, word)) => {
-                        let mut ask = Ask::new("back to android", vec!["erases item and".into(), "everything in it".into(), "android as it came".into(), "about 10 min".into(), "keep the cable in".into()]);
-                        ask.choices = vec![("plain", "just go".into()), ("copy", "copy files · 1 min".into())];
+                        let mut ask = Ask::new("back to android", vec!["erases item".into(), "android as it came".into(), "10 min · cable in".into()]);
                         ask.word = Some(word);
+                        ask.verb = "erase";
                         ask.go = Some(Rc::new(move |ui, choice| run_job(ui, Job::AndroidClean(Box::new(plan.clone()), choice == "copy"))));
                         ask
                     }
@@ -4758,8 +4763,9 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                 None => Ask::new("install item", wrapped("no release with a boot image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
-                    let mut ask = Ask::new("install item", vec!["erases android".into(), format!("puts item {version}"), "about 15 min".into(), "keep the cable in".into()]);
+                    let mut ask = Ask::new("install item", vec!["erases android".into(), format!("puts item {version}"), "15 min · cable in".into()]);
                     ask.word = Some(word);
+                    ask.verb = "install";
                     ask.go = Some(Rc::new(move |ui, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));
                     ask
                 }
