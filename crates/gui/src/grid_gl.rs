@@ -19,7 +19,7 @@ pub struct Grid {
     /// back (rows).
     pub inv: [[f32; 3]; 3],
     /// The view's w of a place on the table (x, y, 1): in front of the eye
-    /// above 0.05.
+    /// above 0.005 (the page bottom lies that near: below it a band was bare).
     pub w_row: [f32; 3],
     pub off: (f32, f32),
     pub step: f32,
@@ -52,6 +52,9 @@ pub struct Grid {
     /// The table's point under the page's bottom middle: what the band
     /// too near the eye to be drawn takes its colour from.
     pub near_at: (f32, f32),
+    /// The page's size (px): the lines fade out toward its edges (a halo:
+    /// no hard edge against what is round the window).
+    pub size: (f32, f32),
 }
 
 /// How many waves may be on their way at once.
@@ -94,6 +97,7 @@ uniform vec3 u_fill_night;
 uniform vec4 u_ink_day;
 uniform vec4 u_ink_night;
 uniform vec2 u_near_at;
+uniform vec2 u_size;
 out vec4 color;
 
 float line(float t, float shift) {
@@ -109,11 +113,16 @@ void main() {
     vec3 q = u_inv * vec3(page, 1.0);
     vec2 t = q.xy / q.z;
     float a = 0.0;
-    bool seen = dot(u_w, vec3(t, 1.0)) > 0.05;
+    bool seen = dot(u_w, vec3(t, 1.0)) > 0.005;
     if (seen) {
         float d = length(t - u_mid) / u_reach;
         float reached = u_grid >= 1.0 ? 1.0 : clamp((u_grown - length(t - u_cubes)) / (2.0 * u_step), 0.0, 1.0);
         a = 0.15 * pow(max(1.0 - d, 0.0), 1.3) * reached;
+        // Toward the page's edges the lines go: a soft rim, not a cut.
+        vec2 px = vec2(gl_FragCoord.x, u_height - gl_FragCoord.y) / u_scale;
+        float rim = 0.09 * min(u_size.x, u_size.y);
+        vec2 e = smoothstep(vec2(0.0), vec2(rim), min(px, u_size - px));
+        a *= e.x * e.y;
         if (a < 0.004) a = 0.0;
     }
     float lit = a > 0.0 ? max(line(t.x, u_shift.x), line(t.y, u_shift.y)) : 0.0;
@@ -227,6 +236,7 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink_day").as_ref(), g.ink_day[0], g.ink_day[1], g.ink_day[2], 1.0);
             gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15);
             gl.uniform_2_f32(u("u_near_at").as_ref(), g.near_at.0, g.near_at.1);
+            gl.uniform_2_f32(u("u_size").as_ref(), g.size.0, g.size.1);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);

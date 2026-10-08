@@ -1312,9 +1312,12 @@ fn build(app: &adw::Application) {
     pages.set_vexpand(true);
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&content));
-    let view = adw::ToolbarView::new();
-    view.add_top_bar(&header);
-    view.set_content(Some(&toasts));
+    // (A plain box, not adw's ToolbarView: that one kept 30 px under the
+    // content, bare, with the header hidden - 2026-10-08.)
+    let view = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    view.append(&header);
+    toasts.set_vexpand(true);
+    view.append(&toasts);
     view.add_css_class("wall-card");
     // The storage bar at the top of Storage.
     if let Some((_, b)) = section_pages.iter().find(|(k, _)| *k == "storage") {
@@ -3644,6 +3647,8 @@ struct FloorView {
     /// the table's point under the page's bottom middle.
     waves: Vec<(f32, (f32, f32))>,
     near_at: (f32, f32),
+    /// The page's size (px).
+    size: (f32, f32),
     /// The Duo's top left corner on the sheet (squares).
     duo_corner: (f32, f32),
     page_at: (f32, f32),
@@ -3728,6 +3733,7 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         ink_day: INKS[style().ink.min(INKS.len() - 1)].1.map(|v| v as f32),
         ink_night: [1.0; 3],
         near_at: fv.near_at,
+        size: (fv.size.0, fv.size.1),
     })
 }
 
@@ -3750,7 +3756,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
     let z = fv.table;
     let project = |x: f32, y: f32| -> Option<(f64, f64)> {
         let v = m.transform_vec4(&graphene::Vec4::new(x, y, z, 1.0));
-        if v.w() <= 0.05 {
+        if v.w() <= 0.005 {
             return None;
         }
         Some(((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64))
@@ -3794,7 +3800,7 @@ fn draw_floor(fv: &FloorView, cr: &gtk::cairo::Context, _w: i32, _h: i32) {
                     }
                     let (x, y) = (q[0] / q[2], q[1] / q[2]);
                     // Behind the eye (or at the horizon): nothing.
-                    if w_at(x, y) <= 0.05 {
+                    if w_at(x, y) <= 0.005 {
                         continue;
                     }
                     let a = alpha(x as f32, y as f32);
@@ -5920,6 +5926,15 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // Duo's room's middle there).
         let middle = (FRAME_MIDDLE.0 * page_w / scene::REF.0 - off.0, FRAME_MIDDLE.1 * page_h / scene::REF.1 - off.1);
         if std::env::var_os("ITEMGRID_SHEET").is_some() {
+            let b = ui.floor.compute_bounds(&ui.window).map(|b| (b.x(), b.y(), b.width(), b.height()));
+            let hp = ui.floor.parent().and_then(|p| p.compute_bounds(&ui.window)).map(|b| (b.x(), b.y(), b.width(), b.height()));
+            let v = ui.toasts.compute_bounds(&ui.window).map(|b| (b.x(), b.y(), b.width(), b.height()));
+            let sv = ui.shown.compute_bounds(&ui.window).map(|b| (b.x(), b.y(), b.width(), b.height()));
+            let st = ui.stage.compute_bounds(&ui.window).map(|b| (b.x(), b.y(), b.width(), b.height()));
+            let hd = ui.shown.first_child().and_then(|c| c.compute_bounds(&ui.window)).map(|b| (b.x(), b.y(), b.width(), b.height()));
+            trace(format_args!("bounds: window {}x{} floor {b:?} home {hp:?} toasts {v:?} view {sv:?} stage {st:?} view.first {hd:?} first {:?}", ui.window.width(), ui.window.height(), ui.shown.first_child().map(|c| c.type_().name().to_string())));
+        }
+        if std::env::var_os("ITEMGRID_SHEET").is_some() {
             trace(format_args!("frame: room middle on the page {:?} page {}x{} frame at {frame_at:?} scale {frame_s}", (holder.min(width) / 2.0 + off_page.0, room / 2.0 + off_page.1), ui.floor.width(), ui.floor.height()));
         }
         // Where the eye at rest is on the page (the room's middle before the
@@ -6567,7 +6582,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
