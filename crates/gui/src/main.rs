@@ -6832,10 +6832,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 })
             });
         let mut fills: Option<Vec<f32>> = None;
+        let mut job_running = false;
         let job_lines: Option<Vec<String>> = job_now.and_then(|(kind, jlines, ended, over)| {
             if ended.is_some() && over > 60 {
                 return None;
             }
+            job_running = ended.is_none();
             // The stage reached, and how long it has been on: its square
             // fills with the time (journey::within), the minutes left count.
             let stages = journey::stages(&kind);
@@ -6868,13 +6870,25 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 "full-backup" => "backing up",
                 k => journey::title(k),
             };
+            // The title; then, under the squares: the stage, what happens in
+            // it (its first sentence), about how long it takes and how long
+            // is left (the owner, 2026-10-08).
             let mut lines = wrapped(title);
             match &ended {
                 None => {
                     if !stages.is_empty() {
-                        lines.extend(wrapped(stages[at].title));
+                        let stage = &stages[at];
+                        lines.extend(wrapped(stage.title));
+                        let first = stage.explain.split_once(". ").map_or(stage.explain.trim_end_matches('.'), |(a, _)| a);
+                        lines.extend(wrapped(first));
+                        let about = match stage.secs {
+                            s if s < 50.0 => "under a minute".to_owned(),
+                            s if s < 90.0 => "about a minute".to_owned(),
+                            s => format!("about {} min", (s / 60.0).round()),
+                        };
+                        lines.push(about);
                         let left = (journey::left(&stages, at, secs_in) / 60.0).ceil();
-                        lines.push(if left <= 1.0 { "a minute left".to_owned() } else { format!("{left} min left") });
+                        lines.push(if left <= 1.0 { "a minute left in all".to_owned() } else { format!("{left} min left in all") });
                     }
                     // What the hands do meanwhile: nothing - unless the
                     // phone asks (its bootloader's unlock, by its keys).
@@ -6904,10 +6918,19 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let (x, top) = (left, under);
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: 1.0 });
-            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: 1.0 });
-            // Its stages as squares, a row under the words (a blank row between).
+            // Its stages as squares, a row under the title (a blank row
+            // between), and the rest of its words under them: the stage on
+            // (darker), what happens, how long.
+            let mut rest_at = top + cur;
             if let Some(f) = fills.as_ref().filter(|f| !f.is_empty()) {
-                progress = Some(Progress { at: (x, top + (lines.len() + 1) as f32 * cur), cell: cur, fills: f.clone(), strength: 1.0 });
+                progress = Some(Progress { at: (x, top + 2.0 * cur), cell: cur, fills: f.clone(), strength: 1.0 });
+                rest_at = top + 4.0 * cur;
+            }
+            if let Some((stage, more)) = rest.split_first().filter(|_| progress.is_some() && job_running) {
+                texts.push(TableText { at: (x, rest_at), cell: cur, lines: vec![stage.clone()], grey: 0.16, bold: false, set: 1.0, strength: 1.0 });
+                texts.push(TableText { at: (x, rest_at + cur), cell: cur, lines: more.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: 1.0 });
+            } else {
+                texts.push(TableText { at: (x, rest_at), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: 1.0 });
             }
         } else if intro.duo() > 0.0 && ui.state.borrow().host.is_some() {
             let low = |s: glib::GString| s.to_lowercase();

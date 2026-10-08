@@ -219,8 +219,13 @@ fn start(args: &Value) -> Result<Answer, String> {
         c.env("DISPLAY", display).env("GDK_BACKEND", "x11").env_remove("WAYLAND_DISPLAY");
     }
     c.process_group(0);
-    let child = c.spawn().map_err(|e| format!("{gui}: {e}"))?;
+    let mut child = c.spawn().map_err(|e| format!("{gui}: {e}"))?;
     let _ = std::fs::write(pid_file(), child.id().to_string());
+    // Waited for once it ends (closed by a restart or by its button): not
+    // waited for, each window left a defunct process behind in this one.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     let on = display.as_deref().map_or("the desktop".to_owned(), |d| format!("a screen of its own ({d}; the owner's pointer untouched)"));
     let since = Instant::now();
     while since.elapsed() < Duration::from_secs(15) {
