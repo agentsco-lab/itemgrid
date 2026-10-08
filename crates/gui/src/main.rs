@@ -177,6 +177,59 @@ fn night_file() -> std::path::PathBuf {
     glib::user_config_dir().join("itemgrid/night")
 }
 
+/// How night (or day) comes over the table when the "/" is pressed - for
+/// trying them, a settings line (the owner: "давай сделаем временный
+/// переключатель, а я посмотрю", 2026-10-09): the squares turning over
+/// in a ring from the "/" (as it was); ink - the new colour spreading
+/// from it, a soft edge, braking; switch - the whole table fading at
+/// once; lamp - the far corners first to night, the middle first to day;
+/// blinds - rows turning over from the top down.
+const TURNS: [&str; 5] = ["flip", "ink", "switch", "lamp", "blinds"];
+const TURN_INK: usize = 1;
+const TURN_SWITCH: usize = 2;
+const TURN_LAMP: usize = 3;
+const TURN_BLINDS: usize = 4;
+static TURN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn turn() -> usize {
+    TURN.load(std::sync::atomic::Ordering::Relaxed).min(TURNS.len() - 1)
+}
+
+fn turn_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("itemgrid/turn")
+}
+
+fn kept_turn() -> Option<usize> {
+    let name = std::fs::read_to_string(turn_file()).ok()?;
+    TURNS.iter().position(|n| *n == name.trim())
+}
+
+fn set_turn(i: usize) {
+    TURN.store(i, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::create_dir_all(turn_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(turn_file(), format!("{}\n", TURNS[i]));
+}
+
+/// How long the turn takes, its way.
+fn turn_secs() -> f32 {
+    match turn() {
+        TURN_INK => 2.2,
+        TURN_SWITCH => 0.7,
+        TURN_LAMP => 2.4,
+        _ => NIGHT_FLIP_S,
+    }
+}
+
+/// How far a turn has come (0..1) at `x` of its time: the flip and the
+/// blinds at an even pace, the ink braking, the switch and the lamp soft.
+fn turn_ease(x: f32) -> f32 {
+    match turn() {
+        TURN_INK => braking(x as f64) as f32,
+        TURN_SWITCH | TURN_LAMP => smooth01(x as f64) as f32,
+        _ => x.clamp(0.0, 1.0),
+    }
+}
+
 /// The table's own grey (what is white by day).
 const NIGHT_TABLE: f64 = 0.142;
 
@@ -202,20 +255,35 @@ fn draw_night_at(fv: &FloorView, p: (f32, f32)) {
     let step = square() * fv.k;
     let mut now = night();
     for (how_far, from) in &fv.waves {
-        if wave_passed(fv.reach, step, *how_far, *from, p) {
+        if wave_passed(fv.reach, step, *how_far, *from, p, !now) {
             now = !now;
         }
     }
     DRAW_NIGHT.with(|c| c.set(Some(now)));
 }
 
-/// Whether a wave `how_far` on its way from `from` has turned the square
-/// at `p` over (as grid_gl's shader counts it: a band of six squares
-/// turning, the middle of it).
-fn wave_passed(reach: f32, step: f32, how_far: f32, from: (f32, f32), p: (f32, f32)) -> bool {
+/// How far a wave `how_far` on its way from `from` has turned the point
+/// `p` over (0 not yet, 1 done), its way (TURNS) - as grid_gl's shader
+/// counts it; `to_night` is the side it brings there.
+fn wave_p(reach: f32, step: f32, how_far: f32, from: (f32, f32), p: (f32, f32), to_night: bool) -> f32 {
     let spread = 6.0 * step;
+    let far = reach * 1.6 + spread;
     let d = ((p.0 - from.0).powi(2) + (p.1 - from.1).powi(2)).sqrt();
-    (how_far * (reach * 1.6 + spread) - d) / spread > 0.5
+    match turn() {
+        TURN_SWITCH => how_far,
+        // (From the table's middle to its rim - the reach - and in to
+        // night; out from the middle to day.)
+        TURN_LAMP if to_night => ((how_far * (reach + spread) - (reach - d)) / spread).clamp(0.0, 1.0),
+        TURN_LAMP => ((how_far * (reach + spread) - d) / spread).clamp(0.0, 1.0),
+        TURN_BLINDS => ((how_far * (far + 7.0 * step) - (p.1 - from.1 + 4.0 * step)) / (3.0 * step)).clamp(0.0, 1.0),
+        _ => ((how_far * far - d) / spread).clamp(0.0, 1.0),
+    }
+}
+
+/// Whether a wave has turned the point `p` over (past the middle of its
+/// turn).
+fn wave_passed(reach: f32, step: f32, how_far: f32, from: (f32, f32), p: (f32, f32), to_night: bool) -> bool {
+    wave_p(reach, step, how_far, from, p, to_night) > 0.5
 }
 
 fn draw_night_off() {
@@ -877,6 +945,9 @@ fn build(app: &adw::Application) {
     }
     if let Some(g) = kept_grid() {
         GRID.store(g, std::sync::atomic::Ordering::Relaxed);
+    }
+    if let Some(t) = kept_turn() {
+        TURN.store(t, std::sync::atomic::Ordering::Relaxed);
     }
     let window = adw::ApplicationWindow::builder().application(app).title("item/grid").default_width(1000).default_height(800).build();
     if night() {
@@ -2069,6 +2140,8 @@ fn build(app: &adw::Application) {
                             ui.floor.queue_draw();
                             ui.floor_gl.queue_render();
                         }
+                        // How night comes (TURNS): the next way round.
+                        "set:turn" => set_turn((turn() + 1) % TURNS.len()),
                         // The lamp under the table: how strong, how far, where -
                         // each turned a step round.
                         "set:light" | "set:reach" | "set:lamp" => {
@@ -2192,7 +2265,7 @@ fn build(app: &adw::Application) {
                 let fv = ui.floor_view.borrow();
                 if cube_at(&fv, (x, y)) == Some(SLASH) {
                     let cur = square() * fv.k;
-                    let from = (fv.cubes_at.0 + (SLASH as f32 - WORD_HALF + 0.5) * cur, fv.cubes_at.1);
+                    let from = if turn() == TURN_LAMP { fv.grid_mid } else { (fv.cubes_at.0 + (SLASH as f32 - WORD_HALF + 0.5) * cur, fv.cubes_at.1) };
                     drop(fv);
                     trace(format_args!("the slash pressed: night turned"));
                     if ui.night_waves.borrow().len() < grid_gl::WAVES {
@@ -3965,6 +4038,7 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         grid_k: grid_k(),
         waves: std::array::from_fn(|i| fv.waves.get(i).copied().unwrap_or((0.0, (0.0, 0.0)))),
         wave_n: fv.waves.len().min(grid_gl::WAVES) as i32,
+        turn: turn() as i32,
         base_night: night,
         fill_day: paper_rgb().map(|v| v as f32),
         fill_night: [NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32],
@@ -5599,6 +5673,7 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     }
     lines.push(board::Line::new("set:width", format!("width {}", WIDTHS[style().width.min(WIDTHS.len() - 1)])));
     lines.push(board::Line::new("set:grid", format!("grid {}", GRIDS[GRID.load(std::sync::atomic::Ordering::Relaxed).min(GRIDS.len() - 1)].0)));
+    lines.push(board::Line::new("set:turn", format!("turn {}", TURNS[turn()])));
     let lp = lamp::get();
     lines.push(board::Line::new("set:light", format!("light {}", lamp::STRENGTHS[lp.strength].0)));
     lines.push(board::Line::new("set:reach", format!("reach {}", lamp::REACHES[lp.reach].0)));
@@ -7067,7 +7142,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let mut ws = ui.night_waves.borrow_mut();
             let mut done = 0;
             ws.retain(|(since, _, _)| {
-                let over = crate::clock::secs_since(*since) >= NIGHT_FLIP_S;
+                let over = crate::clock::secs_since(*since) >= turn_secs();
                 if over {
                     done += 1;
                 }
@@ -7084,8 +7159,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // waves still on their way past there, counted from what is set.
             let mut css = night();
             for (since, from, reached) in ws.iter_mut() {
-                let how_far = (crate::clock::secs_since(*since) / NIGHT_FLIP_S).min(1.0);
-                if wave_passed(reach, step, how_far, *from, near_at) {
+                let how_far = turn_ease(crate::clock::secs_since(*since) / turn_secs());
+                if wave_passed(reach, step, how_far, *from, near_at, !css) {
                     *reached = true;
                 }
                 if *reached {
@@ -7093,7 +7168,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 }
             }
             set_night_css(ui, css);
-            ws.iter().map(|(since, from, _)| ((crate::clock::secs_since(*since) / NIGHT_FLIP_S).min(1.0), *from)).collect()
+            ws.iter().map(|(since, from, _)| (turn_ease(crate::clock::secs_since(*since) / turn_secs()), *from)).collect()
         };
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha || fv.lamp != lamp_at || fv.lamp_r != lamp_r || fv.lamp_k != lamp_k || fv.lamp_mark != lamp_mark || fv.progress != progress;

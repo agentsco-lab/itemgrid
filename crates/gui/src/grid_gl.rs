@@ -42,6 +42,11 @@ pub struct Grid {
     /// before them; the table's fill and the lines' ink by day and night.
     pub waves: [(f32, (f32, f32)); WAVES],
     pub wave_n: i32,
+    /// Which way they come (main.rs's TURNS): 0 the squares turning over
+    /// in a ring, 1 ink spreading soft-edged, 2 the whole table fading, 3
+    /// the far corners first (to night; the middle first to day), 4 rows
+    /// turning over from the top down.
+    pub turn: i32,
     pub base_night: bool,
     pub fill_day: [f32; 3],
     pub fill_night: [f32; 3],
@@ -98,6 +103,7 @@ uniform float u_grid;
 uniform vec4 u_ink;
 uniform float u_width;
 uniform int u_wave_n;
+uniform int u_turn;
 uniform float u_wave_p[6];
 uniform vec2 u_wave_from[6];
 uniform float u_base_night;
@@ -169,26 +175,54 @@ void main() {
         vec2 c = (cell + 0.5) * u_step + u_shift;
         float spread = 6.0 * u_step;
         float far = u_reach * 1.6 + spread;
-        // Each wave that has passed this square turned it over once: the
-        // face shown now, and what it is turning to (the one passing).
         bool now = u_base_night > 0.5;
         bool after = now;
-        float face = 1.0;
-        for (int i = 0; i < 6; i++) {
-            if (i >= u_wave_n) break;
-            float p = clamp((u_wave_p[i] * far - length(c - u_wave_from[i])) / spread, 0.0, 1.0);
-            if (p > 0.5) now = !now;
-            if (p > 0.0) after = !after;
-            if (p > 0.0 && p < 1.0) face = abs(cos(p * 3.14159265));
+        if (u_turn == 0 || u_turn == 4) {
+            // Each wave that has passed this square turned it over once:
+            // the face shown now, and what it is turning to (the one
+            // passing) - in a ring from where it began, or row by row
+            // from the top (blinds).
+            float face = 1.0;
+            for (int i = 0; i < 6; i++) {
+                if (i >= u_wave_n) break;
+                float p = u_turn == 4
+                    ? clamp((u_wave_p[i] * (far + 7.0 * u_step) - (c.y - u_wave_from[i].y + 4.0 * u_step)) / (3.0 * u_step), 0.0, 1.0)
+                    : clamp((u_wave_p[i] * far - length(c - u_wave_from[i])) / spread, 0.0, 1.0);
+                if (p > 0.5) now = !now;
+                if (p > 0.0) after = !after;
+                if (p > 0.0 && p < 1.0) face = abs(cos(p * 3.14159265));
+            }
+            // The square turned over about its middle line: its face
+            // squeezed to it and grown back the other colour, the other
+            // colour beside.
+            float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
+            float fw = fwidth(v);
+            float beside = smoothstep(face - fw, face + fw, v);
+            vec3 fill = mix(now ? u_fill_night : u_fill_day, after ? u_fill_night : u_fill_day, beside);
+            ink = (beside > 0.5 ? after : now) ? u_ink_night : u_ink_day;
+            under = vec4(fill, 1.0);
+        } else {
+            // Soft: each wave mixes the colour under it toward the other
+            // side as far as it has come here - ink spreading from where it
+            // began, the whole table at once (switch), or from the far
+            // corners in (to night) and the middle out (to day): the lamp.
+            vec3 fill = now ? u_fill_night : u_fill_day;
+            ink = now ? u_ink_night : u_ink_day;
+            for (int i = 0; i < 6; i++) {
+                if (i >= u_wave_n) break;
+                float d = length(t - u_wave_from[i]);
+                float p;
+                if (u_turn == 2) p = u_wave_p[i];
+                else if (u_turn == 3 && !after) p = clamp((u_wave_p[i] * (u_reach + spread) - (u_reach - d)) / spread, 0.0, 1.0);
+                else if (u_turn == 3) p = clamp((u_wave_p[i] * (u_reach + spread) - d) / spread, 0.0, 1.0);
+                else p = clamp((u_wave_p[i] * far - d) / spread, 0.0, 1.0);
+                after = !after;
+                float m = smoothstep(0.0, 1.0, p);
+                fill = mix(fill, after ? u_fill_night : u_fill_day, m);
+                ink = mix(ink, after ? u_ink_night : u_ink_day, m);
+            }
+            under = vec4(fill, 1.0);
         }
-        // The square turned over about its middle line: its face squeezed
-        // to it and grown back the other colour, the other colour beside.
-        float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
-        float fw = fwidth(v);
-        float beside = smoothstep(face - fw, face + fw, v);
-        vec3 fill = mix(now ? u_fill_night : u_fill_day, after ? u_fill_night : u_fill_day, beside);
-        ink = (beside > 0.5 ? after : now) ? u_ink_night : u_ink_day;
-        under = vec4(fill, 1.0);
     }
     float k = min(a * ink.a * lit, 1.0);
     // The glow over the paper, the lines over both, premultiplied, gone at
@@ -267,6 +301,7 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink").as_ref(), g.ink[0], g.ink[1], g.ink[2], g.ink_k);
             gl.uniform_1_f32(u("u_width").as_ref(), g.width);
             gl.uniform_1_i32(u("u_wave_n").as_ref(), g.wave_n);
+            gl.uniform_1_i32(u("u_turn").as_ref(), g.turn);
             let ps: Vec<f32> = g.waves.iter().map(|w| w.0).collect();
             let froms: Vec<f32> = g.waves.iter().flat_map(|w| [w.1 .0, w.1 .1]).collect();
             gl.uniform_1_f32_slice(u("u_wave_p").as_ref(), &ps);
