@@ -5046,8 +5046,10 @@ fn repair_lines(ui: &Ui) -> Vec<board::Line> {
 }
 
 /// A question on the table before a job: what it is, what it does (short
-/// lines), its choices, the phone's number to type for what cannot be
-/// undone, and what goes on (with the choice) once asked.
+/// lines), its choices, and what goes on (with the choice) once asked. (The
+/// phone's number to type for what cannot be undone is kept here but not
+/// asked any more: the owner wanted to press, read the warning and confirm,
+/// 2026-10-08. The jobs still pass the number to the core themselves.)
 struct Ask {
     title: String,
     info: Vec<String>,
@@ -5191,14 +5193,12 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
             open_ask(ui, ask);
         }
         "do:reinstall" => {
-            let word = itemgrid_core::android::confirm_word(&ui.serial.borrow());
             let ask = match itemgrid_core::install::releases().pop() {
                 None => Ask::new("reinstall item", wrapped("no release image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
                     let mut ask = Ask::new("reinstall item", vec!["erases the phone".into(), format!("new item {version}"), "keep the cable in".into()]);
                     ask.choices = vec![("erase", "erase all · 10 min".into()), ("keep", "keep files · 15 min".into())];
-                    ask.word = Some(word);
                     ask.go = Some(Rc::new(move |ui, choice| {
                         let mode = if choice == "keep" { itemgrid_core::install::Mode::KeepFiles } else { itemgrid_core::install::Mode::Erase };
                         run_job(ui, Job::Install(Box::new(release.clone()), mode));
@@ -5216,11 +5216,7 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
             let ui = ui.clone();
             glib::spawn_future_local(async move {
                 let h = host.clone();
-                let read = gio::spawn_blocking(move || {
-                    let plan = itemgrid_core::android::clean_plan(&h)?;
-                    let serial = itemgrid_core::backup::serial(&h)?;
-                    Ok::<_, String>((plan, itemgrid_core::android::confirm_word(&serial)))
-                })
+                let read = gio::spawn_blocking(move || itemgrid_core::android::clean_plan(&h))
                 .await
                 .unwrap_or_else(|_| Err("the work stopped".into()));
                 // Asked about something else meanwhile: let be.
@@ -5229,11 +5225,10 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                 }
                 let ask = match read {
                     Err(e) => Ask::new("back to android", wrapped(&format!("cannot just now: {e}"))),
-                    Ok((plan, _)) if !plan.stops.is_empty() => Ask::new("back to android", plan.stops.iter().flat_map(|s| wrapped(s)).take(6).collect()),
-                    Ok((plan, word)) => {
+                    Ok(plan) if !plan.stops.is_empty() => Ask::new("back to android", plan.stops.iter().flat_map(|s| wrapped(s)).take(6).collect()),
+                    Ok(plan) => {
                         let mut ask = Ask::new("back to android", vec!["erases item".into(), "android as it came".into(), "10 min · cable in".into()]);
-                        ask.word = Some(word);
-                        ask.verb = "erase";
+                            ask.verb = "erase";
                         ask.go = Some(Rc::new(move |ui, choice| run_job(ui, Job::AndroidClean(Box::new(plan.clone()), choice == "copy"))));
                         ask
                     }
@@ -5244,13 +5239,11 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
         }
         "do:install" => {
             let Some(serial) = stock_android(ui) else { return };
-            let word = itemgrid_core::android::confirm_word(&serial);
             let ask = match itemgrid_core::install::releases().into_iter().filter(|r| r.boot.is_some() && r.vbmeta.is_some()).next_back() {
                 None => Ask::new("install item", wrapped("no release with a boot image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
                     let mut ask = Ask::new("install item", vec!["erases android".into(), format!("puts item {version}"), "15 min · cable in".into()]);
-                    ask.word = Some(word);
                     ask.verb = "install";
                     ask.go = Some(Rc::new(move |ui, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));
                     ask
