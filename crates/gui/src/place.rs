@@ -169,10 +169,21 @@ pub fn move_resize(window: &impl IsA<gtk::Window>, (x, y, w, h): (i32, i32, i32,
     }
 }
 
-/// Kept as it closes.
+/// Whether this window is on itemgrid-mcp's own unseen screen (an Xvfb it
+/// records in the runtime directory): its place there is no place of the
+/// owner's.
+fn on_own_screen() -> bool {
+    let Ok(text) = std::fs::read_to_string(gtk::glib::user_runtime_dir().join("itemgrid-mcp-screen")) else { return false };
+    let own = text.split_whitespace().next().unwrap_or_default();
+    !own.is_empty() && std::env::var("DISPLAY").ok().as_deref() == Some(own)
+}
+
+/// Kept as it closes. (A window tried from outside - itemgrid-mcp - kept
+/// nothing once; the owner moved the one it put on the desktop and found
+/// it back where it was at each restart, 2026-10-08. Only the one on the
+/// unseen screen, and a picture's, keep nothing now.)
 pub fn keep(window: &adw::ApplicationWindow) {
-    // Not a window tried from outside (itemgrid-mcp): the owner's place kept.
-    if std::env::var("ITEMGRID_CONTROL").ok().as_deref() == Some("1") {
+    if std::env::var_os("ITEMGRID_SHOT").is_some() || on_own_screen() {
         return;
     }
     window.connect_close_request(|window| {

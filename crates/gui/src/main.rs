@@ -880,6 +880,15 @@ fn build(app: &adw::Application) {
     // Where it was last (place.rs).
     place::restore(&window);
     place::keep(&window);
+    // Told to end (SIGTERM: itemgrid-mcp's restart, the session's end): the
+    // window closed as by its button, so its place is kept.
+    {
+        let w = window.clone();
+        glib::unix_signal_add_local(15, move || {
+            w.close();
+            glib::ControlFlow::Break
+        });
+    }
 
     // The tabs, in the header as Finder has them.
     let stack = adw::ViewStack::new();
