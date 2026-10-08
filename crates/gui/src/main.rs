@@ -34,6 +34,7 @@ mod control;
 mod journey;
 mod place;
 mod saver;
+mod clock;
 mod scene;
 mod stage;
 mod sections;
@@ -1831,7 +1832,7 @@ fn build(app: &adw::Application) {
             let pressed = button_at(&ui.floor_view.borrow(), (x, y));
             if let Some(i) = pressed {
                 g.set_state(gtk::EventSequenceState::Claimed);
-                ui.buttons.borrow_mut().pressed = Some((i, std::time::Instant::now()));
+                ui.buttons.borrow_mut().pressed = Some((i, crate::clock::now()));
                 trace(format_args!("button {:?}", FLOOR_BUTTONS[i]));
                 let Some(button) = FLOOR_BUTTONS[i] else { return };
                 match button {
@@ -1860,7 +1861,7 @@ fn build(app: &adw::Application) {
                             let cur = square() * fv.k;
                             let from = (fv.buttons_at.0 + (i as f32 + 0.5) * cur, fv.buttons_at.1 + 0.5 * cur);
                             drop(fv);
-                            ui.night_waves.borrow_mut().push((std::time::Instant::now(), from, false));
+                            ui.night_waves.borrow_mut().push((crate::clock::now(), from, false));
                         }
                     }
                     // As the wallpaper, the window back first (its place and
@@ -1920,7 +1921,7 @@ fn build(app: &adw::Application) {
                             ui.details_open.set(!ui.details_open.get());
                             let lines = updates_lines(&ui);
                             if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
-                                let now = std::time::Instant::now();
+                                let now = crate::clock::now();
                                 let head = lines.iter().position(|l| l.key == "more:updates").map_or(2, |i| i + 1);
                                 b.lines.truncate(head.min(lines.len()));
                                 for (i, mut l) in lines.into_iter().enumerate() {
@@ -2490,6 +2491,8 @@ fn build(app: &adw::Application) {
         let hooked = std::cell::Cell::new(false);
         move |_, clock| {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
+            // This frame's time for the animations (clock.rs).
+            crate::clock::frame(clock.frame_time());
             // ITEMGRID_FRAMES=1: the frame's layout and paint (GTK's own
             // part: snapshot, render, the swap) timed too.
             if !hooked.replace(true) && std::env::var_os("ITEMGRID_FRAMES").is_some() {
@@ -4371,7 +4374,7 @@ fn saver_on(ui: &Ui) {
     if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
         b.close();
     }
-    ui.saver.set(Some(std::time::Instant::now()));
+    ui.saver.set(Some(crate::clock::now()));
     ui.saver_pointer.set(place::pointer(&ui.window));
     let display = WidgetExt::display(&ui.window);
     match saver::second_monitor(&display) {
@@ -4582,7 +4585,7 @@ fn wall_step(ui: &Ui, frame_us: i64) -> bool {
         ui.wallpaper_mix.set(0.0);
         ui.wall_t.set(None);
     }
-    let now = std::time::Instant::now();
+    let now = crate::clock::now();
     let after = |since: std::time::Instant, ms: u64| now.duration_since(since) >= std::time::Duration::from_millis(ms);
     match w.phase {
         // The cover up (drawn a couple of frames): the window unseen.
@@ -4943,7 +4946,7 @@ fn show_ask(ui: &Rc<Ui>) {
     let mut page = ui.page.borrow_mut();
     match page.as_mut() {
         Some((key, b)) if key == "ask" && !b.closing() => {
-            let now = std::time::Instant::now();
+            let now = crate::clock::now();
             b.lines.truncate(lines.len());
             for (i, mut l) in lines.into_iter().enumerate() {
                 if i < b.lines.len() {
@@ -5276,7 +5279,7 @@ impl Buttons {
         let k = 1.0 - (-dt / 0.06).exp();
         let mut moved = false;
         for i in 0..BUTTONS {
-            let pressed = self.pressed.is_some_and(|(p, at)| p == i && at.elapsed().as_secs_f32() < 0.12);
+            let pressed = self.pressed.is_some_and(|(p, at)| p == i && crate::clock::secs_since(at) < 0.12);
             let to = if pressed { -0.3 } else if self.hover == Some(i) { 0.12 } else { 0.0 };
             if (to - self.lift[i]).abs() > 0.001 {
                 self.lift[i] += (to - self.lift[i]) * k;
@@ -5286,7 +5289,7 @@ impl Buttons {
                 moved = true;
             }
         }
-        moved || self.pressed.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 0.2)
+        moved || self.pressed.is_some_and(|(_, at)| crate::clock::secs_since(at) < 0.2)
     }
 }
 
@@ -6126,7 +6129,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // (The frame is scaled to the page already.)
         let page_fit = 1.0;
         if drift > 0.0 {
-            let t = ui.saver.get().map_or(0.0, |s| s.elapsed().as_secs_f32()) + 40.0;
+            let t = ui.saver.get().map_or(0.0, |s| crate::clock::secs_since(s)) + 40.0;
             // Round the word, in the page's middle.
             let page_mid = (page_w * 0.5 - off.0, page_h * 0.5 - off.1);
             let wander = Eye {
@@ -6614,7 +6617,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let mut ws = ui.night_waves.borrow_mut();
             let mut done = 0;
             ws.retain(|(since, _, _)| {
-                let over = since.elapsed().as_secs_f32() >= NIGHT_FLIP_S;
+                let over = crate::clock::secs_since(*since) >= NIGHT_FLIP_S;
                 if over {
                     done += 1;
                 }
@@ -6631,7 +6634,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // waves still on their way past there, counted from what is set.
             let mut css = night();
             for (since, from, reached) in ws.iter_mut() {
-                let how_far = (since.elapsed().as_secs_f32() / NIGHT_FLIP_S).min(1.0);
+                let how_far = (crate::clock::secs_since(*since) / NIGHT_FLIP_S).min(1.0);
                 if wave_passed(reach, step, how_far, *from, near_at) {
                     *reached = true;
                 }
@@ -6640,7 +6643,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 }
             }
             set_night_css(ui, css);
-            ws.iter().map(|(since, from, _)| ((since.elapsed().as_secs_f32() / NIGHT_FLIP_S).min(1.0), *from)).collect()
+            ws.iter().map(|(since, from, _)| ((crate::clock::secs_since(*since) / NIGHT_FLIP_S).min(1.0), *from)).collect()
         };
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;

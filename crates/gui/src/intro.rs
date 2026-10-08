@@ -80,7 +80,7 @@ impl Default for Intro {
     fn default() -> Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
-        let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(30.0));
+        let start = skip.then(|| crate::clock::now() - std::time::Duration::from_secs_f32(30.0));
         Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, timing: TRANS }
     }
 }
@@ -98,7 +98,7 @@ fn smoother(x: f32) -> f32 {
 
 impl Intro {
     fn t(&self) -> f32 {
-        self.start.map_or(0.0, |s| s.elapsed().as_secs_f32())
+        self.start.map_or(0.0, |s| crate::clock::secs_since(s))
     }
 
     /// Seconds since the start (for looking from outside).
@@ -117,7 +117,7 @@ impl Intro {
     /// From the beginning again, the cubes up (to look at it once more);
     /// they go where they were going after it.
     pub fn replay(&mut self) {
-        self.start = Some(Instant::now());
+        self.start = Some(crate::clock::now());
         self.ended = false;
         self.sink = 0.0;
     }
@@ -219,7 +219,7 @@ impl Intro {
 
     /// A square of the table clicked: it jumps, the phone looked for.
     pub fn tap(&mut self, at: (f32, f32)) {
-        self.tapped = Some((at, Instant::now()));
+        self.tapped = Some((at, crate::clock::now()));
         self.look();
     }
 
@@ -227,18 +227,18 @@ impl Intro {
     /// side).
     pub fn tapped(&self) -> Option<((f32, f32), f32)> {
         let (at, when) = self.tapped?;
-        let t = when.elapsed().as_secs_f32() / TAP_S;
+        let t = crate::clock::secs_since(when) / TAP_S;
         (t < 1.0).then(|| (at, 0.6 * (t * std::f32::consts::PI).sin().powf(0.7)))
     }
 
     /// A cube pressed: the phone looked for from now.
     pub fn press(&mut self, i: usize) {
-        self.pressed = Some((i, Instant::now()));
+        self.pressed = Some((i, crate::clock::now()));
         self.look();
     }
 
     fn look(&mut self) {
-        let now = Instant::now();
+        let now = crate::clock::now();
         if !self.searching() {
             self.search = Some((now, None));
         }
@@ -248,8 +248,8 @@ impl Intro {
     /// The wave still going (looking, or not yet long enough).
     pub fn searching(&self) -> bool {
         match self.search {
-            Some((since, None)) => since.elapsed().as_secs_f32() < 30.0,
-            Some((since, Some(_))) => since.elapsed().as_secs_f32() < SEARCH_MIN_S,
+            Some((since, None)) => crate::clock::secs_since(since) < 30.0,
+            Some((since, Some(_))) => crate::clock::secs_since(since) < SEARCH_MIN_S,
             None => false,
         }
     }
@@ -260,8 +260,8 @@ impl Intro {
         if end.is_some() {
             return None;
         }
-        *end = Some(Instant::now());
-        let took = since.elapsed().as_secs_f32();
+        *end = Some(crate::clock::now());
+        let took = crate::clock::secs_since(*since);
         // Shown once the wave is over.
         let at = *since + std::time::Duration::from_secs_f32(SEARCH_MIN_S.max(took));
         self.note = note.map(|n| (n, at));
@@ -273,12 +273,12 @@ impl Intro {
     fn hop(&self, i: usize) -> f32 {
         let mut lift = 0.0;
         if let Some((p, at)) = self.pressed {
-            let t = at.elapsed().as_secs_f32() / PRESS_S;
+            let t = crate::clock::secs_since(at) / PRESS_S;
             if p == i && t < 1.0 {
                 lift -= 0.25 * (t * std::f32::consts::PI).sin();
             }
         }
-        let wave_t = self.search.filter(|_| self.searching()).map(|(since, _)| since.elapsed().as_secs_f32());
+        let wave_t = self.search.filter(|_| self.searching()).map(|(since, _)| crate::clock::secs_since(since));
         {
             if let Some(t) = wave_t {
                 // Softly in at the start; along the word, a hop a cube.
@@ -293,8 +293,8 @@ impl Intro {
     /// The note under the word (not found) and its strength.
     pub fn note(&self) -> Option<(&str, f32)> {
         let (text, at) = self.note.as_ref()?;
-        let t = Instant::now().saturating_duration_since(*at).as_secs_f32();
-        (Instant::now() >= *at).then_some((text.as_str(), smooth(t / 0.4)))
+        let t = crate::clock::secs_since(*at);
+        (crate::clock::now() >= *at).then_some((text.as_str(), smooth(t / 0.4)))
     }
 
     /// The Duo: seen as the last cube goes down, gone as the first rises.
@@ -305,7 +305,7 @@ impl Intro {
     /// A frame on: the cubes toward where they go (once the start is
     /// over). Whether anything still moves.
     pub fn step(&mut self) -> bool {
-        let now = Instant::now();
+        let now = crate::clock::now();
         let dt = self.last.map_or(0.0, |l| now.duration_since(l).as_secs_f32()).min(0.1);
         self.last = Some(now);
         if !self.begun() {
@@ -319,10 +319,10 @@ impl Intro {
             return true;
         }
         // Pressed, looking, the note coming.
-        let moving = self.pressed.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < PRESS_S + 0.05)
-            || self.tapped.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAP_S + 0.05)
-            || self.search.is_some_and(|(since, _)| since.elapsed().as_secs_f32() < 30.0 && (self.searching() || since.elapsed().as_secs_f32() < SEARCH_MIN_S + 0.4))
-            || self.note.as_ref().is_some_and(|(_, at)| Instant::now().saturating_duration_since(*at).as_secs_f32() < 0.5);
+        let moving = self.pressed.is_some_and(|(_, at)| crate::clock::secs_since(at) < PRESS_S + 0.05)
+            || self.tapped.is_some_and(|(_, at)| crate::clock::secs_since(at) < TAP_S + 0.05)
+            || self.search.is_some_and(|(since, _)| crate::clock::secs_since(since) < 30.0 && (self.searching() || crate::clock::secs_since(since) < SEARCH_MIN_S + 0.4))
+            || self.note.as_ref().is_some_and(|(_, at)| crate::clock::secs_since(*at) < 0.5);
         let sink_to = self.sink_to;
         let d = sink_to - self.sink;
         if d.abs() < 1e-4 {

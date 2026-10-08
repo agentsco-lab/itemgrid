@@ -94,14 +94,14 @@ pub struct Board {
 
 impl Board {
     pub fn open(lines: Vec<Line>) -> Board {
-        Board { lines, opened: Instant::now(), closed: None, hover: None, hover_since: None, chosen: None }
+        Board { lines, opened: crate::clock::now(), closed: None, hover: None, hover_since: None, chosen: None }
     }
 
     /// Line `i` set anew: its squares turn up again to the new words.
     pub fn set_line(&mut self, i: usize, text: impl Into<String>) {
         if let Some(l) = self.lines.get_mut(i) {
             l.text = text.into();
-            l.since = Some(Instant::now());
+            l.since = Some(crate::clock::now());
         }
     }
 
@@ -121,7 +121,7 @@ impl Board {
 
     /// Faded away (to be dropped).
     pub fn gone(&self) -> bool {
-        self.closed.is_some_and(|c| c.elapsed().as_secs_f32() >= FADE_S)
+        self.closed.is_some_and(|c| crate::clock::secs_since(c) >= FADE_S)
     }
 
     /// Still turning up or fading.
@@ -133,14 +133,14 @@ impl Board {
             return false;
         }
         self.hover = line;
-        self.hover_since = line.map(|_| Instant::now());
+        self.hover_since = line.map(|_| crate::clock::now());
         true
     }
 
     /// How high line `r`'s letters stand (squares).
     fn lift(&self, r: usize) -> f32 {
         match (self.hover, self.hover_since) {
-            (Some(h), Some(since)) if h == r && !self.lines[r].key.is_empty() => 0.3 * smoother(since.elapsed().as_secs_f32() / HOVER_S),
+            (Some(h), Some(since)) if h == r && !self.lines[r].key.is_empty() => 0.3 * smoother(crate::clock::secs_since(since) / HOVER_S),
             _ => 0.0,
         }
     }
@@ -149,23 +149,23 @@ impl Board {
         let longest = self.lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
         let all = self.lines.len() as f32 * LINE_AFTER + longest as f32 * LETTER_AFTER + TURN_S;
         let line = longest as f32 * LETTER_AFTER + TURN_S;
-        self.opened.elapsed().as_secs_f32() < all + 0.05
-            || self.lines.iter().any(|l| l.since.is_some_and(|s| s.elapsed().as_secs_f32() < line + 0.05))
-            || self.closed.is_some_and(|c| c.elapsed().as_secs_f32() < FADE_S + 0.05)
-            || self.hover_since.is_some_and(|s| s.elapsed().as_secs_f32() < HOVER_S + 0.05)
+        crate::clock::secs_since(self.opened) < all + 0.05
+            || self.lines.iter().any(|l| l.since.is_some_and(|s| crate::clock::secs_since(s) < line + 0.05))
+            || self.closed.is_some_and(|c| crate::clock::secs_since(c) < FADE_S + 0.05)
+            || self.hover_since.is_some_and(|s| crate::clock::secs_since(s) < HOVER_S + 0.05)
     }
 
     /// Its squares from `origin` (the first line's first square's far left
     /// corner), a line a row, squares of `side`.
     pub fn tiles(&self, origin: (f32, f32), side: f32) -> Vec<Tile> {
-        let t = self.opened.elapsed().as_secs_f32();
-        let fade = self.closed.map_or(1.0, |c| 1.0 - smoother(c.elapsed().as_secs_f32() / FADE_S));
+        let t = crate::clock::secs_since(self.opened);
+        let fade = self.closed.map_or(1.0, |c| 1.0 - smoother(crate::clock::secs_since(c) / FADE_S));
         let mut out = Vec::new();
         for (r, line) in self.lines.iter().enumerate() {
             let grey = if self.hover == Some(r) || self.chosen == Some(r) { 0.12 } else { 0.42 };
             let lift = self.lift(r);
             // Set again: from then, alone.
-            let (t, r_after) = line.since.map_or((t, r as f32 * LINE_AFTER), |s| (s.elapsed().as_secs_f32(), 0.0));
+            let (t, r_after) = line.since.map_or((t, r as f32 * LINE_AFTER), |s| (crate::clock::secs_since(s), 0.0));
             for (c, ch) in line.text.chars().enumerate() {
                 if ch == ' ' {
                     continue;
