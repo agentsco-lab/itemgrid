@@ -3269,8 +3269,10 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
     ui.linux_only.set_visible(false);
     ui.mode.set_visible(false);
     bottom_shown(ui);
-    for s in &ui.screens {
-        s.set_paintable(gdk::Paintable::NONE);
+    if !duo2_showing() {
+        for s in &ui.screens {
+            s.set_paintable(gdk::Paintable::NONE);
+        }
     }
     while let Some(child) = ui.mode_buttons.first_child() {
         ui.mode_buttons.remove(&child);
@@ -3295,8 +3297,9 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         fold_to(ui, 0.0);
         tilt_to(ui, [0.0, 0.0, 1.0]);
     }
-    // A Duo 2: drawn a little open, lying still (the owner, 2026-10-08).
-    if matches!(place, Place::Duo2(_)) {
+    // A Duo 2: drawn a little open, lying still (the owner, 2026-10-08) -
+    // unless it is showing its date (duo2_show).
+    if matches!(place, Place::Duo2(_)) && !duo2_showing() {
         fold_to(ui, 35.0);
         tilt_to(ui, [0.0, 0.0, 1.0]);
     }
@@ -5395,22 +5398,116 @@ fn refresh_settings(ui: &Ui) {
 
 /// A click at `p` on the page (the floor's px): on the drawn Duo over Wi-Fi,
 /// it is opened flat or shut (a picture only); whether it was on it.
-fn duo_clicked(ui: &Ui, p: (f64, f64)) -> bool {
+fn duo_clicked(ui: &Rc<Ui>, p: (f64, f64)) -> bool {
     let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
+    let duo2 = matches!(ui.state.borrow().place, Place::Duo2(_));
     let Some(d) = ui.duo_on_sheet.get() else { return false };
-    if !wifi || ui.intro.borrow().duo() <= 0.0 || ui.duo_away.get() > 0.5 {
+    if !(wifi || duo2) || ui.intro.borrow().duo() <= 0.0 || ui.duo_away.get() > 0.5 {
         return false;
     }
     let Some(t) = table_under(&ui.floor_view.borrow(), p) else { return false };
     let (mid, h) = ui.duo_size;
     let left = if ui.wifi_open.get() { d.0 - mid } else { d.0 };
     let on = (left..=d.0 + mid).contains(&t.0) && (d.1 - h / 2.0..=d.1 + h / 2.0).contains(&t.1);
+    if on && duo2 {
+        duo2_show(ui);
+        return true;
+    }
     if on {
         let open = !ui.wifi_open.get();
         ui.wifi_open.set(open);
         fold_to(ui, if open { 180.0 } else { 0.0 });
     }
     on
+}
+
+thread_local! {
+    /// The Duo 2's show (duo2_show) going on since.
+    static DUO2_SHOW: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+fn duo2_showing() -> bool {
+    DUO2_SHOW.with(|c| c.get()).is_some()
+}
+
+/// The Duo 2 clicked: it opens flat, "Q1" comes up softly on its left
+/// panel and "27" on its right (item for it: the first quarter of 2027),
+/// they stay a couple of seconds, fade, and it closes to how it lay (the
+/// owner, 2026-10-08). The looks leave its fold and screens alone meanwhile.
+fn duo2_show(ui: &Rc<Ui>) {
+    if duo2_showing() {
+        return;
+    }
+    const OPEN_S: f64 = 0.9;
+    const IN_S: f64 = 0.8;
+    const HOLD_S: f64 = 2.0;
+    const OUT_S: f64 = 0.6;
+    let began = std::time::Instant::now();
+    DUO2_SHOW.with(|c| c.set(Some(began)));
+    fold_to(ui, 180.0);
+    let weak = Rc::downgrade(ui);
+    let last_alpha = std::cell::Cell::new(-1.0f64);
+    glib::timeout_add_local(std::time::Duration::from_millis(40), move || {
+        let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+        let t = began.elapsed().as_secs_f64();
+        let gone = !matches!(ui.state.borrow().place, Place::Duo2(_));
+        let alpha = if t < OPEN_S {
+            0.0
+        } else if t < OPEN_S + IN_S {
+            smooth01((t - OPEN_S) / IN_S)
+        } else if t < OPEN_S + IN_S + HOLD_S {
+            1.0
+        } else if t < OPEN_S + IN_S + HOLD_S + OUT_S {
+            1.0 - smooth01((t - OPEN_S - IN_S - HOLD_S) / OUT_S)
+        } else {
+            -1.0
+        };
+        if alpha < 0.0 || gone {
+            for s in &ui.screens {
+                s.set_paintable(gdk::Paintable::NONE);
+            }
+            DUO2_SHOW.with(|c| c.set(None));
+            if !gone {
+                fold_to(&ui, 35.0);
+            }
+            return glib::ControlFlow::Break;
+        }
+        if (alpha - last_alpha.get()).abs() > 0.01 {
+            last_alpha.set(alpha);
+            for (i, word) in ["Q1", "27"].iter().enumerate() {
+                ui.screens[i].set_paintable(Some(&duo2_panel(word, alpha)));
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn smooth01(x: f64) -> f64 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// A panel of the Duo 2 with `word` on it, light on dark, at `alpha`.
+fn duo2_panel(word: &str, alpha: f64) -> gdk::Paintable {
+    use gtk::graphene;
+    let k = DUO_PX_PER_MM;
+    let (w, h) = (DUO_PANEL.0 * k, DUO_PANEL.1 * k);
+    let snap = gtk::Snapshot::new();
+    let cr = snap.append_cairo(&graphene::Rect::new(0.0, 0.0, w as f32, h as f32));
+    cr.set_source_rgb(0.04, 0.04, 0.045);
+    let _ = cr.paint();
+    let layout = pangocairo::functions::create_layout(&cr);
+    let mut font = gtk::pango::FontDescription::from_string(&format!("{}, Lato, Ubuntu Sans, Ubuntu, sans-serif", FONTS[style().font.min(FONTS.len() - 1)].1));
+    font.set_weight(gtk::pango::Weight::Light);
+    font.set_absolute_size(0.42 * w * gtk::pango::SCALE as f64);
+    layout.set_font_description(Some(&font));
+    layout.set_text(word);
+    let (ink, logical) = layout.pixel_extents();
+    cr.move_to((w - ink.width() as f64) / 2.0 - ink.x() as f64, (h - logical.height() as f64) / 2.0 - logical.y() as f64);
+    cr.set_source_rgba(0.92, 0.92, 0.93, alpha);
+    pangocairo::functions::show_layout(&cr, &layout);
+    drop(cr);
+    flatten(&snap, w as f32, h as f32)
 }
 
 /// The saver off: the window back where it was.
