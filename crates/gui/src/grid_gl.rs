@@ -31,11 +31,9 @@ pub struct Grid {
     pub cubes_at: (f32, f32),
     pub grown: f32,
     pub grid: f32,
-    /// The lines' ink (premultiplied by `ink_k`), the night's table under
-    /// them (none by day).
+    /// The lines' ink (premultiplied by `ink_k`).
     pub ink: [f32; 3],
     pub ink_k: f32,
-    pub under: Option<[f32; 3]>,
     /// The lines' width, times the old 1.6 px.
     pub width: f32,
     /// Night coming (or going): waves from the night button across the
@@ -52,8 +50,10 @@ pub struct Grid {
     /// The table's point under the page's bottom middle: what the band
     /// too near the eye to be drawn takes its colour from.
     pub near_at: (f32, f32),
-    /// The page's size (px): the lines fade out toward its edges (a halo:
-    /// no hard edge against what is round the window).
+    /// The page's size (px): the table, paper and lines, fades out toward
+    /// its edges - see-through there, no hard edge against what is round
+    /// the window (the window itself shows nothing under it: main.rs's
+    /// see-through class).
     pub size: (f32, f32),
 }
 
@@ -86,7 +86,6 @@ uniform vec2 u_cubes;
 uniform float u_grown;
 uniform float u_grid;
 uniform vec4 u_ink;
-uniform vec4 u_under;
 uniform float u_width;
 uniform int u_wave_n;
 uniform float u_wave_p[6];
@@ -114,20 +113,20 @@ void main() {
     vec2 t = q.xy / q.z;
     float a = 0.0;
     bool seen = dot(u_w, vec3(t, 1.0)) > 0.005;
+    // Toward the page's edges the table goes, paper and lines: a soft rim,
+    // see-through, not a cut.
+    float rim = 0.09 * min(u_size.x, u_size.y);
+    vec2 e = smoothstep(vec2(0.0), vec2(rim), min(page + u_off, u_size - page - u_off));
+    float edge = e.x * e.y;
     if (seen) {
         float d = length(t - u_mid) / u_reach;
         float reached = u_grid >= 1.0 ? 1.0 : clamp((u_grown - length(t - u_cubes)) / (2.0 * u_step), 0.0, 1.0);
         a = 0.15 * pow(max(1.0 - d, 0.0), 1.3) * reached;
-        // Toward the page's edges the lines go: a soft rim, not a cut.
-        vec2 px = vec2(gl_FragCoord.x, u_height - gl_FragCoord.y) / u_scale;
-        float rim = 0.09 * min(u_size.x, u_size.y);
-        vec2 e = smoothstep(vec2(0.0), vec2(rim), min(px, u_size - px));
-        a *= e.x * e.y;
         if (a < 0.004) a = 0.0;
     }
     float lit = a > 0.0 ? max(line(t.x, u_shift.x), line(t.y, u_shift.y)) : 0.0;
     vec4 ink = u_ink;
-    vec4 under = u_under;
+    vec4 under = vec4(u_base_night > 0.5 ? u_fill_night : u_fill_day, 1.0);
     if (u_wave_n > 0) {
         // (Too near the eye to be drawn: as the nearest row.)
         if (!seen) t = u_near_at;
@@ -157,8 +156,8 @@ void main() {
         under = vec4(fill, 1.0);
     }
     float k = a * ink.a * lit;
-    // Over the night's table (or nothing), premultiplied.
-    color = vec4(ink.rgb * k, k) + under * (1.0 - k);
+    // The lines over the table's paper, premultiplied, gone at the rim.
+    color = (vec4(ink.rgb * k, k) + under * (1.0 - k)) * edge;
 }
 ";
 
@@ -222,8 +221,6 @@ impl Gpu {
             gl.uniform_1_f32(u("u_grown").as_ref(), g.grown);
             gl.uniform_1_f32(u("u_grid").as_ref(), g.grid);
             gl.uniform_4_f32(u("u_ink").as_ref(), g.ink[0], g.ink[1], g.ink[2], g.ink_k);
-            let under = g.under.map_or([0.0; 4], |c| [c[0], c[1], c[2], 1.0]);
-            gl.uniform_4_f32(u("u_under").as_ref(), under[0], under[1], under[2], under[3]);
             gl.uniform_1_f32(u("u_width").as_ref(), g.width);
             gl.uniform_1_i32(u("u_wave_n").as_ref(), g.wave_n);
             let ps: Vec<f32> = g.waves.iter().map(|w| w.0).collect();

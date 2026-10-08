@@ -182,11 +182,19 @@ fn face_rgb(light: f64) -> (f64, f64, f64) {
     }
 }
 
-/// The page's paper as CSS (by day; the night's own stays).
+/// The page's paper as CSS (by day; the night's own stays). See-through
+/// (the home page, the squares on the GPU), the window shows nothing of
+/// its own: the paper is the table's, grid_gl's, fading out at the page's
+/// edges - the owner asked for see-through edges (2026-10-08). The shadow
+/// is kept, unseen, for the resize grab round the window.
 fn style_css() -> String {
     let p = paper_rgb().map(|v| (v * 255.0).round() as u8);
     let hex = format!("#{:02x}{:02x}{:02x}", p[0], p[1], p[2]);
-    format!("window:not(.night), window.background:not(.night), window:not(.night) headerbar, window.wall-cover:not(.night), window.wall-move:not(.night) .wall-card {{ background: {hex}; }}")
+    format!(
+        "window:not(.night), window.background:not(.night), window:not(.night) headerbar, window.wall-cover:not(.night), window.wall-move:not(.night) .wall-card {{ background: {hex}; }}\n\
+         window.see-through, window.see-through.background:not(.night), window.see-through.background.night, window.see-through headerbar {{ background: transparent; }}\n\
+         window.see-through.csd {{ box-shadow: 0 0 0 12px transparent; }}"
+    )
 }
 
 thread_local! {
@@ -1304,6 +1312,28 @@ fn build(app: &adw::Application) {
     // The start is the page's own (intro.rs): the word on its cubes, while
     // the phone is first looked for.
     pages.set_visible_child_name("phone");
+    // See-through: on the home page, the squares on the GPU, the window
+    // shows nothing of its own round the table (style_css).
+    let see_through = {
+        let (window, right, pages) = (window.clone(), right.clone(), pages.clone());
+        move || {
+            let on = grid_gl::on() && pages.visible_child_name().as_deref() == Some("phone") && right.visible_child_name().as_deref() == Some("overview");
+            if on {
+                window.add_css_class("see-through");
+            } else {
+                window.remove_css_class("see-through");
+            }
+        }
+    };
+    floor_gl.connect_realize({
+        let see_through = see_through.clone();
+        move |_| see_through()
+    });
+    right.connect_visible_child_name_notify({
+        let see_through = see_through.clone();
+        move |_| see_through()
+    });
+    pages.connect_visible_child_name_notify(move |_| see_through());
 
     let banner = adw::Banner::new("");
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -3724,7 +3754,6 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         ink: if night { [1.0; 3] } else { INKS[style().ink.min(INKS.len() - 1)].1.map(|v| v as f32) },
         width: (line_width() / 1.6) as f32,
         ink_k: if night { 1.15 } else { 1.0 },
-        under: night.then_some([NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32]),
         waves: std::array::from_fn(|i| fv.waves.get(i).copied().unwrap_or((0.0, (0.0, 0.0)))),
         wave_n: fv.waves.len().min(grid_gl::WAVES) as i32,
         base_night: night,
