@@ -6455,7 +6455,11 @@ fn fill(ui: &Rc<Ui>, s: &status::Status, link: &str) {
     // Its number: asked for quietly if not known yet, written onto it if
     // not there.
     let host = ui.state.borrow().host.clone();
-    claim_quietly(ui, &s.serial, host);
+    // Once per boot of the phone: its number looked for again after a
+    // reinstall or a restart (the boot to two minutes: when it started).
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let boot = now.saturating_sub(s.uptime_s) / 120;
+    claim_quietly_as(ui, &format!("{}@{boot}", s.serial), &s.serial, host);
     let problems: Vec<String> = s.warnings().into_iter().chain(s.failed.iter().map(|u| format!("{u} failed"))).collect();
     let dev = developer_mode();
     ui.banner.set_title(&problems.join(" · "));
@@ -7040,10 +7044,17 @@ fn choose_ram_image(ui: &Rc<Ui>) {
 /// this computer does not know it, and written onto the phone (on Linux)
 /// if it is not there. Nothing said if it cannot be had now: next run.
 fn claim_quietly(ui: &Rc<Ui>, serial: &str, host: Option<String>) {
-    if serial.is_empty() || ui.claimed.borrow().iter().any(|s| s == serial) {
+    claim_quietly_as(ui, serial, serial, host)
+}
+
+/// The same, once per `key` (the serial, or the serial and the phone's boot:
+/// a phone installed again while this window was open gets its number
+/// written onto it again - it was written once a run, 2026-10-07).
+fn claim_quietly_as(ui: &Rc<Ui>, key: &str, serial: &str, host: Option<String>) {
+    if serial.is_empty() || ui.claimed.borrow().iter().any(|s| s == key) {
         return;
     }
-    ui.claimed.borrow_mut().push(serial.to_owned());
+    ui.claimed.borrow_mut().push(key.to_owned());
     let (ui, serial) = (ui.clone(), serial.to_owned());
     glib::spawn_future_local(async move {
         let s = serial.clone();
