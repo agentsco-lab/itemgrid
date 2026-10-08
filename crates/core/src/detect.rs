@@ -14,8 +14,10 @@ pub enum Mode {
     Recovery,
     /// Android (a test image), over adb.
     Android,
-    /// A phone that is not a Surface Duo 1 (a Duo 2, anything else) over
-    /// adb or fastboot: named, left alone.
+    /// A Surface Duo 2 over adb or fastboot: item for it is on its way -
+    /// said so, left alone.
+    Duo2,
+    /// A phone that is neither Duo over adb or fastboot: named, left alone.
     Other,
     /// Nothing seen.
     Gone,
@@ -28,6 +30,7 @@ impl Mode {
             Mode::Fastboot => "fastboot",
             Mode::Recovery => "recovery",
             Mode::Android => "Android",
+            Mode::Duo2 => "Surface Duo 2",
             Mode::Other => "another phone",
             Mode::Gone => "not seen",
         }
@@ -40,6 +43,7 @@ impl Mode {
             Mode::Fastboot => "boot an image from RAM; flashing only after a good RAM boot (not yet in itemgrid)",
             Mode::Recovery => "backups and restores (not yet in itemgrid)",
             Mode::Android => "not Linux; switching images comes with flashing (not yet in itemgrid)",
+            Mode::Duo2 => "item for the Duo 2 is on its way: available soon",
             Mode::Other => "not a Surface Duo 1: item/grid leaves it alone",
             Mode::Gone => "check the cable, the battery; hold power and volume down for fastboot",
         }
@@ -69,6 +73,7 @@ pub fn detect() -> Seen {
         let serial = line.split_whitespace().next().unwrap_or_default().to_owned();
         // A Duo 1 says "surfaceduo"; anything else is another phone.
         let mode = match product(&serial, Mode::Fastboot) {
+            Some(p) if p.contains("duo2") => Mode::Duo2,
             Some(p) if p != "surfaceduo" => Mode::Other,
             _ => Mode::Fastboot,
         };
@@ -81,6 +86,7 @@ pub fn detect() -> Seen {
             "recovery" | "sideload" => Mode::Recovery,
             // A Duo 1's Android says "duo"; anything else is another phone.
             "device" => match product(serial, Mode::Android) {
+                Some(p) if p == "duo2" => Mode::Duo2,
                 Some(p) if p != "duo" => Mode::Other,
                 _ => Mode::Android,
             },

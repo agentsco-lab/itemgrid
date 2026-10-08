@@ -502,8 +502,11 @@ enum Place {
     Recovery(String),
     /// Android with USB debugging on.
     Android(String),
-    /// Not a Surface Duo 1 (a Duo 2, another phone), over adb or fastboot:
-    /// named, left alone - no install, no club number.
+    /// A Surface Duo 2 over adb or fastboot: item for it is on its way -
+    /// "available soon" (the owner, 2026-10-08); left alone.
+    Duo2(String),
+    /// Not a Duo at all, over adb or fastboot: named, left alone - no
+    /// install, no club number.
     Other(String),
     /// On the USB, but neither adb nor fastboot answers: Android starting,
     /// or without USB debugging.
@@ -3101,6 +3104,7 @@ fn look(ui: &Rc<Ui>) {
                 Mode::Fastboot => Place::Fastboot(seen.via.clone()),
                 Mode::Recovery => Place::Recovery(seen.via.clone()),
                 Mode::Android => Place::Android(seen.via.clone()),
+                Mode::Duo2 => Place::Duo2(seen.via.clone()),
                 Mode::Other => Place::Other(seen.via.clone()),
                 Mode::Gone if itemgrid_core::android::port_without_system() => Place::NoSystem,
                 Mode::Gone => itemgrid_core::android::on_usb_quietly().map(Place::Quiet).unwrap_or(Place::Gone),
@@ -3355,6 +3359,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
             }
             ("phone-symbolic", "Android", "The Duo runs Android", if guest { "Stock Android, started by item/grid as a guest. Don't restart it from its own menu: Restart Android here does it the right way." } else { "Android runs on the phone." }, false)
         }
+        Place::Duo2(_) => ("phone-symbolic", "Surface Duo 2", "A Surface Duo 2", "item for the Duo 2 is on its way: available soon. item/grid leaves this phone as it is.", false),
         Place::Other(_) => ("phone-symbolic", "Another phone", "This is not a Surface Duo 1", "item/grid looks after the Surface Duo 1 only, and leaves this phone as it is.", false),
         Place::Quiet(_) => (
             "phone-symbolic",
@@ -3389,6 +3394,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         Place::Fastboot(_) => "Bootloader",
         Place::Recovery(_) => "Recovery",
         Place::Android(_) | Place::Quiet(_) => "Android",
+        Place::Duo2(_) => "Surface Duo 2",
         Place::Other(_) => "Another phone",
         Place::NoSystem => "No system",
         _ => "Not seen just now",
@@ -5091,6 +5097,7 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
         Place::Android(_) if guest => vec!["android".into(), "as a guest".into()],
         Place::Android(_) => vec!["android".into(), "on cable".into()],
         Place::Quiet(_) => vec!["android".into(), "turn on".into(), "usb debugging".into()],
+        Place::Duo2(_) => vec!["duo 2".into(), "available".into(), "soon".into()],
         Place::Other(_) => vec!["other phone".into(), "not a duo 1".into()],
         Place::Fastboot(_) => vec!["bootloader".into()],
         Place::Recovery(_) => vec!["recovery".into()],
