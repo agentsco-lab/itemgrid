@@ -27,6 +27,7 @@ mod duo3d;
 mod floor_area;
 mod grid_gl;
 mod intro;
+mod lamp;
 // The job's card (GTK): the table tells jobs now; kept for the pages.
 #[allow(dead_code)]
 mod card;
@@ -103,24 +104,12 @@ fn night() -> bool {
     NIGHT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The light under the table (`light` in the settings, 2026-10-08: the
-/// owner: "чтобы снизу шел свет как бы через щели"): the lines' colour
-/// glows round each line, as light through the slits between the squares.
-/// Kept in ~/.config/itemgrid/light (on or off).
-static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
+/// The light under the table (2026-10-08: the owner: "чтобы снизу шел свет
+/// как бы через щели"): the lines' colour glows round each line, as light
+/// through the slits between the squares - from a lamp (lamp.rs) now:
+/// how strong, how far, where.
 fn light() -> bool {
-    LIGHT.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-fn light_file() -> std::path::PathBuf {
-    glib::user_config_dir().join("itemgrid/light")
-}
-
-fn set_light(on: bool) {
-    LIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
-    let _ = std::fs::create_dir_all(light_file().parent().unwrap_or(std::path::Path::new(".")));
-    let _ = std::fs::write(light_file(), if on { "on\n" } else { "off\n" });
+    lamp::strength() > 0.0
 }
 
 /// The lines' colour chosen in the settings (`lines`: one of INKS by
@@ -812,7 +801,6 @@ fn build(app: &adw::Application) {
     if let Some(ink) = kept_ink() {
         set_style(Style { ink, ..style() });
     }
-    LIGHT.store(std::fs::read_to_string(light_file()).is_ok_and(|t| t.trim() == "on"), std::sync::atomic::Ordering::Relaxed);
     let window = adw::ApplicationWindow::builder().application(app).title("item/grid").default_width(1000).default_height(800).build();
     if night() {
         window.add_css_class("night");
@@ -1712,6 +1700,9 @@ fn build(app: &adw::Application) {
                 let corner = fv.duo_corner;
                 drop(fv);
                 if let Some((name, t)) = hit {
+                    if name == "lamp" {
+                        lamp::drag_begin();
+                    }
                     *ui.edit_from.borrow_mut() = Some((name, t, ui.layout.get(), corner));
                     f.set((grid_at(), Some(t), (x, y)));
                     grid_drag.set(false);
@@ -1747,6 +1738,13 @@ fn build(app: &adw::Application) {
                 drop(fv);
                 let Some(now) = now else { return };
                 let d = (((now.0 - from.0) / cur).round(), ((now.1 - from.1) / cur).round());
+                // The lamp: its own place (lamp.rs), not the layout's.
+                if name == "lamp" {
+                    lamp::drag_to(d);
+                    redraw(&ui);
+                    say(&ui, format!("lamp moved {:+.0}, {:+.0}", d.0, d.1));
+                    return;
+                }
                 let mut l = base;
                 for st in l.steps.iter_mut() {
                     let p = &mut st.place;
@@ -1811,7 +1809,7 @@ fn build(app: &adw::Application) {
             let on = !ui.editing.get();
             ui.editing.set(on);
             if on {
-                s(&ui, "moving: drag the word, the buttons, the phone, its words, the credit, the menu - E ends".into());
+                s(&ui, "moving: drag the word, the buttons, the phone, its words, the credit, the menu, the lamp - E ends".into());
             } else {
                 s(&ui, keep_moved(&ui));
             }
@@ -1824,8 +1822,10 @@ fn build(app: &adw::Application) {
         let (weak, s) = (Rc::downgrade(&ui), say_end);
         drag_end.connect_drag_end(move |_, _, _| {
             let Some(ui) = weak.upgrade() else { return };
-            if ui.edit_from.borrow_mut().take().is_some() {
-                s(&ui, keep_moved(&ui));
+            let taken = ui.edit_from.borrow_mut().take();
+            if let Some((name, ..)) = taken {
+                // (The lamp keeps its own place as it moves: lamp.rs.)
+                s(&ui, if name == "lamp" { "lamp kept".into() } else { keep_moved(&ui) });
             }
         });
         // The phone asleep when last seen (before a restart): lying shut on the
@@ -1860,6 +1860,7 @@ fn build(app: &adw::Application) {
             // A line of the open boards that can be clicked: its letters
             // rising on cubes under the pointer, the hand there.
             let under = table_under(&fv, (x, y));
+            lamp::pointer_at(under);
             let side = square() * fv.k;
             let line = under.and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, side, t)));
             let page_line = under.and_then(|t| ui.page.borrow().as_ref().and_then(|(_, b)| b.line_at(fv.page_at, side, t)));
@@ -1869,6 +1870,8 @@ fn build(app: &adw::Application) {
             changed |= ui.act.borrow_mut().as_mut().is_some_and(|b| b.set_hover(act_line));
             let clickable = ui.page.borrow().as_ref().and_then(|(_, b)| page_line.filter(|&l| !b.lines[l].key.is_empty()));
             changed |= ui.page.borrow_mut().as_mut().is_some_and(|(_, b)| b.set_hover(clickable));
+            // The lamp at the pointer: the table lit again where it is now.
+            changed |= lamp::get().mode == lamp::POINTER && light();
             if changed {
                 show_fold(&ui, ui.fold.get().0);
             }
@@ -1979,8 +1982,17 @@ fn build(app: &adw::Application) {
                                 ui.floor_gl.queue_render();
                             }
                         }
-                        "set:light" => {
-                            set_light(!light());
+                        // The lamp under the table: how strong, how far, where -
+                        // each turned a step round.
+                        "set:light" | "set:reach" | "set:lamp" => {
+                            let l = lamp::get();
+                            lamp::set(match key.as_str() {
+                                "set:light" => lamp::Lamp { strength: lamp::next(l.strength, lamp::STRENGTHS.len()), ..l },
+                                "set:reach" => lamp::Lamp { reach: lamp::next(l.reach, lamp::REACHES.len()), ..l },
+                                _ => lamp::Lamp { mode: lamp::next(l.mode, lamp::MODES.len()), ..l },
+                            });
+                            show_fold(&ui, ui.fold.get().0);
+                            ui.floor.queue_draw();
                             ui.floor_gl.queue_render();
                         }
                         "set:developer" => set_developer_mode(!developer_mode()),
@@ -3799,6 +3811,13 @@ struct FloorView {
     /// The word's and the buttons' strength as the step has them.
     part_alpha: [f32; 6],
     grid_mid: (f32, f32),
+    /// The lamp under the table (lamp.rs): where it stands (table px), how
+    /// far its spot reaches (px; 0 the whole table), how strong; and where
+    /// its mark is drawn while the parts are moved (E).
+    lamp: (f32, f32),
+    lamp_r: f32,
+    lamp_k: f32,
+    lamp_mark: Option<(f32, f32)>,
 }
 
 /// Words set on the table, a letter a square of `cell` (px; a square of
@@ -3861,7 +3880,9 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         ink_night: night_ink_rgb().map(|v| v as f32),
         near_at: fv.near_at,
         size: (fv.size.0, fv.size.1),
-        light: light(),
+        lamp: fv.lamp,
+        lamp_r: fv.lamp_r,
+        lamp_k: fv.lamp_k,
     })
 }
 
@@ -4229,8 +4250,39 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     let _ = cr.paint_with_alpha((fv.word * fv.part_alpha[2]).min(1.0) as f64);
     draw_texts(fv, cr);
     draw_flips(fv, cr);
+    draw_lamp(fv, cr);
     draw_night_off();
     draw_buttons(fv, cr);
+}
+
+/// The lamp's mark on the table while the parts are moved (E): a ring in
+/// the lines' colour where it stands, a square across, a dot in its middle.
+fn draw_lamp(fv: &FloorView, cr: &gtk::cairo::Context) {
+    use gtk::graphene;
+    let (Some(m), Some(at)) = (fv.matrix, fv.lamp_mark) else { return };
+    let r = 0.5 * square() * fv.k;
+    let p3 = |x: f32, y: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, fv.table, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    cr.new_path();
+    for i in 0..=48 {
+        let a = i as f32 / 48.0 * std::f32::consts::TAU;
+        let (x, y) = p3(at.0 + r * a.cos(), at.1 + r * a.sin());
+        if i == 0 {
+            cr.move_to(x, y);
+        } else {
+            cr.line_to(x, y);
+        }
+    }
+    cr.close_path();
+    draw_night_at(fv, at);
+    ink(cr, 0.6);
+    cr.set_line_width(1.2);
+    let _ = cr.stroke();
+    let (cx, cy) = p3(at.0, at.1);
+    cr.arc(cx, cy, 2.0, 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
 }
 
 /// Squares turning over (the credit's, the boards'): each whole - its near
@@ -5278,7 +5330,6 @@ fn saver_off(ui: &Ui) {
 
 /// item/grid's settings as a board's lines (each clicked turns it).
 fn settings_lines(ui: &Ui) -> Vec<board::Line> {
-    let onoff = |on: bool| if on { "on" } else { "off" };
     let night = match night_mode().as_str() {
         "night" => "on".to_owned(),
         "day" => "off".to_owned(),
@@ -5294,7 +5345,10 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     for (i, (name, _)) in INKS.iter().enumerate() {
         lines.push(board::Line::new(format!("set:lines:{name}"), format!("{} {name}", if i == ink { "•" } else { "›" })));
     }
-    lines.push(board::Line::new("set:light", format!("light {}", onoff(light()))));
+    let lp = lamp::get();
+    lines.push(board::Line::new("set:light", format!("light {}", lamp::STRENGTHS[lp.strength].0)));
+    lines.push(board::Line::new("set:reach", format!("reach {}", lamp::REACHES[lp.reach].0)));
+    lines.push(board::Line::new("set:lamp", format!("lamp {}", lamp::MODES[lp.mode])));
     lines
 }
 
@@ -6298,6 +6352,27 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             ("duo", [sheet[0] + duo_corner.0 * cur, sheet[1] + duo_corner.1 * cur, sheet[0] + duo_corner.0 * cur + 2.0 * mid_px, sheet[1] + duo_corner.1 * cur + duo_h]),
             ("credit", [credit_at.0, credit_at.1, credit_at.0 + 8.0 * cur, credit_at.1 + cur]),
         ];
+        // The lamp under the table: where it stands - placed (squares from
+        // the sheet's top left; under the phone's middle until dragged),
+        // under the phone, or at the pointer (placed, off the table) - how
+        // far its spot reaches, how strong; its mark while the parts are
+        // moved (E), and its box to take it by.
+        let lp = lamp::get();
+        let placed_sq = lp.at.unwrap_or((duo_corner.0 + mid_px / cur, duo_corner.1 + duo_h / 2.0 / cur));
+        lamp::laid(placed_sq);
+        let placed_px = (sheet[0] + placed_sq.0 * cur, sheet[1] + placed_sq.1 * cur);
+        let lamp_at = match lp.mode {
+            lamp::PHONE => duo_on_sheet,
+            lamp::POINTER => lamp::pointer().unwrap_or(placed_px),
+            _ => placed_px,
+        };
+        let lamp_r = lamp::reach_squares() * cur;
+        let lamp_k = lamp::strength();
+        let lamp_mark = (ui.editing.get() && lp.mode == lamp::PLACED).then_some(placed_px);
+        // (Its square first: it lies over the phone's until dragged off it.)
+        if lamp_mark.is_some() {
+            edit_boxes.insert(0, ("lamp", [placed_px.0 - 0.5 * cur, placed_px.1 - 0.5 * cur, placed_px.0 + 0.5 * cur, placed_px.1 + 0.5 * cur]));
+        }
         if std::env::var_os("ITEMGRID_SHEET").is_some() {
             trace(format_args!("sheet {sheet:?} duo {duo_on_sheet:?} mid {mid_px} h {duo_h} cur {cur} word {cubes_at:?} buttons {buttons_at:?} off {off:?} D on page {:?} origin on page {:?} duo_at {duo_at:?}", on_page(&rest_m, duo_on_sheet), on_page(&rest_m, (0.0, 0.0))));
         }
@@ -6731,9 +6806,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             ws.iter().map(|(since, from, _)| ((crate::clock::secs_since(*since) / NIGHT_FLIP_S).min(1.0), *from)).collect()
         };
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha || fv.lamp != lamp_at || fv.lamp_r != lamp_r || fv.lamp_k != lamp_k || fv.lamp_mark != lamp_mark;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid, lamp: lamp_at, lamp_r, lamp_k, lamp_mark };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
