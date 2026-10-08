@@ -79,6 +79,11 @@ const FLOOR_SQUARE: f64 = 20.0;
 
 /// Half the word's width, in squares (its cubes laid about their middle).
 const WORD_HALF: f32 = intro::WORD.len() as f32 / 2.0;
+/// The "/" in the word (intro::WORD): the night-and-day button - drawn in
+/// the other side's colours (light by night, dark by day), pressed, the
+/// squares turn over from it. The owner: "кнопку смены темы ... прямо на
+/// '/', только цвет плитки инвертирован теме" (2026-10-08).
+const SLASH: usize = 4;
 
 /// Night: the table dark, its lines light - by the night button on the
 /// table (kept in ~/.config/itemgrid/night: day or night).
@@ -241,7 +246,7 @@ fn line_width() -> f64 {
 /// night the grey.
 fn face_rgb(light: f64) -> (f64, f64, f64) {
     let l = paper(light);
-    if night() {
+    if draw_night() {
         (l, l, l * 1.005)
     } else {
         let p = paper_rgb();
@@ -283,7 +288,7 @@ fn set_style(s: Style) {
 /// A face's grey: by day `light` itself (1 the table's white); by night
 /// the table's dark, the less lit faces lighter (lit from the viewer).
 fn paper(light: f64) -> f64 {
-    if night() {
+    if draw_night() {
         NIGHT_TABLE + (1.0 - light) * 1.1
     } else {
         light
@@ -1937,6 +1942,7 @@ fn build(app: &adw::Application) {
             let fv = ui.floor_view.borrow();
             let on = button_at(&fv, (x, y));
             ui.buttons.borrow_mut().hover = on;
+            let slash = cube_at(&fv, (x, y)) == Some(SLASH);
             // A line of the open boards that can be clicked: its letters
             // rising on cubes under the pointer, the hand there.
             let under = table_under(&fv, (x, y));
@@ -1955,7 +1961,7 @@ fn build(app: &adw::Application) {
             if changed {
                 show_fold(&ui, ui.fold.get().0);
             }
-            pg.set_cursor_from_name(on.or(line).or(clickable).or(act_line).map(|_| "pointer"));
+            pg.set_cursor_from_name((on.or(line).or(clickable).or(act_line).is_some() || slash).then_some("pointer"));
         };
         let h2 = hover.clone();
         motion.connect_motion(move |_, x, y| hover(x, y));
@@ -1994,18 +2000,6 @@ fn build(app: &adw::Application) {
                             *b = Some(board::Board::open(menu_lines(&ui)));
                             drop(b);
                             ui.intro.borrow_mut().clear_note();
-                        }
-                    }
-                    // Night (or day) coming: the squares turning over from
-                    // this button; the colours follow once they have.
-                    FloorButton::Night => {
-                        if ui.night_waves.borrow().len() < grid_gl::WAVES {
-                            let fv = ui.floor_view.borrow();
-                            let cur = square() * fv.k;
-                            let at = button_box(&fv, i);
-                            let from = (at.0 + 0.5 * cur, at.1 + 0.5 * cur);
-                            drop(fv);
-                            ui.night_waves.borrow_mut().push((crate::clock::now(), from, false));
                         }
                     }
                     // As the wallpaper, the window back first (its place and
@@ -2190,6 +2184,23 @@ fn build(app: &adw::Application) {
                     right.set_visible_child_name(&key);
                 }
                 return;
+            }
+            // The word's "/" (with the phone there or not): night (or day)
+            // coming, the squares turning over from it; the colours follow
+            // once they have.
+            if n == 1 && ui.intro.borrow().done() {
+                let fv = ui.floor_view.borrow();
+                if cube_at(&fv, (x, y)) == Some(SLASH) {
+                    let cur = square() * fv.k;
+                    let from = (fv.cubes_at.0 + (SLASH as f32 - WORD_HALF + 0.5) * cur, fv.cubes_at.1);
+                    drop(fv);
+                    trace(format_args!("the slash pressed: night turned"));
+                    if ui.night_waves.borrow().len() < grid_gl::WAVES {
+                        ui.night_waves.borrow_mut().push((crate::clock::now(), from, false));
+                    }
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    return;
+                }
             }
             let standing = ui.intro.borrow().done() && ui.intro.borrow().duo() < 0.5;
             if n != 1 || !standing {
@@ -4294,13 +4305,25 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     let shapes = cube_shapes(fv);
     let _ = cr.push_group();
     for c in &shapes {
+        // As night or day at its square (the waves); the "/" the other way
+        // round - the night-and-day button, showing the side it brings.
+        match fv.tapped.filter(|_| c.i >= intro::WORD.len()) {
+            Some((at, _)) => draw_night_at(fv, at),
+            None => draw_night_at(fv, (fv.cubes_at.0 + (c.i as f32 - WORD_HALF + 0.5) * square() * fv.k, fv.cubes_at.1)),
+        }
+        if c.i == SLASH {
+            let other = !draw_night();
+            DRAW_NIGHT.with(|d| d.set(Some(other)));
+        }
         let h = fv.cubes.get(c.i).map_or(fv.tapped.map_or(0.0, |t| t.1), |c| c.1);
         path(&c.shadow);
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.05 * (h.min(1.0) * fv.eye) as f64 * if night() { 3.0 } else { 1.0 });
         let _ = cr.fill();
         // Gone down into the table, its sides and top fade into the
         // table's square (the letter alone lying there).
-        let up = (h / 0.1).clamp(0.0, 1.0) as f64;
+        // (The "/" keeps its top: a square of the other side's paper,
+        // lying there.)
+        let up = if c.i == SLASH { 1.0 } else { (h / 0.1).clamp(0.0, 1.0) as f64 };
         if up > 0.0 {
             for (q, light) in &c.faces {
                 path(q);
@@ -4323,7 +4346,6 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         // The letter on the top: the face's own frame (its corners), the
         // letter laid in it.
         let ch = letter.chars().next().unwrap_or(' ');
-        draw_night_at(fv, (fv.cubes_at.0 + (c.i as f32 - WORD_HALF + 0.5) * square() * fv.k, fv.cubes_at.1));
         draw_glyph(cr, ch, c.top[0], c.top[1], c.top[3], (0.16, 0.16, 0.18, 0.88 * (c.there as f64 / 0.25).min(1.0)));
 
     }
@@ -5631,31 +5653,14 @@ fn turn_night_mode(ui: &Ui) {
 enum FloorButton {
     Menu,
     Close,
-    /// Night and day: a coloured square under the word's "/" - amber by
-    /// day, blue by night; pressed, the squares turn over to their other
-    /// side, from it across the table. (The owner: "кнопку смены темы
-    /// поставим под '/', окрасим этот кубик в другой цвет", 2026-10-08;
-    /// the replay button went then too - the start plays again from the
-    /// window's socket.)
-    Night,
 }
 
-/// The first ROW in the word's row at the page's right (the wallpaper
-/// turned in the settings); the rest stand elsewhere (button_box).
-const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Close), Some(FloorButton::Night)];
-const BUTTONS: usize = 3;
-const ROW: usize = 2;
-
-/// The top left of button `i`'s square on the table (px): along the row
-/// at `buttons_at`, or - night and day - the square under the word's "/"
-/// (the word's middle letter, the row below it).
-fn button_box(fv: &FloorView, i: usize) -> (f32, f32) {
-    let cur = square() * fv.k;
-    match FLOOR_BUTTONS[i] {
-        Some(FloorButton::Night) => (fv.cubes_at.0 - 0.5 * cur, fv.cubes_at.1 + 0.5 * cur),
-        _ => (fv.buttons_at.0 + i as f32 * cur, fv.buttons_at.1),
-    }
-}
+/// In the word's row at the page's right (the wallpaper turned in the
+/// settings). (Two more stood here once: the start played again - still
+/// there from the window's socket, "replay" - and night and day, the
+/// word's "/" now (SLASH); the owner, 2026-10-08.)
+const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Close)];
+const BUTTONS: usize = 2;
 
 /// The buttons' hover and press, eased.
 #[derive(Default)]
@@ -5703,7 +5708,8 @@ fn button_at(fv: &FloorView, p: (f64, f64)) -> Option<usize> {
         if FLOOR_BUTTONS[i].is_none() || fv.button_in[i] <= 0.5 {
             return false;
         }
-        let (_, faces, top) = box_shape(&p3, button_box(fv, i), side, fv.table, fv.button_lift[i].max(0.0));
+        let x0 = fv.buttons_at.0 + i as f32 * side;
+        let (_, faces, top) = box_shape(&p3, (x0, fv.buttons_at.1), side, fv.table, fv.button_lift[i].max(0.0));
         inside(&top, p) || faces.iter().any(|(q, _)| inside(q, p))
     })
 }
@@ -5733,7 +5739,7 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
     // neighbour's side (drawn left to right, a box's side lay over the top
     // of the one before).
     let mut order: Vec<usize> = (0..FLOOR_BUTTONS.len()).collect();
-    let off_eye = |i: usize| (button_box(fv, i).0 + 0.5 * side - fv.eye_x).abs();
+    let off_eye = |i: usize| (fv.buttons_at.0 + (i as f32 + 0.5) * side - fv.eye_x).abs();
     order.sort_by(|a, b| off_eye(*b).partial_cmp(&off_eye(*a)).unwrap());
     for i in order {
         let Some(b) = &FLOOR_BUTTONS[i] else { continue };
@@ -5741,9 +5747,9 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
             continue;
         }
         let _ = cr.push_group();
-        let at = button_box(fv, i);
+        let x0 = fv.buttons_at.0 + i as f32 * side;
         let h = fv.button_lift[i].max(0.0);
-        let (_, faces, top) = box_shape(&p3, at, side, fv.table, h);
+        let (_, faces, top) = box_shape(&p3, (x0, fv.buttons_at.1), side, fv.table, h);
         if h > 0.001 {
             for (q, light) in &faces {
                 path(q);
@@ -5763,16 +5769,12 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         // Lying on the table: the sign alone, in its square of the grid.
         let strong = if fv.hover_button == Some(i) { 0.9 } else { 0.5 };
-        draw_night_at(fv, (at.0 + 0.5 * side, at.1 + 0.5 * side));
+        draw_night_at(fv, (fv.buttons_at.0 + (i as f32 + 0.5) * square() * fv.k, fv.buttons_at.1 + 0.5 * square() * fv.k));
         draw_sign(cr, *b, top[0], top[1], top[3], strong);
         let _ = cr.pop_group_to_source();
         let _ = cr.paint_with_alpha((fv.word * fv.button_in[i] * fv.part_alpha[3]).min(1.0) as f64);
     }
 }
-
-/// The night-and-day square's colours: by day, by night.
-const DAY_BUTTON_RGB: (f64, f64, f64) = (0.96, 0.70, 0.22);
-const NIGHT_BUTTON_RGB: (f64, f64, f64) = (0.42, 0.53, 0.94);
 
 /// A button's sign in the square whose top left, top right and bottom left
 /// corners are `a`, `b`, `d` on the page (drawn in GLYPH units).
@@ -5798,15 +5800,6 @@ fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f
             cr.move_to(63.0, 37.0);
             cr.line_to(37.0, 63.0);
             let _ = cr.stroke();
-        }
-        FloorButton::Night => {
-            // The square coloured, not grey as the letters: the day's amber,
-            // the night's blue (the one it is now; the wave turns it with
-            // the squares round it).
-            let (r, g, b) = if draw_night() { NIGHT_BUTTON_RGB } else { DAY_BUTTON_RGB };
-            cr.set_source_rgba(r, g, b, 0.55 + 0.45 * strength);
-            cr.rectangle(8.0, 8.0, 84.0, 84.0);
-            let _ = cr.fill();
         }
     }
     cr.restore().ok();
@@ -6557,7 +6550,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 x -= f / d;
             }
             let end = squared(on_squares(k, (x, cubes_at.1 - 0.5 * cur)), (x, cubes_at.1 - 0.5 * cur));
-            (end.0 - ROW as f32 * cur, end.1)
+            (end.0 - FLOOR_BUTTONS.len() as f32 * cur, end.1)
         };
         let buttons_at = (buttons_home.0 + place.buttons.0 * cur, buttons_home.1 + place.buttons.1 * cur);
         // The sheet: from the word's left edge to the buttons' right, from
@@ -6569,7 +6562,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // layout, the sheet stays.)
         let sheet = {
             let top = word_home.1 - 0.5 * cur;
-            let (left, right) = (word_home.0 - WORD_HALF * cur, buttons_home.0 + ROW as f32 * cur);
+            let (left, right) = (word_home.0 - WORD_HALF * cur, buttons_home.0 + FLOOR_BUTTONS.len() as f32 * cur);
             // The table's row at the page's bottom (Newton's way, down the
             // sheet's middle).
             let want_y = page_h * 0.9 - off.1;
@@ -6596,7 +6589,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The parts that can be moved (E): where each lies on the table.
         let mut edit_boxes: Vec<(&'static str, [f32; 4])> = vec![
             ("word", [cubes_at.0 - WORD_HALF * cur, cubes_at.1 - 0.5 * cur, cubes_at.0 + WORD_HALF * cur, cubes_at.1 + 0.5 * cur]),
-            ("buttons", [buttons_at.0, buttons_at.1, buttons_at.0 + ROW as f32 * cur, buttons_at.1 + cur]),
+            ("buttons", [buttons_at.0, buttons_at.1, buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur, buttons_at.1 + cur]),
             ("words", [sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur, sheet[0] + (place.words.0 + 12.0) * cur, sheet[1] + (place.words.1 + 3.0) * cur]),
             ("duo", [sheet[0] + duo_corner.0 * cur, sheet[1] + duo_corner.1 * cur, sheet[0] + duo_corner.0 * cur + 2.0 * mid_px, sheet[1] + duo_corner.1 * cur + duo_h]),
             ("credit", [credit_at.0, credit_at.1, credit_at.0 + 8.0 * cur, credit_at.1 + cur]),
@@ -6651,7 +6644,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The row from the word's start to the buttons' end in the middle
         // (the word lies in the table now). Where they come by themselves:
         // moved by the layout (E), the eye stays.
-        let row_mid = ((word_home.0 - WORD_HALF * cur + buttons_home.0 + ROW as f32 * cur) / 2.0, word_home.1);
+        let row_mid = ((word_home.0 - WORD_HALF * cur + buttons_home.0 + FLOOR_BUTTONS.len() as f32 * cur) / 2.0, word_home.1);
         // The whole view half a square to the left (the buttons as far in
         // from the right as the word from the left: both margins alike).
         let half = {
@@ -6715,7 +6708,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let menu_rows = ui.board.borrow().as_ref().map_or(8, |b| b.lines.len()) as f32;
             let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8)) as f32;
             let top = cubes_at.1 - 0.5 * cur;
-            let right = (left + (place.menu.0 + menu_cols + 2.0 + pc) * cur).max(buttons_at.0 + ROW as f32 * cur);
+            let right = (left + (place.menu.0 + menu_cols + 2.0 + pc) * cur).max(buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur);
             let bottom = under + (place.menu.1 + menu_rows.max(pr)) * cur;
             let m = seen(&e);
             let anchor = on_page(&m, (left, top));
