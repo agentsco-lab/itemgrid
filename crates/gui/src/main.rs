@@ -3136,6 +3136,11 @@ fn show_now(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status
         }
         st.place = place.clone();
     }
+    // A phone seen: the start's "not found" note goes (it stayed under the
+    // word over a Duo 2 that came later, the owner, 2026-10-08).
+    if place != Place::Gone {
+        ui.intro.borrow_mut().clear_note();
+    }
     let Place::Linux(host) = &place else {
         // Seen by its serial (Android, bootloader, recovery): its number
         // asked for quietly too.
