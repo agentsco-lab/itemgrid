@@ -521,6 +521,22 @@ impl Place {
     }
 }
 
+// The stage a job's steps have reached and since when (journey.rs): how far
+// into it the time says, for its square and the minutes left.
+thread_local! {
+    static JOB_STAGE: std::cell::Cell<Option<(usize, std::time::Instant)>> = const { std::cell::Cell::new(None) };
+}
+
+/// A job's stages as squares in a row on the table (a square a stage): the
+/// ones passed filled, the one on filling with the time, the rest outlined.
+#[derive(Clone, PartialEq, Debug)]
+struct Progress {
+    at: (f32, f32),
+    cell: f32,
+    fills: Vec<f32>,
+    strength: f32,
+}
+
 /// This window's job as it goes.
 struct OwnJob {
     kind: &'static str,
@@ -3878,6 +3894,8 @@ struct FloorView {
     lamp_r: f32,
     lamp_k: f32,
     lamp_mark: Option<(f32, f32)>,
+    /// A job's stages as squares (under its words).
+    progress: Option<Progress>,
 }
 
 /// Words set on the table, a letter a square of `cell` (px; a square of
@@ -4312,8 +4330,48 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     draw_texts(fv, cr);
     draw_flips(fv, cr);
     draw_lamp(fv, cr);
+    draw_progress(fv, cr);
     draw_night_off();
     draw_buttons(fv, cr);
+}
+
+/// A job's stages as squares in a row (Progress): each outlined in the
+/// lines' ink; the ones passed filled, the one on filled from its left as
+/// far as it has come.
+fn draw_progress(fv: &FloorView, cr: &gtk::cairo::Context) {
+    use gtk::graphene;
+    let (Some(m), Some(p)) = (fv.matrix, &fv.progress) else { return };
+    if p.strength <= 0.0 {
+        return;
+    }
+    let p3 = |x: f32, y: f32| {
+        let v = m.transform_vec4(&graphene::Vec4::new(x, y, fv.table, 1.0));
+        ((v.x() / v.w() + fv.off.0) as f64, (v.y() / v.w() + fv.off.1) as f64)
+    };
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        let (a, b, c, d) = (p3(x0, y0), p3(x1, y0), p3(x1, y1), p3(x0, y1));
+        cr.new_path();
+        cr.move_to(a.0, a.1);
+        cr.line_to(b.0, b.1);
+        cr.line_to(c.0, c.1);
+        cr.line_to(d.0, d.1);
+        cr.close_path();
+    };
+    let inset = p.cell * 0.12;
+    for (i, f) in p.fills.iter().enumerate() {
+        let x0 = p.at.0 + i as f32 * p.cell;
+        draw_night_at(fv, (x0 + p.cell / 2.0, p.at.1 + p.cell / 2.0));
+        let (l, t, r, b) = (x0 + inset, p.at.1 + inset, x0 + p.cell - inset, p.at.1 + p.cell - inset);
+        if *f > 0.0 {
+            quad(l, t, l + (r - l) * f.clamp(0.0, 1.0), b);
+            ink(cr, 0.55 * p.strength as f64);
+            let _ = cr.fill();
+        }
+        quad(l, t, r, b);
+        ink(cr, 0.3 * p.strength as f64);
+        cr.set_line_width(1.0);
+        let _ = cr.stroke();
+    }
 }
 
 /// The lamp's mark on the table while the parts are moved (E): a ring in
@@ -6647,10 +6705,36 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                     (a.job.clone(), a.lines.clone(), a.outcome(), a.ended_at.map_or(0, |e| now.saturating_sub(e)))
                 })
             });
+        let mut fills: Option<Vec<f32>> = None;
         let job_lines: Option<Vec<String>> = job_now.and_then(|(kind, jlines, ended, over)| {
             if ended.is_some() && over > 60 {
                 return None;
             }
+            // The stage reached, and how long it has been on: its square
+            // fills with the time (journey::within), the minutes left count.
+            let stages = journey::stages(&kind);
+            let at = if stages.is_empty() { 0 } else { journey::locate(&stages, &jlines).min(stages.len() - 1) };
+            let since = JOB_STAGE.with(|c| match c.get() {
+                Some((k, s)) if k == at => s,
+                _ => {
+                    let now = std::time::Instant::now();
+                    c.set(Some((at, now)));
+                    now
+                }
+            });
+            let secs_in = since.elapsed().as_secs_f64();
+            fills = Some(
+                stages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| match &ended {
+                        Some(None) => 1.0,
+                        _ if i < at => 1.0,
+                        _ if i == at => journey::within(s, secs_in) as f32,
+                        _ => 0.0,
+                    })
+                    .collect(),
+            );
             let title = match kind.as_str() {
                 "android-clean" => "to android",
                 "install-stock" => "installing item",
@@ -6661,11 +6745,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let mut lines = wrapped(title);
             match &ended {
                 None => {
-                    let stages = journey::stages(&kind);
                     if !stages.is_empty() {
-                        let at = journey::locate(&stages, &jlines).min(stages.len() - 1);
                         lines.extend(wrapped(stages[at].title));
-                        let left = (journey::left(&stages, at, 0.0) / 60.0).ceil();
+                        let left = (journey::left(&stages, at, secs_in) / 60.0).ceil();
                         lines.push(if left <= 1.0 { "a minute left".to_owned() } else { format!("{left} min left") });
                     }
                     // What the hands do meanwhile: nothing - unless the
@@ -6686,6 +6768,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         });
         // The phone's words wanted this frame (none: the board fades).
         let mut words: Option<Vec<String>> = None;
+        let mut progress: Option<Progress> = None;
         // Their left edge in the word's column (the i of item: the word is
         // put there, above), their top at the phone's.
         let words_at = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
@@ -6696,6 +6779,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let (head, rest) = lines.split_at(1);
             texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength: 1.0 });
             texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength: 1.0 });
+            // Its stages as squares, a row under the words (a blank row between).
+            if let Some(f) = fills.as_ref().filter(|f| !f.is_empty()) {
+                progress = Some(Progress { at: (x, top + (lines.len() + 1) as f32 * cur), cell: cur, fills: f.clone(), strength: 1.0 });
+            }
         } else if intro.duo() > 0.0 && ui.state.borrow().host.is_some() {
             let low = |s: glib::GString| s.to_lowercase();
             // "Surface Duo · 00001": its club number.
@@ -6862,9 +6949,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             ws.iter().map(|(since, from, _)| ((crate::clock::secs_since(*since) / NIGHT_FLIP_S).min(1.0), *from)).collect()
         };
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha || fv.lamp != lamp_at || fv.lamp_r != lamp_r || fv.lamp_k != lamp_k || fv.lamp_mark != lamp_mark;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha || fv.lamp != lamp_at || fv.lamp_r != lamp_r || fv.lamp_k != lamp_k || fv.lamp_mark != lamp_mark || fv.progress != progress;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid, lamp: lamp_at, lamp_r, lamp_k, lamp_mark };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid, lamp: lamp_at, lamp_r, lamp_k, lamp_mark, progress };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
@@ -7716,6 +7803,19 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
         st.busy = true;
         st.job = Some(OwnJob { kind, lines: Vec::new(), started: std::time::Instant::now(), ended: None, took: None });
     }
+    JOB_STAGE.with(|c| c.set(None));
+    // The table laid anew each second while the job runs: its stage's
+    // square filling, the minutes left counting (the looks are off
+    // meanwhile; a step alone laid it only as the fold eased).
+    {
+        let weak = Rc::downgrade(ui);
+        glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+            let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let running = ui.state.borrow().job.as_ref().is_some_and(|j| j.ended.is_none());
+            show_fold(&ui, ui.fold.get().0);
+            if running { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
+        });
+    }
     if let Some(stop) = ui.live.borrow_mut().take() {
         stop.stop();
     }
@@ -7793,6 +7893,8 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
                 job.lines.push(line);
             }
             tell(&ui);
+            // The step onto the table at once (tell lays nothing out).
+            show_fold(&ui, ui.fold.get().0);
         }
         let result = work.await.unwrap_or_else(|_| Err("the work stopped".into()));
         {
