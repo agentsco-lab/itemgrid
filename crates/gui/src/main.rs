@@ -6912,7 +6912,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // Their left edge in the word's column (the i of item: the word is
         // put there, above), their top at the phone's.
         let words_at = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
-        if let Some(lines) = &job_lines {
+        // (Put away while the menu is open, as the phone's words are: they
+        // lay over the menu and its pages - the owner, 2026-10-08.)
+        let menu_up = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
+        if let Some(lines) = job_lines.as_ref().filter(|_| !menu_up) {
             // Under the word, where the note goes (room for them there; the
             // phone's words gone meanwhile).
             let (x, top) = (left, under);
@@ -7970,6 +7973,14 @@ fn run_job(ui: &Rc<Ui>, job: Job) {
     }
     ui.actions.set_sensitive(false);
     ui.mode_buttons.set_sensitive(false);
+    // The menu and its page closed: the job's words and squares take the
+    // table (they are put away while the menu is open).
+    if let Some(b) = ui.board.borrow_mut().as_mut() {
+        b.close();
+    }
+    if let Some((_, b)) = ui.page.borrow_mut().as_mut() {
+        b.close();
+    }
     tell(ui);
     let (tx, rx) = async_channel::unbounded::<String>();
     let work = gio::spawn_blocking(move || {
