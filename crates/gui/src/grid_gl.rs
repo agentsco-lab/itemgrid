@@ -109,18 +109,27 @@ void main() {
         // Each square turned over about its middle line, the ones near the
         // button first: its face shrinks to a line and grows back the
         // other colour; beside the turning face, the table beneath.
-        vec2 c = (floor((t - u_shift) / u_step) + 0.5) * u_step + u_shift;
-        float spread = 7.0 * u_step;
-        float p = clamp((u_flip * (u_reach * 1.6 + spread) - length(c - u_flip_from)) / spread, 0.0, 1.0);
-        float face = abs(cos(p * 3.14159265));
+        vec2 cell = floor((t - u_shift) / u_step);
+        vec2 c = (cell + 0.5) * u_step + u_shift;
+        // Each square a little before or after its neighbours (a hash of
+        // its place): the wave's front not a stair.
+        float jitter = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+        float spread = 11.0 * u_step;
+        float p = clamp((u_flip * (u_reach * 1.6 + spread) - length(c - u_flip_from) - jitter * 2.5 * u_step) / spread, 0.0, 1.0);
+        float co = cos(p * 3.14159265);
+        float face = abs(co);
+        // The face shown: the old colour till it stands on edge, the new
+        // after, darker the more it is turned from the eye.
+        vec3 shown = (co > 0.0 ? u_fill_from : u_fill_to) * mix(0.72, 1.0, face);
+        ink = co > 0.0 ? u_ink : u_ink_to;
+        // Beside the turning face (its square squeezed about its middle
+        // line): the table beneath, in the shade - the edge soft.
         float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
-        bool turned = p > 0.5;
-        vec3 fill = turned ? u_fill_to : u_fill_from;
-        ink = turned ? u_ink_to : u_ink;
-        if (p > 0.0 && p < 1.0 && v > face) {
-            fill = mix(u_fill_from, u_fill_to, 0.5) * 0.92;
-            lit = 0.0;
-        }
+        float fw = fwidth(v) * 1.5;
+        float beside = (p > 0.0 && p < 1.0) ? smoothstep(face - fw, face + fw, v) : 0.0;
+        vec3 beneath = mix(u_fill_from, u_fill_to, 0.5) * 0.82;
+        vec3 fill = mix(shown, beneath, beside);
+        lit *= 1.0 - beside;
         under = vec4(fill, 1.0);
     }
     float k = a * ink.a * lit;

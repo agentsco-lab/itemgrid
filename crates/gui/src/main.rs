@@ -95,7 +95,7 @@ fn night_due() -> bool {
 }
 
 /// How long the squares take to turn over (s).
-const NIGHT_FLIP_S: f32 = 1.4;
+const NIGHT_FLIP_S: f32 = 2.2;
 
 fn night() -> bool {
     NIGHT.load(std::sync::atomic::Ordering::Relaxed)
@@ -124,9 +124,10 @@ fn draw_night() -> bool {
 fn draw_night_at(fv: &FloorView, p: (f32, f32)) {
     let at = fv.flip.map(|(how_far, from, to_night)| {
         let step = square() * fv.k;
-        let spread = 7.0 * step;
+        let spread = 11.0 * step;
         let d = ((p.0 - from.0).powi(2) + (p.1 - from.1).powi(2)).sqrt();
         let turned = (how_far * (fv.reach * 1.6 + spread) - d) / spread > 0.5;
+        let _ = 11.0; // (grid_gl: spread 11 squares, jittered; here the middle of the band)
         if to_night { turned } else { !turned }
     });
     DRAW_NIGHT.with(|c| c.set(at));
@@ -6503,7 +6504,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 let _ = std::fs::write(night_file(), if to { "night\n" } else { "day\n" });
                 None
             } else {
-                Some((p * p * (3.0 - 2.0 * p), from, to))
+                // Out from the button quickly, slowing toward the far edges
+                // (foreshortened there: even to the eye).
+                Some((1.0 - (1.0 - p) * (1.0 - p), from, to))
             }
         });
         let mut fv = ui.floor_view.borrow_mut();
