@@ -225,7 +225,6 @@ impl Ease {
         }
     }
 
-    #[cfg(test)]
     pub fn name(self) -> &'static str {
         EASES.iter().find(|e| e.1 == self).map_or("smooth", |e| e.0)
     }
@@ -512,7 +511,6 @@ impl Layout {
     }
 
     /// The layout in its file's words.
-    #[cfg(test)]
     pub fn write(&self) -> String {
         let s = self.style;
         let mut text = format!("paper {}\nlines {}\nline-width {}\nfont {}\n", PAPERS[s.paper].0, INKS[s.ink].0, WIDTHS[s.width], FONTS[s.font].0);
@@ -545,8 +543,19 @@ fn named(names: &[&str], w: &[&str]) -> Option<usize> {
     names.iter().position(|n| *n == name)
 }
 
-/// The layout laid out with the owner (data/layout).
+/// Where the parts moved on the table (E, main.rs) are kept: read over
+/// the layout laid out if it is there, to be laid into data/layout.
+pub fn moved_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"));
+    base.join("itemgrid/layout-moved")
+}
+
+/// The layout laid out with the owner (data/layout), or the one with its
+/// parts moved (moved_path).
 pub fn layout() -> Layout {
+    if let Ok(text) = std::fs::read_to_string(moved_path()) {
+        return Layout::read(&text);
+    }
     Layout::read(include_str!("../data/layout"))
 }
 

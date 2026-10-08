@@ -497,6 +497,10 @@ struct Ui {
     /// What can be done with the phone where it is, under its words (on
     /// stock Android: item installed) - a line to click.
     act: RefCell<Option<board::Board>>,
+    /// The table's parts being moved (E): which, from where (the table's
+    /// point), and the layout and the Duo's corner as the drag began.
+    editing: std::cell::Cell<bool>,
+    edit_from: RefCell<Option<(&'static str, (f32, f32), scene::Layout, (f32, f32))>>,
     /// The menu opened for the phone's line's question only: put away with it.
     menu_for_ask: std::cell::Cell<bool>,
     page_back: std::cell::Cell<f32>,
@@ -1324,6 +1328,8 @@ fn build(app: &adw::Application) {
         board: RefCell::default(),
         page: RefCell::default(),
         act: RefCell::default(),
+        editing: std::cell::Cell::new(false),
+        edit_from: RefCell::default(),
         menu_for_ask: std::cell::Cell::new(false),
         page_back: std::cell::Cell::new(0.0),
         page_dims: std::cell::Cell::new(None),
@@ -1558,6 +1564,21 @@ fn build(app: &adw::Application) {
         let (weak, f, pg) = (Rc::downgrade(&ui), from.clone(), page.clone());
         drag.connect_drag_begin(move |g, x, y| {
             let Some(ui) = weak.upgrade() else { return };
+            // Moving the table's parts (E): the one under the pointer taken.
+            ui.edit_from.borrow_mut().take();
+            if ui.editing.get() {
+                let fv = ui.floor_view.borrow();
+                let hit = table_under(&fv, (x, y)).and_then(|t| fv.edit_boxes.iter().find(|(_, b)| t.0 >= b[0] && t.0 < b[2] && t.1 >= b[1] && t.1 < b[3]).map(|(n, _)| (*n, t)));
+                let corner = fv.duo_corner;
+                drop(fv);
+                if let Some((name, t)) = hit {
+                    *ui.edit_from.borrow_mut() = Some((name, t, ui.layout.get(), corner));
+                    f.set((grid_at(), Some(t), (x, y)));
+                    grid_drag.set(false);
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    return;
+                }
+            }
             let holder = ui.duo.parent().filter(|_| ui.intro.borrow().duo() > 0.5);
             let on_duo = pg.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| holder.as_ref().is_some_and(|h| w == *h || w.is_ancestor(h)));
             if on_duo {
@@ -1569,9 +1590,39 @@ fn build(app: &adw::Application) {
             // moves, the window is (no header at home).
             grid_drag.set(g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK));
         });
+        let say_edit = say.clone();
         let (weak, f, pg, gd) = (Rc::downgrade(&ui), from, page.clone(), grid_drag2);
         drag.connect_drag_update(move |g, dx, dy| {
             let Some(ui) = weak.upgrade() else { return };
+            // A part moved (E): the layout from the drag's start, the part
+            // moved by whole squares, every step alike.
+            let moving = *ui.edit_from.borrow();
+            if let Some((name, from, base, corner)) = moving {
+                let (_, _, (x, y)) = f.get();
+                let fv = ui.floor_view.borrow();
+                let cur = square() * fv.k;
+                let now = table_under(&fv, (x + dx, y + dy));
+                drop(fv);
+                let Some(now) = now else { return };
+                let d = (((now.0 - from.0) / cur).round(), ((now.1 - from.1) / cur).round());
+                let mut l = base;
+                for st in l.steps.iter_mut() {
+                    let p = &mut st.place;
+                    match name {
+                        "word" => p.word = (p.word.0 + d.0, p.word.1 + d.1),
+                        "buttons" => p.buttons = (p.buttons.0 + d.0, p.buttons.1 + d.1),
+                        "words" => p.words = (p.words.0 + d.0, p.words.1 + d.1),
+                        "duo" => p.duo = Some((corner.0 + d.0, corner.1 + d.1)),
+                        "credit" => p.credit = (p.credit.0 + d.0, p.credit.1 + d.1),
+                        "menu" => p.menu = (p.menu.0 + d.0, p.menu.1 + d.1),
+                        _ => {}
+                    }
+                }
+                ui.layout.set(l);
+                redraw(&ui);
+                say(&ui, format!("{name} moved {:+.0}, {:+.0} (E keeps it)", d.0, d.1));
+                return;
+            }
             if !gd.get() {
                 if dx.hypot(dy) > 4.0 {
                     let ((_, _), _, (x, y)) = f.get();
@@ -1604,6 +1655,34 @@ fn build(app: &adw::Application) {
             say(&ui, format!("Squares moved {:.0}, {:.0} mm", at.0, at.1));
         });
         page.add_controller(drag);
+        // E: the table's parts moved by dragging - the word, the buttons,
+        // the phone's words, the Duo, the credit, the open menu - a square
+        // at a time, every step alike; E again keeps them (layout-moved,
+        // read at the start: to be laid into data/layout).
+        let (weak, s) = (Rc::downgrade(&ui), say_edit);
+        let edit_keys = gtk::EventControllerKey::new();
+        edit_keys.connect_key_pressed(move |_, key, _, state| {
+            let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
+            if !matches!(key, gdk::Key::e | gdk::Key::E) || state.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) || ui.asking.borrow().is_some() {
+                return glib::Propagation::Proceed;
+            }
+            let on = !ui.editing.get();
+            ui.editing.set(on);
+            if on {
+                s(&ui, "moving: drag the word, the buttons, the phone, its words, the credit, the menu - E keeps".into());
+            } else {
+                let path = scene::moved_path();
+                let text = ui.layout.get().write();
+                let kept = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text));
+                match kept {
+                    Ok(()) => s(&ui, format!("kept: {}", path.display())),
+                    Err(e) => s(&ui, format!("not kept: {e}")),
+                }
+            }
+            redraw(&ui);
+            glib::Propagation::Stop
+        });
+        ui.window.add_controller(edit_keys);
         // The phone asleep when last seen (before a restart): lying shut on the
     // table, saying so, not looked for as gone.
     if let Some(seen) = LastSeen::read() {
@@ -3505,6 +3584,12 @@ struct FloorView {
     /// board's; where that board begins.
     tiles: Vec<board::Tile>,
     board_at: (f32, f32),
+    /// The parts that can be moved (E) and their boxes on the table (px):
+    /// the word, the buttons, the phone's words, the Duo, the credit, the
+    /// open menu.
+    edit_boxes: Vec<(&'static str, [f32; 4])>,
+    /// The Duo's top left corner on the sheet (squares).
+    duo_corner: (f32, f32),
     page_at: (f32, f32),
     act_at: (f32, f32),
     /// Across the table, where the eye's line is (boxes drawn farthest
@@ -5984,6 +6069,14 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let duo_corner = place.duo.unwrap_or_else(|| ((((13.0 * cur + sheet[2] - sheet[0]) / 2.0 - mid_px) / cur).round(), 4.0));
         let duo_on_sheet = (sheet[0] + duo_corner.0 * cur + mid_px, sheet[1] + duo_corner.1 * cur + duo_h / 2.0);
         ui.duo_on_sheet.set(Some(duo_on_sheet));
+        // The parts that can be moved (E): where each lies on the table.
+        let mut edit_boxes: Vec<(&'static str, [f32; 4])> = vec![
+            ("word", [cubes_at.0 - WORD_HALF * cur, cubes_at.1 - 0.5 * cur, cubes_at.0 + WORD_HALF * cur, cubes_at.1 + 0.5 * cur]),
+            ("buttons", [buttons_at.0, buttons_at.1, buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur, buttons_at.1 + cur]),
+            ("words", [sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur, sheet[0] + (place.words.0 + 12.0) * cur, sheet[1] + (place.words.1 + 3.0) * cur]),
+            ("duo", [sheet[0] + duo_corner.0 * cur, sheet[1] + duo_corner.1 * cur, sheet[0] + duo_corner.0 * cur + 2.0 * mid_px, sheet[1] + duo_corner.1 * cur + duo_h]),
+            ("credit", [credit_at.0, credit_at.1, credit_at.0 + 8.0 * cur, credit_at.1 + cur]),
+        ];
         if std::env::var_os("ITEMGRID_SHEET").is_some() {
             trace(format_args!("sheet {sheet:?} duo {duo_on_sheet:?} mid {mid_px} h {duo_h} cur {cur} word {cubes_at:?} buttons {buttons_at:?} off {off:?} D on page {:?} origin on page {:?} duo_at {duo_at:?}", on_page(&rest_m, duo_on_sheet), on_page(&rest_m, (0.0, 0.0))));
         }
@@ -6013,8 +6106,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         if flat > 0.0 {
             let mid = (page_w * 0.5 - off.0, page_h * 0.5 - off.1);
             // The row from the word's start to the buttons' end in the
-            // middle (the word lies in the table now).
-            let row_mid = ((cubes_at.0 - WORD_HALF * cur + buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur) / 2.0, cubes_at.1);
+            // middle (the word lies in the table now). Where they come by
+            // themselves: moved by the layout (E), the eye stays.
+            let row_mid = ((word_home.0 - WORD_HALF * cur + buttons_home.0 + FLOOR_BUTTONS.len() as f32 * cur) / 2.0, word_home.1);
             e.look = (e.look.0 + (row_mid.0 - e.look.0) * flat, e.look.1 + (row_mid.1 - e.look.1) * flat);
             e.on = (e.on.0 + (mid.0 - e.on.0) * flat, e.on.1 + (mid.1 - e.on.1) * flat);
             e.tilt *= 1.0 - flat;
@@ -6142,6 +6236,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let board_at = on_squares(k, (left, under));
         let board_at = (board_at.0 + place.menu.0 * cur, board_at.1 + place.menu.1 * cur);
         let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8));
+        if let Some(b) = ui.board.borrow().as_ref() {
+            edit_boxes.push(("menu", [board_at.0, board_at.1, board_at.0 + menu_cols as f32 * cur, board_at.1 + b.lines.len() as f32 * cur]));
+        }
         if let Some(b) = ui.board.borrow().as_ref() {
             tiles.extend(b.tiles(board_at, cur).into_iter().map(|t| board::Tile { rgba: (t.rgba.0, t.rgba.1, t.rgba.2, (t.rgba.3 * part_alpha[4] as f64).min(1.0)), ..t }));
         }
@@ -6313,7 +6410,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         }
         // Away, the clicks go through it to the boards.
         if let Some(holder) = ui.duo.parent() {
-            let target = away < 0.5;
+            // (Nor while its parts are moved: the Duo is dragged on the table.)
+            let target = away < 0.5 && !ui.editing.get();
             if holder.can_target() != target {
                 holder.set_can_target(target);
             }
@@ -6328,7 +6426,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
