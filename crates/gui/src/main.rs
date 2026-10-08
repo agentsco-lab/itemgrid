@@ -261,12 +261,34 @@ fn paper(light: f64) -> f64 {
     }
 }
 
-/// The lines' colour at `alpha`: black by day, white by night.
+/// The lines' colour chosen (one of INKS), as drawn by day.
+fn ink_rgb() -> [f64; 3] {
+    INKS[style().ink.min(INKS.len() - 1)].1
+}
+
+/// The lines' colour by night: the chosen one lit - its hue kept, raised
+/// to full brightness and softened toward white, so a dark ink glows on
+/// the dark table rather than vanishing in it (black and graphite come
+/// out white, as the night's lines were). The owner chose orange by night
+/// and saw nothing change (2026-10-08).
+fn night_ink_rgb() -> [f64; 3] {
+    let c = ink_rgb();
+    let m = c[0].max(c[1]).max(c[2]);
+    if m < 0.05 {
+        return [1.0; 3];
+    }
+    let sat = (1.0 - c.iter().cloned().fold(1.0, f64::min) / m).min(1.0);
+    // The greys stay white; the colours keep about two thirds of their hue.
+    c.map(|v| 1.0 - (1.0 - v / m) * 0.65 * sat.max(0.0))
+}
+
+/// The lines' colour at `alpha`: the ink by day, the ink lit by night.
 fn ink(cr: &gtk::cairo::Context, alpha: f64) {
     if night() {
-        cr.set_source_rgba(1.0, 1.0, 1.0, alpha * 1.15);
+        let c = night_ink_rgb();
+        cr.set_source_rgba(c[0], c[1], c[2], alpha * 1.15);
     } else {
-        let c = INKS[style().ink.min(INKS.len() - 1)].1;
+        let c = ink_rgb();
         cr.set_source_rgba(c[0], c[1], c[2], alpha);
     }
 }
@@ -3827,7 +3849,7 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         cubes_at: fv.cubes_at,
         grown: fv.grid * (fv.reach + 3.0 * step),
         grid: fv.grid,
-        ink: if night { [1.0; 3] } else { INKS[style().ink.min(INKS.len() - 1)].1.map(|v| v as f32) },
+        ink: if night { night_ink_rgb() } else { ink_rgb() }.map(|v| v as f32),
         width: (line_width() / 1.6) as f32,
         ink_k: if night { 1.15 } else { 1.0 },
         waves: std::array::from_fn(|i| fv.waves.get(i).copied().unwrap_or((0.0, (0.0, 0.0)))),
@@ -3835,8 +3857,8 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         base_night: night,
         fill_day: paper_rgb().map(|v| v as f32),
         fill_night: [NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32],
-        ink_day: INKS[style().ink.min(INKS.len() - 1)].1.map(|v| v as f32),
-        ink_night: [1.0; 3],
+        ink_day: ink_rgb().map(|v| v as f32),
+        ink_night: night_ink_rgb().map(|v| v as f32),
         near_at: fv.near_at,
         size: (fv.size.0, fv.size.1),
         light: light(),
