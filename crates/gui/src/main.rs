@@ -594,6 +594,10 @@ struct Ui {
     marks_raw: std::cell::Cell<[f32; 4]>,
     /// The Duo put away while the menu is open (eased 0 .. 1).
     duo_away: std::cell::Cell<f32>,
+    /// The phone's words on the table (its name, its charge; or how to
+    /// bring it): a board, its letters turning up as the menu's do, a
+    /// line turned up again when its words change.
+    words: RefCell<Option<board::Board>>,
     duo_drawn_at: std::cell::Cell<Option<(f32, f32)>>,
     /// What the window shows (moved in it on the way into the wallpaper),
     /// on its stage.
@@ -1424,6 +1428,7 @@ fn build(app: &adw::Application) {
         step_now: std::cell::Cell::new(0),
         marks_raw: std::cell::Cell::new([0.0; 4]),
         duo_away: std::cell::Cell::new(0.0),
+        words: RefCell::new(None),
         duo_drawn_at: std::cell::Cell::new(None),
         shown: view.clone().upcast(),
         stage: stage.clone(),
@@ -2565,6 +2570,16 @@ fn build(app: &adw::Application) {
                     true
                 } else {
                     b.as_ref().is_some_and(|b| b.moving())
+                }
+            };
+            // The phone's words too.
+            let boarding = {
+                let mut w = ui.words.borrow_mut();
+                if w.as_ref().is_some_and(|b| b.gone()) {
+                    *w = None;
+                    true
+                } else {
+                    boarding || w.as_ref().is_some_and(|b| b.moving())
                 }
             };
             // The phone's line to click too.
@@ -6447,6 +6462,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             }
             Some(lines)
         });
+        // The phone's words wanted this frame (none: the board fades).
+        let mut words: Option<Vec<String>> = None;
+        // Their left edge in the word's column (the i of item: the word is
+        // put there, above), their top at the phone's.
+        let words_at = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
         if let Some(lines) = &job_lines {
             // Under the word, where the note goes (room for them there; the
             // phone's words gone meanwhile).
@@ -6478,35 +6498,45 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // flat (opened by a click on Wi-Fi), its top at the phone's.
             let (mid, _) = ui.duo_size;
             let wide = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cur;
-            // Its left edge in the word's column (the i of item: the word is
-            // put there, above), its top at the phone's.
             let _ = (mid, wide);
-            let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
-            let rows = lines.len() as f32;
-            let _ = rows;
-            let (head, rest) = lines.split_at(1);
-            let strength = (intro.duo() * part_alpha[0]).min(1.0);
-            texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
-            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
+            words = Some(lines);
         } else if let Some(lines) = (intro.duo() > 0.0 && ui.state.borrow().host.is_none() && !ui.shut_away.get()).then(|| away_words(ui)).flatten() {
-            let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
-            let (head, rest) = lines.split_at(1);
-            let strength = (intro.duo() * part_alpha[0]).min(1.0);
             // Stock Android on the cable: item put on it, a row under the
             // words (eleven letters: clear of the open phone).
-            act_at = (x, top + (lines.len() + 1) as f32 * cur);
+            act_at = (words_at.0, words_at.1 + (lines.len() + 1) as f32 * cur);
             act_wanted = matches!(ui.state.borrow().place, Place::Android(_)) && stock_android(ui).is_some();
-            act_strength = strength;
-            texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
-            texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
+            act_strength = (intro.duo() * part_alpha[0]).min(1.0);
+            words = Some(lines);
         } else if intro.duo() > 0.0 && ui.shut_away.get() {
             // Asleep (gone quiet shut): as it was last seen.
-            if let Some(lines) = ui.last_seen.borrow().as_ref().map(LastSeen::words) {
-                let (x, top) = (sheet[0] + place.words.0 * cur, sheet[1] + place.words.1 * cur);
-                let (head, rest) = lines.split_at(1);
+            words = ui.last_seen.borrow().as_ref().map(LastSeen::words);
+        }
+        // The words as a board (board.rs): its letters turn up as the
+        // menu's do when the phone comes, a line turns up again when its
+        // words change (the charge, the time), and it fades when the words
+        // go (the owner: the phone seen softly, its words animated as
+        // everywhere else, 2026-10-08). The first line dark as a heading.
+        {
+            let mut board = ui.words.borrow_mut();
+            match (&words, board.as_mut()) {
+                (Some(lines), Some(b)) if !b.closing() && b.lines.len() == lines.len() => {
+                    for (i, l) in lines.iter().enumerate() {
+                        if b.lines[i].text != *l {
+                            b.set_line(i, l.clone());
+                        }
+                    }
+                }
+                (Some(lines), _) => {
+                    let mut b = board::Board::open(lines.iter().map(|l| board::Line::new("", l.clone())).collect());
+                    b.chosen = Some(0);
+                    *board = Some(b);
+                }
+                (None, Some(b)) => b.close(),
+                (None, None) => {}
+            }
+            if let Some(b) = board.as_ref() {
                 let strength = (intro.duo() * part_alpha[0]).min(1.0);
-                texts.push(TableText { at: (x, top), cell: cur, lines: head.to_vec(), grey: 0.16, bold: false, set: 1.0, strength });
-                texts.push(TableText { at: (x, top + cur), cell: cur, lines: rest.to_vec(), grey: 0.45, bold: false, set: 1.0, strength });
+                tiles.extend(b.tiles(words_at, cur).into_iter().map(|t| board::Tile { rgba: (t.rgba.0, t.rgba.1, t.rgba.2, (t.rgba.3 * strength as f64).min(1.0)), ..t }));
             }
         }
         if let Some((text, strength)) = intro.note() {

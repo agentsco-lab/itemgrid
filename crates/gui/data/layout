@@ -8,7 +8,7 @@ step cubes zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 1.35 secs 
 step buttons zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 1.70 secs 1.20 ease linear words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
 step search zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
 step not-found zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
-step phone zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
+step phone zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 1.00 ease smoother words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
 step phone-open zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
 step cable zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
 step menu zoom 0.683 pan 0.20 0.20 top 0.542 tilt 0.0 turn 0.0 delay 0.00 secs 0.35 ease ease out show 0.00 1.00 1.00 1.00 1.00 1.00 words -1 -4 duo 11 2 word -1 -6 buttons 2 -6 menu 0 0 credit 0 0 duo-scale 1.000
