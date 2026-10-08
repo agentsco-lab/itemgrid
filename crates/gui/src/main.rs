@@ -128,7 +128,7 @@ fn draw_night_at(fv: &FloorView, p: (f32, f32)) {
         return;
     }
     let step = square() * fv.k;
-    let spread = 11.0 * step;
+    let spread = 6.0 * step;
     let d = |from: (f32, f32)| ((p.0 - from.0).powi(2) + (p.1 - from.1).powi(2)).sqrt();
     let mut now = night();
     for (how_far, from) in &fv.waves {

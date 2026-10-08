@@ -117,33 +117,27 @@ void main() {
     if (u_wave_n > 0) {
         vec2 cell = floor((t - u_shift) / u_step);
         vec2 c = (cell + 0.5) * u_step + u_shift;
-        // Each square a little before or after its neighbours (a hash of
-        // its place): a wave's front not a stair.
-        float jitter = (fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 2.5 * u_step;
-        float spread = 11.0 * u_step;
+        float spread = 6.0 * u_step;
         float far = u_reach * 1.6 + spread;
-        // Each wave that has passed this square turned it over once; the
-        // one passing now has it turning.
-        bool night_now = u_base_night > 0.5;
+        // Each wave that has passed this square turned it over once: the
+        // face shown now, and what it is turning to (the one passing).
+        bool now = u_base_night > 0.5;
+        bool after = now;
         float face = 1.0;
-        bool turning = false;
         for (int i = 0; i < 6; i++) {
             if (i >= u_wave_n) break;
-            float p = clamp((u_wave_p[i] * far - length(c - u_wave_from[i]) - jitter) / spread, 0.0, 1.0);
-            if (p > 0.5) night_now = !night_now;
-            if (p > 0.0 && p < 1.0) { face = abs(cos(p * 3.14159265)); turning = true; }
+            float p = clamp((u_wave_p[i] * far - length(c - u_wave_from[i])) / spread, 0.0, 1.0);
+            if (p > 0.5) now = !now;
+            if (p > 0.0) after = !after;
+            if (p > 0.0 && p < 1.0) face = abs(cos(p * 3.14159265));
         }
-        // The face shown, darker the more it is turned from the eye.
-        vec3 shown = (night_now ? u_fill_night : u_fill_day) * mix(0.72, 1.0, face);
-        ink = night_now ? u_ink_night : u_ink_day;
-        // Beside the turning face (its square squeezed about its middle
-        // line): the table beneath, in the shade - the edge soft.
+        // The square turned over about its middle line: its face squeezed
+        // to it and grown back the other colour, the other colour beside.
         float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
-        float fw = fwidth(v) * 1.5;
-        float beside = turning ? smoothstep(face - fw, face + fw, v) : 0.0;
-        vec3 beneath = mix(u_fill_day, u_fill_night, 0.5) * 0.82;
-        vec3 fill = mix(shown, beneath, beside);
-        lit *= 1.0 - beside;
+        float fw = fwidth(v);
+        float beside = smoothstep(face - fw, face + fw, v);
+        vec3 fill = mix(now ? u_fill_night : u_fill_day, after ? u_fill_night : u_fill_day, beside);
+        ink = (beside > 0.5 ? after : now) ? u_ink_night : u_ink_day;
         under = vec4(fill, 1.0);
     }
     float k = a * ink.a * lit;
