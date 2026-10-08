@@ -55,9 +55,6 @@ pub struct Grid {
     /// the window (the window itself shows nothing under it: main.rs's
     /// see-through class).
     pub size: (f32, f32),
-    /// The squares turning over at the growing's front (the wave start):
-    /// each square's lines on its other side.
-    pub front: bool,
 }
 
 /// How many waves may be on their way at once.
@@ -100,7 +97,6 @@ uniform vec4 u_ink_day;
 uniform vec4 u_ink_night;
 uniform vec2 u_near_at;
 uniform vec2 u_size;
-uniform float u_front;
 out vec4 color;
 
 float line(float t, float shift) {
@@ -122,23 +118,9 @@ void main() {
     float rim = 0.09 * min(u_size.x, u_size.y);
     vec2 e = smoothstep(vec2(0.0), vec2(rim), min(page + u_off, u_size - page - u_off));
     float edge = e.x * e.y;
-    // The square turning over as the growing reaches it (the wave start):
-    // its face squeezed to its middle line, shaded as it turns.
-    float shade = 0.0;
     if (seen) {
         float d = length(t - u_mid) / u_reach;
         float reached = u_grid >= 1.0 ? 1.0 : clamp((u_grown - length(t - u_cubes)) / (2.0 * u_step), 0.0, 1.0);
-        if (u_front > 0.5 && u_grid < 1.0) {
-            vec2 cell = floor((t - u_shift) / u_step);
-            vec2 c = (cell + 0.5) * u_step + u_shift;
-            float p = clamp((u_grown - length(c - u_cubes)) / (2.0 * u_step), 0.0, 1.0);
-            float face = (p > 0.0 && p < 1.0) ? abs(cos(p * 3.14159265)) : 1.0;
-            float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
-            float fw = fwidth(v);
-            float beside = smoothstep(face - fw, face + fw, v);
-            reached = p <= 0.0 ? 0.0 : (p >= 1.0 || p > 0.5 ? 1.0 : beside);
-            shade = (1.0 - beside) * 0.10 * sin(p * 3.14159265);
-        }
         a = 0.15 * pow(max(1.0 - d, 0.0), 1.3) * reached;
         if (a < 0.004) a = 0.0;
     }
@@ -173,7 +155,6 @@ void main() {
         ink = (beside > 0.5 ? after : now) ? u_ink_night : u_ink_day;
         under = vec4(fill, 1.0);
     }
-    under.rgb *= 1.0 - shade;
     float k = a * ink.a * lit;
     // The lines over the table's paper, premultiplied, gone at the rim.
     color = (vec4(ink.rgb * k, k) + under * (1.0 - k)) * edge;
@@ -253,7 +234,6 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15);
             gl.uniform_2_f32(u("u_near_at").as_ref(), g.near_at.0, g.near_at.1);
             gl.uniform_2_f32(u("u_size").as_ref(), g.size.0, g.size.1);
-            gl.uniform_1_f32(u("u_front").as_ref(), if g.front { 1.0 } else { 0.0 });
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);
