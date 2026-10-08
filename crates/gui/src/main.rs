@@ -35,6 +35,7 @@ mod journey;
 mod place;
 mod saver;
 mod scene;
+mod stage;
 mod sections;
 
 const APP_ID: &str = "lab.agentsco.ItemGrid";
@@ -514,7 +515,7 @@ struct Ui {
     nav: gtk::ListBox,
     /// The Duo drawn: the right half (and its back) turned as the phone
     /// folds; the angle shown and the one to go to.
-    duo: gtk::Fixed,
+    duo: stage::Stage,
     /// Its halves (left, right): front, back and shade each.
     halves: [DuoHalf; 2],
     spine: gtk::Picture,
@@ -782,7 +783,7 @@ fn build(app: &adw::Application) {
     // in it (duo_half) - turned whole in 3D by show_fold; the spine and the
     // hinges over them. Laid over a placeholder with room above for the
     // raised half: its perspective does not widen the column.
-    let duo = gtk::Fixed::new();
+    let duo = stage::Stage::new();
     let px = |mm: f64| (mm * DUO_PX_PER_MM).round() as i32;
     let (bw, bh) = (px(DUO_BODY.0), px(DUO_BODY.1));
     let mid = bw / 2;
@@ -1486,7 +1487,9 @@ fn build(app: &adw::Application) {
         sections: section_ui.clone(),
     });
     // The letters the page sets, made ahead.
-    glyphs_ahead("abcdefghijklmnopqrstuvwxyz?-&./");
+    // (The figures, : and % too: the phone's words - its number, the
+    // time it slept, its charge - turn up in the frames.)
+    glyphs_ahead("abcdefghijklmnopqrstuvwxyz0123456789:%?-&./");
     glyphs_ahead(intro::CREDIT);
     // The saver: idle five minutes, on; anything done since it came, off.
     // Idle ten, the phone let go (resting); anything done, looked for at
@@ -5805,20 +5808,20 @@ fn show_fold_now(ui: &Ui, angle: f64) {
     let spine_depth = vm.transform_point3d(&graphene::Point3D::new(mid + spine_c.0, h / 2.0, spine_c.1)).z();
     let order: [usize; 2] = if depth[0] <= depth[1] { [0, 1] } else { [1, 0] };
     for h in &ui.halves {
-        h.floor.insert_before(&ui.duo, ui.duo.first_child().as_ref());
+        ui.duo.before(&h.floor, ui.duo.first().as_ref());
     }
     let mut spine_placed = false;
     for i in order {
         if !spine_placed && depth[i] > spine_depth + 1.0 {
-            ui.spine.insert_before(&ui.duo, None::<&gtk::Widget>);
+            ui.duo.before(&ui.spine, None);
             spine_placed = true;
         }
         for w in ui.halves[i].order.borrow().iter() {
-            w.insert_before(&ui.duo, None::<&gtk::Widget>);
+            ui.duo.before(w, None);
         }
     }
     if !spine_placed {
-        ui.spine.insert_before(&ui.duo, None::<&gtk::Widget>);
+        ui.duo.before(&ui.spine, None);
     }
     // The hinge, a cylinder along the spine at the halves' middle depth,
     // its strip turned to face the viewer.
@@ -6651,14 +6654,14 @@ fn show_fold_now(ui: &Ui, angle: f64) {
     // The cord under the halves (past the plug it is outside them), over
     // the shadows; the plug over the right half's layers - its bottom
     // edge's face too: it goes into it - and under a half nearer than it.
-    ui.cable.insert_after(&ui.duo, Some(&ui.halves[0].floor));
-    ui.gl3d.insert_after(&ui.duo, Some(&ui.cable));
+    ui.duo.after(&ui.cable, Some(ui.halves[0].floor.upcast_ref()));
+    ui.duo.after(&ui.gl3d, Some(ui.cable.upcast_ref()));
     let mut after: gtk::Widget = ui.gl3d.clone().upcast();
     let n = ui.cable_plug.len().max(2) as f32 - 1.0;
     for (i, p) in ui.cable_plug.iter().enumerate() {
         let z = (i as f32 / n - 0.5) * CABLE_PLUG_T * k;
         put(p.upcast_ref(), cable_at(z));
-        p.insert_after(&ui.duo, Some(&after));
+        ui.duo.after(p, Some(&after));
         after = p.clone().upcast();
     }
     // The shadows on the table: the right half's under it; the left's under

@@ -207,12 +207,28 @@ fn resolve(name: &str) -> Option<String> {
 /// holding an address in 172.16.42.0/24. Without it 172.16.42.1 is no
 /// phone - some other network can answer there (one did, 8 ms away), and
 /// the cable's ssh checks no host key.
+///
+/// Read from the kernel's own table (/proc/net/fib_trie: each local
+/// address a line, "/32 host LOCAL" under it) - `ip addr show` was run for
+/// it, a process six times a second from the window's main thread, in the
+/// frames (2026-10-08).
 pub fn usb_up() -> bool {
-    std::process::Command::new("ip")
-        .args(["-4", "-o", "addr", "show"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.contains(" 172.16.42.") && !l.contains(" 172.16.42.1/")))
-        .unwrap_or(false)
+    std::fs::read_to_string("/proc/net/fib_trie").is_ok_and(|trie| usb_in(&trie))
+}
+
+fn usb_in(trie: &str) -> bool {
+    let mut address: Option<&str> = None;
+    for line in trie.lines() {
+        let t = line.trim_start_matches([' ', '|', '+', '-']).trim_end();
+        if t.starts_with("/32 host LOCAL") {
+            if address.is_some_and(|a| a.starts_with("172.16.42.") && a != "172.16.42.1") {
+                return true;
+            }
+        } else if t.starts_with(|c: char| c.is_ascii_digit()) {
+            address = Some(t);
+        }
+    }
+    false
 }
 
 /// `ITEMGRID_NO_CABLE=1`: the cable taken as not there (to try Wi-Fi with
@@ -236,4 +252,33 @@ pub fn need_cable(host: &str) -> Result<(), String> {
         return Ok(());
     }
     Err("plug in the cable: this takes the phone out of Linux, where Wi-Fi does not reach".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TRIE: &str = "Main:
+  +-- 0.0.0.0/0 3 0 5
+     |-- 0.0.0.0
+        /0 universe UNICAST
+     +-- 172.16.42.0/24 2 0 2
+        |-- 172.16.42.0
+           /24 link UNICAST
+        |-- 172.16.42.2
+           /32 host LOCAL
+Local:
+  +-- 127.0.0.0/8 2 0 2
+     |-- 127.0.0.1
+        /32 host LOCAL
+";
+
+    #[test]
+    fn the_usb_network_is_seen_by_its_own_address() {
+        assert!(usb_in(TRIE));
+        // The phone's own address on this side is no phone's network.
+        assert!(!usb_in(&TRIE.replace("172.16.42.2", "172.16.42.1")));
+        assert!(!usb_in(&TRIE.replace("172.16.42", "172.16.43")));
+        assert!(!usb_in(""));
+    }
 }
