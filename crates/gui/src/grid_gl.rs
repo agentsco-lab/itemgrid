@@ -49,6 +49,9 @@ pub struct Grid {
     pub fill_night: [f32; 3],
     pub ink_day: [f32; 3],
     pub ink_night: [f32; 3],
+    /// The table's point under the page's bottom middle: what the band
+    /// too near the eye to be drawn takes its colour from.
+    pub near_at: (f32, f32),
 }
 
 /// How many waves may be on their way at once.
@@ -90,6 +93,7 @@ uniform vec3 u_fill_day;
 uniform vec3 u_fill_night;
 uniform vec4 u_ink_day;
 uniform vec4 u_ink_night;
+uniform vec2 u_near_at;
 out vec4 color;
 
 float line(float t, float shift) {
@@ -105,7 +109,8 @@ void main() {
     vec3 q = u_inv * vec3(page, 1.0);
     vec2 t = q.xy / q.z;
     float a = 0.0;
-    if (dot(u_w, vec3(t, 1.0)) > 0.05) {
+    bool seen = dot(u_w, vec3(t, 1.0)) > 0.05;
+    if (seen) {
         float d = length(t - u_mid) / u_reach;
         float reached = u_grid >= 1.0 ? 1.0 : clamp((u_grown - length(t - u_cubes)) / (2.0 * u_step), 0.0, 1.0);
         a = 0.15 * pow(max(1.0 - d, 0.0), 1.3) * reached;
@@ -115,6 +120,8 @@ void main() {
     vec4 ink = u_ink;
     vec4 under = u_under;
     if (u_wave_n > 0) {
+        // (Too near the eye to be drawn: as the nearest row.)
+        if (!seen) t = u_near_at;
         vec2 cell = floor((t - u_shift) / u_step);
         vec2 c = (cell + 0.5) * u_step + u_shift;
         float spread = 6.0 * u_step;
@@ -219,6 +226,7 @@ impl Gpu {
             gl.uniform_3_f32(u("u_fill_night").as_ref(), g.fill_night[0], g.fill_night[1], g.fill_night[2]);
             gl.uniform_4_f32(u("u_ink_day").as_ref(), g.ink_day[0], g.ink_day[1], g.ink_day[2], 1.0);
             gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15);
+            gl.uniform_2_f32(u("u_near_at").as_ref(), g.near_at.0, g.near_at.1);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);
