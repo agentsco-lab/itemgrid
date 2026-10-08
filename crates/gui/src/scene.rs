@@ -600,7 +600,7 @@ mod tests {
         let l = Layout::read(include_str!("../data/layout"));
         assert_eq!(FONTS[l.style.font].0, "open sans");
         assert_eq!(l.steps[PHONE].place.duo, Some((11.0, 2.0)));
-        assert_eq!(l.steps[PHONE].place.word, (-3.0, -7.0));
+        assert_eq!(l.steps[PHONE].place.word, (-1.0, -6.0));
         assert_eq!(l.steps[MENU].place.menu, (0.0, 0.0));
         assert_eq!(Layout::read(&l.write()), l);
     }
