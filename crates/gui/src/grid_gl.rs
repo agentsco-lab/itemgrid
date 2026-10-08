@@ -38,6 +38,14 @@ pub struct Grid {
     pub under: Option<[f32; 3]>,
     /// The lines' width, times the old 1.6 px.
     pub width: f32,
+    /// Night coming (or going): the squares turned over, a wave from the
+    /// night button across the table - how far (0..1; none below 0), from
+    /// where, the table's fill and the lines' ink on the two faces.
+    pub flip: f32,
+    pub flip_from: (f32, f32),
+    pub fill_from: [f32; 3],
+    pub fill_to: [f32; 3],
+    pub ink_to: [f32; 3],
 }
 
 /// Whether the GPU draws the squares (else the floor's cairo does).
@@ -68,6 +76,11 @@ uniform float u_grid;
 uniform vec4 u_ink;
 uniform vec4 u_under;
 uniform float u_width;
+uniform float u_flip;
+uniform vec2 u_flip_from;
+uniform vec3 u_fill_from;
+uniform vec3 u_fill_to;
+uniform vec4 u_ink_to;
 out vec4 color;
 
 float line(float t, float shift) {
@@ -90,9 +103,29 @@ void main() {
         if (a < 0.004) a = 0.0;
     }
     float lit = a > 0.0 ? max(line(t.x, u_shift.x), line(t.y, u_shift.y)) : 0.0;
-    float k = a * u_ink.a * lit;
+    vec4 ink = u_ink;
+    vec4 under = u_under;
+    if (u_flip >= 0.0) {
+        // Each square turned over about its middle line, the ones near the
+        // button first: its face shrinks to a line and grows back the
+        // other colour; beside the turning face, the table beneath.
+        vec2 c = (floor((t - u_shift) / u_step) + 0.5) * u_step + u_shift;
+        float spread = 7.0 * u_step;
+        float p = clamp((u_flip * (u_reach * 1.6 + spread) - length(c - u_flip_from)) / spread, 0.0, 1.0);
+        float face = abs(cos(p * 3.14159265));
+        float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
+        bool turned = p > 0.5;
+        vec3 fill = turned ? u_fill_to : u_fill_from;
+        ink = turned ? u_ink_to : u_ink;
+        if (p > 0.0 && p < 1.0 && v > face) {
+            fill = mix(u_fill_from, u_fill_to, 0.5) * 0.92;
+            lit = 0.0;
+        }
+        under = vec4(fill, 1.0);
+    }
+    float k = a * ink.a * lit;
     // Over the night's table (or nothing), premultiplied.
-    color = vec4(u_ink.rgb * k, k) + u_under * (1.0 - k);
+    color = vec4(ink.rgb * k, k) + under * (1.0 - k);
 }
 ";
 
@@ -159,6 +192,11 @@ impl Gpu {
             let under = g.under.map_or([0.0; 4], |c| [c[0], c[1], c[2], 1.0]);
             gl.uniform_4_f32(u("u_under").as_ref(), under[0], under[1], under[2], under[3]);
             gl.uniform_1_f32(u("u_width").as_ref(), g.width);
+            gl.uniform_1_f32(u("u_flip").as_ref(), g.flip);
+            gl.uniform_2_f32(u("u_flip_from").as_ref(), g.flip_from.0, g.flip_from.1);
+            gl.uniform_3_f32(u("u_fill_from").as_ref(), g.fill_from[0], g.fill_from[1], g.fill_from[2]);
+            gl.uniform_3_f32(u("u_fill_to").as_ref(), g.fill_to[0], g.fill_to[1], g.fill_to[2]);
+            gl.uniform_4_f32(u("u_ink_to").as_ref(), g.ink_to[0], g.ink_to[1], g.ink_to[2], g.ink_k);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);

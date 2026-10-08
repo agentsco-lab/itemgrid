@@ -77,28 +77,25 @@ const FLOOR_SQUARE: f64 = 20.0;
 /// Half the word's width, in squares (its cubes laid about their middle).
 const WORD_HALF: f32 = intro::WORD.len() as f32 / 2.0;
 
-/// Night: the table dark, its lines light - by the time of day (20:00 to
-/// 7:00), unless set to stay day or night (settings; kept in
-/// ~/.config/itemgrid/night: auto, day or night).
+/// Night: the table dark, its lines light - by the night button on the
+/// table (kept in ~/.config/itemgrid/night: day or night).
 static NIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// How night is chosen: "auto" (by the hour), "night" or "day".
+/// How night is set: "night" or "day" (an old "auto": day).
 fn night_mode() -> String {
     match std::fs::read_to_string(night_file()).ok().as_deref().map(str::trim) {
         Some("night") => "night".into(),
-        Some("day") => "day".into(),
-        _ => "auto".into(),
+        _ => "day".into(),
     }
 }
 
-/// Whether it should be night now, by the mode and the hour.
+/// Whether it should be night now, as set.
 fn night_due() -> bool {
-    match night_mode().as_str() {
-        "night" => true,
-        "day" => false,
-        _ => glib::DateTime::now_local().map_or(false, |t| t.hour() >= 20 || t.hour() < 7),
-    }
+    night_mode() == "night"
 }
+
+/// How long the squares take to turn over (s).
+const NIGHT_FLIP_S: f32 = 1.4;
 
 fn night() -> bool {
     NIGHT.load(std::sync::atomic::Ordering::Relaxed)
@@ -110,6 +107,34 @@ fn night_file() -> std::path::PathBuf {
 
 /// The table's own grey (what is white by day).
 const NIGHT_TABLE: f64 = 0.142;
+
+thread_local! {
+    /// Night for what is being drawn now: while the squares turn over
+    /// (the night button), each thing on the table is drawn as the squares
+    /// under it are - turned or not yet; else as night is.
+    static DRAW_NIGHT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+fn draw_night() -> bool {
+    DRAW_NIGHT.with(|c| c.get()).unwrap_or_else(night)
+}
+
+/// What is drawn next at the table's point `p`: as night or day by the
+/// wave of the squares turning over (grid_gl's), if one runs.
+fn draw_night_at(fv: &FloorView, p: (f32, f32)) {
+    let at = fv.flip.map(|(how_far, from, to_night)| {
+        let step = square() * fv.k;
+        let spread = 7.0 * step;
+        let d = ((p.0 - from.0).powi(2) + (p.1 - from.1).powi(2)).sqrt();
+        let turned = (how_far * (fv.reach * 1.6 + spread) - d) / spread > 0.5;
+        if to_night { turned } else { !turned }
+    });
+    DRAW_NIGHT.with(|c| c.set(at));
+}
+
+fn draw_night_off() {
+    DRAW_NIGHT.with(|c| c.set(None));
+}
 
 use scene::{Style, FONTS, INKS, PAPERS, WIDTHS};
 
@@ -189,7 +214,7 @@ fn ink(cr: &gtk::cairo::Context, alpha: f64) {
 fn letter_rgba(c: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
     // (A colour - red, green - stays itself: only greys turn.)
     let spread = c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2);
-    if night() && spread < 0.15 {
+    if draw_night() && spread < 0.15 {
         (1.04 - c.0, 1.04 - c.1, 1.04 - c.2, c.3)
     } else {
         c
@@ -500,6 +525,9 @@ struct Ui {
     /// The table's parts being moved (E): which, from where (the table's
     /// point), and the layout and the Duo's corner as the drag began.
     editing: std::cell::Cell<bool>,
+    /// The squares turning over to night (true) or day: since when, from
+    /// where on the table (the night button).
+    night_flip: std::cell::Cell<Option<(std::time::Instant, bool, (f32, f32))>>,
     edit_from: RefCell<Option<(&'static str, (f32, f32), scene::Layout, (f32, f32))>>,
     /// The menu opened for the phone's line's question only: put away with it.
     menu_for_ask: std::cell::Cell<bool>,
@@ -1329,6 +1357,7 @@ fn build(app: &adw::Application) {
         page: RefCell::default(),
         act: RefCell::default(),
         editing: std::cell::Cell::new(false),
+        night_flip: std::cell::Cell::new(None),
         edit_from: RefCell::default(),
         menu_for_ask: std::cell::Cell::new(false),
         page_back: std::cell::Cell::new(0.0),
@@ -1425,15 +1454,6 @@ fn build(app: &adw::Application) {
                     idle_now(&ui, idle);
                 }
             });
-            glib::ControlFlow::Continue
-        });
-    }
-    // Night by the hour: looked at each minute.
-    {
-        let weak = Rc::downgrade(&ui);
-        glib::timeout_add_seconds_local(60, move || {
-            let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
-            show_night(&ui);
             glib::ControlFlow::Continue
         });
     }
@@ -1775,6 +1795,17 @@ fn build(app: &adw::Application) {
                     }
                     // The start played again (for laying things out by it).
                     FloorButton::Replay => ui.intro.borrow_mut().replay(),
+                    // Night (or day) coming: the squares turning over from
+                    // this button; the colours follow once they have.
+                    FloorButton::Night => {
+                        if ui.night_flip.get().is_none() {
+                            let fv = ui.floor_view.borrow();
+                            let cur = square() * fv.k;
+                            let from = (fv.buttons_at.0 + (i as f32 + 0.5) * cur, fv.buttons_at.1 + 0.5 * cur);
+                            drop(fv);
+                            ui.night_flip.set(Some((std::time::Instant::now(), !night(), from)));
+                        }
+                    }
                     // As the wallpaper, the window back first (its place and
                     // size kept as it closes are the usual ones).
                     FloorButton::Close => {
@@ -2591,7 +2622,8 @@ fn build(app: &adw::Application) {
                 step != 0.0
             };
             let walling = wall_step(&ui, now_us) || walling;
-            let pressing = pressing || boarding || paging || saving || zooming || walling;
+            let flipping = ui.night_flip.get().is_some();
+            let pressing = pressing || boarding || paging || saving || zooming || walling || flipping;
             // The start as the layout times it.
             ui.intro.borrow_mut().timing = ui.layout.get().timing();
             let far = ui.intro.borrow_mut().step() || resized || pressing || far;
@@ -3593,6 +3625,8 @@ struct FloorView {
     /// the word, the buttons, the phone's words, the Duo, the credit, the
     /// open menu.
     edit_boxes: Vec<(&'static str, [f32; 4])>,
+    /// The squares turning over: how far, from where, to night.
+    flip: Option<(f32, (f32, f32), bool)>,
     /// The Duo's top left corner on the sheet (squares).
     duo_corner: (f32, f32),
     page_at: (f32, f32),
@@ -3669,6 +3703,11 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         width: (line_width() / 1.6) as f32,
         ink_k: if night { 1.15 } else { 1.0 },
         under: night.then_some([NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32]),
+        flip: fv.flip.map_or(-1.0, |f| f.0),
+        flip_from: fv.flip.map_or((0.0, 0.0), |f| f.1),
+        fill_from: if night { [NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32] } else { paper_rgb().map(|v| v as f32) },
+        fill_to: if night { paper_rgb().map(|v| v as f32) } else { [NIGHT_TABLE as f32, NIGHT_TABLE as f32, (NIGHT_TABLE * 1.02) as f32] },
+        ink_to: if night { INKS[style().ink.min(INKS.len() - 1)].1.map(|v| v as f32) } else { [1.0; 3] },
     })
 }
 
@@ -4028,6 +4067,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         // The letter on the top: the face's own frame (its corners), the
         // letter laid in it.
         let ch = letter.chars().next().unwrap_or(' ');
+        draw_night_at(fv, (fv.cubes_at.0 + (c.i as f32 - WORD_HALF + 0.5) * square() * fv.k, fv.cubes_at.1));
         draw_glyph(cr, ch, c.top[0], c.top[1], c.top[3], (0.16, 0.16, 0.18, 0.88 * (c.there as f64 / 0.25).min(1.0)));
 
     }
@@ -4035,6 +4075,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     let _ = cr.paint_with_alpha((fv.word * fv.part_alpha[2]).min(1.0) as f64);
     draw_texts(fv, cr);
     draw_flips(fv, cr);
+    draw_night_off();
     draw_buttons(fv, cr);
 }
 
@@ -4069,6 +4110,7 @@ fn draw_flips(fv: &FloorView, cr: &gtk::cairo::Context) {
         cr.close_path();
     };
     for t in &tiles {
+        draw_night_at(fv, (t.at.0 + side / 2.0, t.at.1 + side / 2.0));
         let (x0, y0) = t.at;
         let f = t.flap;
         // Raised (a line that can be clicked, under the pointer): a cube
@@ -4137,6 +4179,7 @@ fn draw_texts(fv: &FloorView, cr: &gtk::cairo::Context) {
         if t.strength <= 0.0 {
             continue;
         }
+        draw_night_at(fv, (t.at.0 + t.cell, t.at.1 + t.cell));
         let cols = t.lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
         let rows = t.lines.len();
         let (x1, y1) = (t.at.0 + cols as f32 * t.cell, t.at.1 + rows as f32 * t.cell);
@@ -5087,12 +5130,10 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
         "day" => "off".to_owned(),
         _ => "auto".to_owned(),
     };
-    let mut lines = vec![
-        board::Line::new("set:night", format!("night      {night}")),
-        board::Line::new("set:wallpaper", format!("wallpaper  {}", onoff(ui.wallpaper.get().is_some()))),
-    ];
-    lines.push(board::Line::new("set:developer", format!("developer  {}", onoff(developer_mode()))));
-    lines
+    // (Night is the button on the table; the wallpaper and the developer
+    // mode are not offered: 2026-10-08. More comes here.)
+    let _ = (onoff, night, ui);
+    vec![board::Line::new("", "nothing to set yet")]
 }
 
 /// Night or day shown as due: the table, the window.
@@ -5117,13 +5158,9 @@ fn set_night_now(ui: &Ui, on: bool) {
     ui.floor_gl.queue_render();
 }
 
-/// The night setting turned: auto, night, day, auto again.
+/// The night setting turned: night, day.
 fn turn_night_mode(ui: &Ui) {
-    let next = match night_mode().as_str() {
-        "auto" => "night",
-        "night" => "day",
-        _ => "auto",
-    };
+    let next = if night_mode() == "night" { "day" } else { "night" };
     let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
     let _ = std::fs::write(night_file(), format!("{next}\n"));
     show_night(ui);
@@ -5134,12 +5171,15 @@ enum FloorButton {
     Menu,
     Replay,
     Close,
+    /// Night and day: a grey square by day, a light one by night; pressed,
+    /// the squares turn over to their other side, from it across the table.
+    Night,
 }
 
 /// In the word's row at the page's right (the wallpaper turned in the
 /// settings).
-const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Replay), Some(FloorButton::Close)];
-const BUTTONS: usize = 3;
+const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Replay), Some(FloorButton::Close), Some(FloorButton::Night)];
+const BUTTONS: usize = 4;
 
 /// The buttons' hover and press, eased.
 #[derive(Default)]
@@ -5248,6 +5288,7 @@ fn draw_buttons(fv: &FloorView, cr: &gtk::cairo::Context) {
         }
         // Lying on the table: the sign alone, in its square of the grid.
         let strong = if fv.hover_button == Some(i) { 0.9 } else { 0.5 };
+        draw_night_at(fv, (fv.buttons_at.0 + (i as f32 + 0.5) * square() * fv.k, fv.buttons_at.1 + 0.5 * square() * fv.k));
         draw_sign(cr, *b, top[0], top[1], top[3], strong);
         let _ = cr.pop_group_to_source();
         let _ = cr.paint_with_alpha((fv.word * fv.button_in[i] * fv.part_alpha[3]).min(1.0) as f64);
@@ -5289,6 +5330,12 @@ fn draw_sign(cr: &gtk::cairo::Context, button: FloorButton, a: (f64, f64), b: (f
             cr.move_to(63.0, 37.0);
             cr.line_to(37.0, 63.0);
             let _ = cr.stroke();
+        }
+        FloorButton::Night => {
+            let g = if draw_night() { 0.86 } else { 0.55 };
+            cr.set_source_rgba(g, g, g + 0.01, strength);
+            cr.rectangle(35.0, 35.0, 30.0, 30.0);
+            let _ = cr.fill();
         }
     }
     cr.restore().ok();
@@ -6445,10 +6492,24 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             l.set_opacity(intro.duo() as f64);
         }
         drop(intro);
+        // The squares turning over to night or day (the night button): how
+        // far they have; turned, the colours follow and the setting is kept.
+        let flip = ui.night_flip.get().and_then(|(since, to, from)| {
+            let p = since.elapsed().as_secs_f32() / NIGHT_FLIP_S;
+            if p >= 1.0 {
+                ui.night_flip.set(None);
+                set_night_now(ui, to);
+                let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
+                let _ = std::fs::write(night_file(), if to { "night\n" } else { "day\n" });
+                None
+            } else {
+                Some((p * p * (3.0 - 2.0 * p), from, to))
+            }
+        });
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.flip != flip || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, flip, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
