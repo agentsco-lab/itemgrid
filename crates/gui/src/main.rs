@@ -3332,6 +3332,11 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         fold_to(ui, 0.0);
         tilt_to(ui, [0.0, 0.0, 1.0]);
     }
+    // A Duo 2: drawn a little open, lying still (the owner, 2026-10-08).
+    if matches!(place, Place::Duo2(_)) {
+        fold_to(ui, 35.0);
+        tilt_to(ui, [0.0, 0.0, 1.0]);
+    }
     const BACK_BODY: &str = "Linux's system and data go back from the newest whole-system backup, each part checked on the phone - about 35 minutes. Android's data on the phone goes.";
     let (icon, duo, title, text, moving) = match place {
         Place::Fastboot(s) => {
@@ -5097,7 +5102,7 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
         Place::Android(_) if guest => vec!["android".into(), "as a guest".into()],
         Place::Android(_) => vec!["android".into(), "on cable".into()],
         Place::Quiet(_) => vec!["android".into(), "turn on".into(), "usb debugging".into()],
-        Place::Duo2(_) => vec!["duo 2".into(), "q1 27".into()],
+        Place::Duo2(_) => vec!["duo 2".into(), String::new(), "q1 27".into()],
         Place::Other(_) => vec!["other phone".into(), "not a duo 1".into()],
         Place::Fastboot(_) => vec!["bootloader".into()],
         Place::Recovery(_) => vec!["recovery".into()],
