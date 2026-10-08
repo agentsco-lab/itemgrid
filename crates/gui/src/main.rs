@@ -186,14 +186,15 @@ fn face_rgb(light: f64) -> (f64, f64, f64) {
 /// (the home page, the squares on the GPU), the window shows nothing of
 /// its own: the paper is the table's, grid_gl's, fading out at the page's
 /// edges - the owner asked for see-through edges (2026-10-08). The shadow
-/// is kept, unseen, for the resize grab round the window.
+/// is kept, unseen, for the resize grab round the window; adwaita's 1 px
+/// outline (a thin frame in the air) goes.
 fn style_css() -> String {
     let p = paper_rgb().map(|v| (v * 255.0).round() as u8);
     let hex = format!("#{:02x}{:02x}{:02x}", p[0], p[1], p[2]);
     format!(
         "window:not(.night), window.background:not(.night), window:not(.night) headerbar, window.wall-cover:not(.night), window.wall-move:not(.night) .wall-card {{ background: {hex}; }}\n\
          window.see-through, window.see-through.background:not(.night), window.see-through.background.night, window.see-through headerbar {{ background: transparent; }}\n\
-         window.see-through.csd {{ box-shadow: 0 0 0 12px transparent; }}"
+         window.see-through.csd {{ box-shadow: 0 0 0 12px transparent; outline: none; }}"
     )
 }
 
