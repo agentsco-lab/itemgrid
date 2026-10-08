@@ -79,10 +79,10 @@ const FLOOR_SQUARE: f64 = 20.0;
 
 /// Half the word's width, in squares (its cubes laid about their middle).
 const WORD_HALF: f32 = intro::WORD.len() as f32 / 2.0;
-/// The "/" in the word (intro::WORD): the night-and-day button - drawn in
-/// the other side's colours (light by night, dark by day), pressed, the
-/// squares turn over from it. The owner: "кнопку смены темы ... прямо на
-/// '/', только цвет плитки инвертирован теме" (2026-10-08).
+/// The "/" in the word (intro::WORD): the night-and-day button - a letter
+/// as the others, but pressed, night (or day) comes from it. The owner:
+/// "кнопку смены темы ... прямо на '/'" (2026-10-08; its colour was the
+/// other side's for a moment, then "давай не инвертировать").
 const SLASH: usize = 4;
 
 /// Night: the table dark, its lines light - by the night button on the
@@ -4305,15 +4305,10 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
     let shapes = cube_shapes(fv);
     let _ = cr.push_group();
     for c in &shapes {
-        // As night or day at its square (the waves); the "/" the other way
-        // round - the night-and-day button, showing the side it brings.
+        // As night or day at its square (the waves).
         match fv.tapped.filter(|_| c.i >= intro::WORD.len()) {
             Some((at, _)) => draw_night_at(fv, at),
             None => draw_night_at(fv, (fv.cubes_at.0 + (c.i as f32 - WORD_HALF + 0.5) * square() * fv.k, fv.cubes_at.1)),
-        }
-        if c.i == SLASH {
-            let other = !draw_night();
-            DRAW_NIGHT.with(|d| d.set(Some(other)));
         }
         let h = fv.cubes.get(c.i).map_or(fv.tapped.map_or(0.0, |t| t.1), |c| c.1);
         path(&c.shadow);
@@ -4321,9 +4316,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
         let _ = cr.fill();
         // Gone down into the table, its sides and top fade into the
         // table's square (the letter alone lying there).
-        // (The "/" keeps its top: a square of the other side's paper,
-        // lying there.)
-        let up = if c.i == SLASH { 1.0 } else { (h / 0.1).clamp(0.0, 1.0) as f64 };
+        let up = (h / 0.1).clamp(0.0, 1.0) as f64;
         if up > 0.0 {
             for (q, light) in &c.faces {
                 path(q);
