@@ -55,6 +55,9 @@ pub struct Grid {
     /// the window (the window itself shows nothing under it: main.rs's
     /// see-through class).
     pub size: (f32, f32),
+    /// Light under the table: the lines' colour glowing round each line,
+    /// through the slits between the squares.
+    pub light: bool,
 }
 
 /// How many waves may be on their way at once.
@@ -97,6 +100,7 @@ uniform vec4 u_ink_day;
 uniform vec4 u_ink_night;
 uniform vec2 u_near_at;
 uniform vec2 u_size;
+uniform float u_light;
 out vec4 color;
 
 float line(float t, float shift) {
@@ -125,6 +129,21 @@ void main() {
         if (a < 0.004) a = 0.0;
     }
     float lit = a > 0.0 ? max(line(t.x, u_shift.x), line(t.y, u_shift.y)) : 0.0;
+    // Light under the table (u_light): through the slits between the
+    // squares, a glow of the lines' colour falling off from each line
+    // (a few lines' widths), with the lines as the squares fade.
+    float px1 = length(vec2(dFdx(t.x), dFdy(t.x)));
+    float halo = 0.0;
+    if (u_light > 0.5 && a > 0.0) {
+        float dx = abs(fract((t.x - u_shift.x) / u_step + 0.5) - 0.5) * u_step;
+        float dy = abs(fract((t.y - u_shift.y) / u_step + 0.5) - 0.5) * u_step;
+        float d = min(dx, dy) / max(px1, 1e-6);
+        // A bright seam, falling off within a line's width or two, and a
+        // faint spill further out; as strong as the lines themselves are
+        // here (a), so it fades with them.
+        float w = u_width * u_scale;
+        halo = (0.9 * exp(-d / (1.2 * w)) + 0.15 * exp(-d / (5.0 * w))) * a * 2.0;
+    }
     vec4 ink = u_ink;
     vec4 under = vec4(u_base_night > 0.5 ? u_fill_night : u_fill_day, 1.0);
     if (u_wave_n > 0) {
@@ -156,8 +175,11 @@ void main() {
         under = vec4(fill, 1.0);
     }
     float k = a * ink.a * lit;
-    // The lines over the table's paper, premultiplied, gone at the rim.
-    color = (vec4(ink.rgb * k, k) + under * (1.0 - k)) * edge;
+    // The glow over the paper, the lines over both, premultiplied, gone at
+    // the rim.
+    float kh = halo * ink.a;
+    vec4 base = vec4(ink.rgb * kh, kh) + under * (1.0 - kh);
+    color = (vec4(ink.rgb * k, k) + base * (1.0 - k)) * edge;
 }
 ";
 
@@ -234,6 +256,7 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15);
             gl.uniform_2_f32(u("u_near_at").as_ref(), g.near_at.0, g.near_at.1);
             gl.uniform_2_f32(u("u_size").as_ref(), g.size.0, g.size.1);
+            gl.uniform_1_f32(u("u_light").as_ref(), if g.light { 1.0 } else { 0.0 });
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);

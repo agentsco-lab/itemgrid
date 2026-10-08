@@ -103,6 +103,42 @@ fn night() -> bool {
     NIGHT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The light under the table (`light` in the settings, 2026-10-08: the
+/// owner: "чтобы снизу шел свет как бы через щели"): the lines' colour
+/// glows round each line, as light through the slits between the squares.
+/// Kept in ~/.config/itemgrid/light (on or off).
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn light() -> bool {
+    LIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn light_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("itemgrid/light")
+}
+
+fn set_light(on: bool) {
+    LIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::create_dir_all(light_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(light_file(), if on { "on\n" } else { "off\n" });
+}
+
+/// The lines' colour chosen in the settings (`lines`: one of INKS by
+/// name), kept in ~/.config/itemgrid/lines over the layout's own.
+fn lines_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("itemgrid/lines")
+}
+
+fn kept_ink() -> Option<usize> {
+    let name = std::fs::read_to_string(lines_file()).ok()?;
+    INKS.iter().position(|(n, _)| *n == name.trim())
+}
+
+fn keep_ink(i: usize) {
+    let _ = std::fs::create_dir_all(lines_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(lines_file(), format!("{}\n", INKS[i].0));
+}
+
 fn night_file() -> std::path::PathBuf {
     glib::user_config_dir().join("itemgrid/night")
 }
@@ -751,6 +787,10 @@ fn build(app: &adw::Application) {
         STYLE_CSS.with(|s| gtk::style_context_add_provider_for_display(&display, s, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1));
     }
     set_style(scene::layout().style);
+    if let Some(ink) = kept_ink() {
+        set_style(Style { ink, ..style() });
+    }
+    LIGHT.store(std::fs::read_to_string(light_file()).is_ok_and(|t| t.trim() == "on"), std::sync::atomic::Ordering::Relaxed);
     let window = adw::ApplicationWindow::builder().application(app).title("item/grid").default_width(1000).default_height(800).build();
     if night() {
         window.add_css_class("night");
@@ -1907,6 +1947,20 @@ fn build(app: &adw::Application) {
                     let key = ui.page.borrow().as_ref().map(|(_, b)| b.lines[l].key.clone()).unwrap_or_default();
                     match key.as_str() {
                         "set:night" => turn_night_mode(&ui),
+                        // The lines' colour: the one clicked taken, the table
+                        // drawn again in it.
+                        k if k.starts_with("set:lines:") => {
+                            if let Some(i) = INKS.iter().position(|(n, _)| *n == &k["set:lines:".len()..]) {
+                                set_style(Style { ink: i, ..style() });
+                                keep_ink(i);
+                                ui.floor.queue_draw();
+                                ui.floor_gl.queue_render();
+                            }
+                        }
+                        "set:light" => {
+                            set_light(!light());
+                            ui.floor_gl.queue_render();
+                        }
                         "set:developer" => set_developer_mode(!developer_mode()),
                         // Into the wallpaper or back (the boards closed on the
                         // way).
@@ -3785,6 +3839,7 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         ink_night: [1.0; 3],
         near_at: fv.near_at,
         size: (fv.size.0, fv.size.1),
+        light: light(),
     })
 }
 
@@ -5208,9 +5263,17 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
         _ => "auto".to_owned(),
     };
     // (Night is the button on the table; the wallpaper and the developer
-    // mode are not offered: 2026-10-08. More comes here.)
-    let _ = (onoff, night, ui);
-    vec![board::Line::new("", "nothing to set yet")]
+    // mode are not offered: 2026-10-08.)
+    let _ = (night, ui);
+    // The lines' colour (INKS), the one set marked; the light under the
+    // table.
+    let ink = style().ink;
+    let mut lines = vec![board::Line::new("", "lines")];
+    for (i, (name, _)) in INKS.iter().enumerate() {
+        lines.push(board::Line::new(format!("set:lines:{name}"), format!("{} {name}", if i == ink { "•" } else { "›" })));
+    }
+    lines.push(board::Line::new("set:light", format!("light {}", onoff(light()))));
+    lines
 }
 
 /// Night or day shown as due: the table, the window.
