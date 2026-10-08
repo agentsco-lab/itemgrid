@@ -5430,49 +5430,67 @@ fn duo2_showing() -> bool {
     DUO2_SHOW.with(|c| c.get()).is_some()
 }
 
-/// The Duo 2 clicked: it opens flat, "Q1" comes up softly on its left
-/// panel and "27" on its right (item for it: the first quarter of 2027),
-/// they stay a couple of seconds, fade, and it closes to how it lay (the
-/// owner, 2026-10-08). The looks leave its fold and screens alone meanwhile.
+/// The Duo 2 clicked: it opens flat - slowly at first, then braking into
+/// the open - "Q1" comes up softly on its left panel and "27" on its right
+/// (item for it: the first quarter of 2027) as it settles, they stay a
+/// couple of seconds, fade, and it closes the same way to how it lay (the
+/// owner, 2026-10-08). The fold is driven along the curve here each frame,
+/// not eased by the frame's own exponential (that starts with a jerk and
+/// trails off); the looks leave its fold and screens alone meanwhile.
 fn duo2_show(ui: &Rc<Ui>) {
     if duo2_showing() {
         return;
     }
-    const OPEN_S: f64 = 0.9;
+    const AJAR: f64 = 35.0;
+    const OPEN_S: f64 = 1.4;
+    const IN_AT: f64 = 0.9;
     const IN_S: f64 = 0.8;
     const HOLD_S: f64 = 2.0;
     const OUT_S: f64 = 0.6;
+    const CLOSE_S: f64 = 1.2;
+    let close_at = IN_AT + IN_S + HOLD_S + OUT_S;
     let began = std::time::Instant::now();
     DUO2_SHOW.with(|c| c.set(Some(began)));
-    fold_to(ui, 180.0);
     let weak = Rc::downgrade(ui);
     let last_alpha = std::cell::Cell::new(-1.0f64);
-    glib::timeout_add_local(std::time::Duration::from_millis(40), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
         let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
         let t = began.elapsed().as_secs_f64();
         let gone = !matches!(ui.state.borrow().place, Place::Duo2(_));
-        let alpha = if t < OPEN_S {
-            0.0
-        } else if t < OPEN_S + IN_S {
-            smooth01((t - OPEN_S) / IN_S)
-        } else if t < OPEN_S + IN_S + HOLD_S {
-            1.0
-        } else if t < OPEN_S + IN_S + HOLD_S + OUT_S {
-            1.0 - smooth01((t - OPEN_S - IN_S - HOLD_S) / OUT_S)
-        } else {
-            -1.0
-        };
-        if alpha < 0.0 || gone {
+        let over = t >= close_at + CLOSE_S;
+        if over || gone {
             for s in &ui.screens {
                 s.set_paintable(gdk::Paintable::NONE);
             }
             DUO2_SHOW.with(|c| c.set(None));
             if !gone {
-                fold_to(&ui, 35.0);
+                fold_to(&ui, AJAR);
             }
             return glib::ControlFlow::Break;
         }
-        if (alpha - last_alpha.get()).abs() > 0.01 {
+        // The fold along its curve: opening, open, closing.
+        let angle = if t < OPEN_S {
+            AJAR + (180.0 - AJAR) * braking(t / OPEN_S)
+        } else if t < close_at {
+            180.0
+        } else {
+            180.0 - (180.0 - AJAR) * braking((t - close_at) / CLOSE_S)
+        };
+        ui.fold.set((angle, angle));
+        show_fold(&ui, angle);
+        // The words: up as it settles, held, gone before it closes.
+        let alpha = if t < IN_AT {
+            0.0
+        } else if t < IN_AT + IN_S {
+            smooth01((t - IN_AT) / IN_S)
+        } else if t < IN_AT + IN_S + HOLD_S {
+            1.0
+        } else if t < close_at {
+            1.0 - smooth01((t - IN_AT - IN_S - HOLD_S) / OUT_S)
+        } else {
+            0.0
+        };
+        if (alpha - last_alpha.get()).abs() > 0.01 || (alpha == 0.0 && last_alpha.get() != 0.0) {
             last_alpha.set(alpha);
             for (i, word) in ["Q1", "27"].iter().enumerate() {
                 ui.screens[i].set_paintable(Some(&duo2_panel(word, alpha)));
@@ -5480,6 +5498,14 @@ fn duo2_show(ui: &Rc<Ui>) {
         }
         glib::ControlFlow::Continue
     });
+}
+
+/// A lid's motion (0..1 over 0..1): slow to start, quickest before the
+/// middle, braking long into its rest - a soft start squared into a soft
+/// end, so three quarters of the way are done by half the time.
+fn braking(x: f64) -> f64 {
+    let s = smooth01(x);
+    1.0 - (1.0 - s) * (1.0 - s)
 }
 
 fn smooth01(x: f64) -> f64 {
