@@ -113,7 +113,8 @@ pub fn detect() -> Seen {
 }
 
 /// What the phone at `serial` says it is: in Android `ro.product.device`
-/// ("duo" for a Duo 1), in the bootloader its `product` ("surfaceduo").
+/// ("duo" for a Duo 1; a Duo 2 says "duo2", seen 2026-10-08), in the
+/// bootloader its `product` ("surfaceduo").
 /// Asked once per phone and mode, then remembered (the bootloader is never
 /// asked again and again; a look comes every few seconds). None: it did
 /// not say (then it is taken for a Duo, and asked again next look).
