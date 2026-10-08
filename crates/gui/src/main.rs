@@ -754,8 +754,9 @@ struct Ui {
     pose: gtk::Label,
     pose_name: RefCell<String>,
     gravities: RefCell<std::collections::VecDeque<(std::time::Instant, [f64; 3])>>,
-    /// The view turned by the pointer (yaw about the table's up, pitch
-    /// added to the tilt), shown and to go to; double click: back.
+    /// The view's yaw about the table's up and pitch added to the tilt,
+    /// shown and to go to. (Turned by the pointer once; fixed at rest now:
+    /// the phone's sensors alone move the drawn phone, 2026-10-08.)
     orbit: std::cell::Cell<([f32; 2], [f32; 2])>,
     /// No phone: the drawn one waits, opening and closing.
     idle: std::cell::Cell<bool>,
@@ -1027,10 +1028,9 @@ fn build(app: &adw::Application) {
     let duo_sized = gtk::Overlay::builder().halign(gtk::Align::Center).build();
     duo_sized.set_child(Some(&gtk::Box::builder().width_request((bw as f64 * DUO_ROOM_W) as i32).height_request(room).build()));
     duo_sized.add_overlay(&duo);
-    // Turned by the pointer: dragged sideways about the table's up, up and
-    // down tipped more or less; a double click puts it back.
-    let drag = gtk::GestureDrag::new();
-    duo_sized.add_controller(drag.clone());
+    // (Not turned by the pointer: the drawn phone lies as the phone's own
+    // sensors say, and still otherwise - the owner, 2026-10-08. A drag on
+    // it was the view's yaw and pitch before.)
     let turn_back = gtk::GestureClick::new();
     duo_sized.add_controller(turn_back.clone());
     // How the phone looks when not in Linux, over its screens.
@@ -2603,31 +2603,6 @@ fn build(app: &adw::Application) {
             glib::ControlFlow::Continue
         }
     });
-    drag.connect_drag_update({
-        let ui = Rc::downgrade(&ui);
-        let start = Rc::new(std::cell::Cell::new([0.0f32; 2]));
-        let s2 = start.clone();
-        let ui2 = ui.clone();
-        drag.connect_drag_begin(move |g, _, _| {
-            if let Some(ui) = ui2.upgrade() {
-                // Not drawn (the cubes stand): nothing to turn - the drag is
-                // the table's.
-                if ui.intro.borrow().duo() < 0.5 {
-                    g.set_state(gtk::EventSequenceState::Denied);
-                    return;
-                }
-                s2.set(ui.orbit.get().1);
-            }
-        });
-        move |_, dx, dy| {
-            let Some(ui) = ui.upgrade() else { return };
-            let s = start.get();
-            let to = [s[0] - dx as f32 * 0.5, (s[1] + dy as f32 * 0.3).clamp(-45.0, 30.0)];
-            ui.orbit.set((ui.orbit.get().0, to));
-            let (a, b) = ui.fold.get();
-            ui.fold.set((a + 0.1, b));
-        }
-    });
     // Over Wi-Fi a click on the drawn Duo opens it flat, another shuts it
     // (a drag is no click; the room round it is no Duo).
     turn_back.connect_released({
@@ -2637,18 +2612,6 @@ fn build(app: &adw::Application) {
             let on_floor = g.widget().and_then(|w| w.compute_point(&ui.floor, &gtk::graphene::Point::new(x as f32, y as f32)));
             if n == 1 && on_floor.is_some_and(|p| duo_clicked(&ui, (p.x() as f64, p.y() as f64))) {
                 g.set_state(gtk::EventSequenceState::Claimed);
-            }
-        }
-    });
-    turn_back.connect_pressed({
-        let ui = Rc::downgrade(&ui);
-        move |_, n, _, _| {
-            if n == 2 {
-                if let Some(ui) = ui.upgrade() {
-                    ui.orbit.set((ui.orbit.get().0, [0.0, 0.0]));
-                    let (a, b) = ui.fold.get();
-                    ui.fold.set((a + 0.1, b));
-                }
             }
         }
     });
