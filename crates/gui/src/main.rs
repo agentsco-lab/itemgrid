@@ -5076,9 +5076,7 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
         Place::Fastboot(_) => vec!["bootloader".into()],
         Place::Recovery(_) => vec!["recovery".into()],
         Place::NoSystem => vec!["no system".into(), "reinstall".into()],
-        // Seen before, gone now (the cable out, the phone off): said so -
-        // the table said nothing and looked stuck (the owner, 2026-10-08).
-        Place::Gone if st.last_seen.is_some() => vec!["not seen".into(), "the cable?".into()],
+        // (Gone: nothing said - it leaves the table within a look now.)
         _ => return None,
     })
 }
