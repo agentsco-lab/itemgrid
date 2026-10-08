@@ -812,8 +812,11 @@ struct Ui {
     sections: Rc<sections::Pages>,
 }
 
-/// A phone not seen for this long is away; before that, restarting.
-const GONE_AFTER_S: u64 = 90;
+/// A phone not seen for this long is away; before that, restarting. (90 s
+/// once: a phone unplugged lay on the table a minute and a half saying
+/// "not seen" - the owner wanted a couple of seconds, 2026-10-08. A phone
+/// restarting is a job's, and the looks are off meanwhile.)
+const GONE_AFTER_S: u64 = 2;
 
 /// An angle brought to -pi..pi.
 fn wrap(a: f64) -> f64 {
