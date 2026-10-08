@@ -2659,9 +2659,12 @@ fn build(app: &adw::Application) {
             if ui.duo.width() > 1 && !ui.intro.borrow().begun() {
                 ui.intro.borrow_mut().begin();
             }
-            // Waiting for the phone: the drawn one opens and closes, slowly.
+            // Waiting for the phone: the drawn one opens and closes, slowly -
+            // while it is kept on the table (not as it leaves it: a phone
+            // unplugged swung open on its way out, the owner, 2026-10-08).
             let working = ui.state.borrow().job.as_ref().is_some_and(|j| j.ended.is_none());
-            if ui.idle.get() && !ui.shut_away.get() && !working && std::env::var_os("ITEMGRID_FOLD").is_none() {
+            let kept = ui.intro.borrow().sink_to > 0.5;
+            if ui.idle.get() && kept && !ui.shut_away.get() && !working && std::env::var_os("ITEMGRID_FOLD").is_none() {
                 let t = clock.frame_time() as f64 / 1e6;
                 ui.fold.set((ui.fold.get().0, 135.0 + 40.0 * (t * 0.6).sin()));
             }
