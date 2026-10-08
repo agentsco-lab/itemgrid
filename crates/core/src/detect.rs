@@ -14,7 +14,7 @@ pub enum Mode {
     Recovery,
     /// Android (a test image), over adb.
     Android,
-    /// A Surface Duo 2 over adb or fastboot: item for it is on its way -
+    /// A Surface Duo 2 over adb or fastboot: item for it comes in Q1 2027 -
     /// said so, left alone.
     Duo2,
     /// A phone that is neither Duo over adb or fastboot: named, left alone.
@@ -43,7 +43,7 @@ impl Mode {
             Mode::Fastboot => "boot an image from RAM; flashing only after a good RAM boot (not yet in itemgrid)",
             Mode::Recovery => "backups and restores (not yet in itemgrid)",
             Mode::Android => "not Linux; switching images comes with flashing (not yet in itemgrid)",
-            Mode::Duo2 => "item for the Duo 2 is on its way: available soon",
+            Mode::Duo2 => "item for the Duo 2 comes in Q1 2027",
             Mode::Other => "not a Surface Duo 1: item/grid leaves it alone",
             Mode::Gone => "check the cable, the battery; hold power and volume down for fastboot",
         }
