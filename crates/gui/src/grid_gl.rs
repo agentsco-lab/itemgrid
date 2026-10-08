@@ -38,15 +38,21 @@ pub struct Grid {
     pub under: Option<[f32; 3]>,
     /// The lines' width, times the old 1.6 px.
     pub width: f32,
-    /// Night coming (or going): the squares turned over, a wave from the
-    /// night button across the table - how far (0..1; none below 0), from
-    /// where, the table's fill and the lines' ink on the two faces.
-    pub flip: f32,
-    pub flip_from: (f32, f32),
-    pub fill_from: [f32; 3],
-    pub fill_to: [f32; 3],
-    pub ink_to: [f32; 3],
+    /// Night coming (or going): waves from the night button across the
+    /// table, each turning the squares over to their other side - how far
+    /// each has come (0..1) and from where; how many; whether it is night
+    /// before them; the table's fill and the lines' ink by day and night.
+    pub waves: [(f32, (f32, f32)); WAVES],
+    pub wave_n: i32,
+    pub base_night: bool,
+    pub fill_day: [f32; 3],
+    pub fill_night: [f32; 3],
+    pub ink_day: [f32; 3],
+    pub ink_night: [f32; 3],
 }
+
+/// How many waves may be on their way at once.
+pub const WAVES: usize = 6;
 
 /// Whether the GPU draws the squares (else the floor's cairo does).
 pub static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -76,11 +82,14 @@ uniform float u_grid;
 uniform vec4 u_ink;
 uniform vec4 u_under;
 uniform float u_width;
-uniform float u_flip;
-uniform vec2 u_flip_from;
-uniform vec3 u_fill_from;
-uniform vec3 u_fill_to;
-uniform vec4 u_ink_to;
+uniform int u_wave_n;
+uniform float u_wave_p[6];
+uniform vec2 u_wave_from[6];
+uniform float u_base_night;
+uniform vec3 u_fill_day;
+uniform vec3 u_fill_night;
+uniform vec4 u_ink_day;
+uniform vec4 u_ink_night;
 out vec4 color;
 
 float line(float t, float shift) {
@@ -105,29 +114,34 @@ void main() {
     float lit = a > 0.0 ? max(line(t.x, u_shift.x), line(t.y, u_shift.y)) : 0.0;
     vec4 ink = u_ink;
     vec4 under = u_under;
-    if (u_flip >= 0.0) {
-        // Each square turned over about its middle line, the ones near the
-        // button first: its face shrinks to a line and grows back the
-        // other colour; beside the turning face, the table beneath.
+    if (u_wave_n > 0) {
         vec2 cell = floor((t - u_shift) / u_step);
         vec2 c = (cell + 0.5) * u_step + u_shift;
         // Each square a little before or after its neighbours (a hash of
-        // its place): the wave's front not a stair.
-        float jitter = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+        // its place): a wave's front not a stair.
+        float jitter = (fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 2.5 * u_step;
         float spread = 11.0 * u_step;
-        float p = clamp((u_flip * (u_reach * 1.6 + spread) - length(c - u_flip_from) - jitter * 2.5 * u_step) / spread, 0.0, 1.0);
-        float co = cos(p * 3.14159265);
-        float face = abs(co);
-        // The face shown: the old colour till it stands on edge, the new
-        // after, darker the more it is turned from the eye.
-        vec3 shown = (co > 0.0 ? u_fill_from : u_fill_to) * mix(0.72, 1.0, face);
-        ink = co > 0.0 ? u_ink : u_ink_to;
+        float far = u_reach * 1.6 + spread;
+        // Each wave that has passed this square turned it over once; the
+        // one passing now has it turning.
+        bool night_now = u_base_night > 0.5;
+        float face = 1.0;
+        bool turning = false;
+        for (int i = 0; i < 6; i++) {
+            if (i >= u_wave_n) break;
+            float p = clamp((u_wave_p[i] * far - length(c - u_wave_from[i]) - jitter) / spread, 0.0, 1.0);
+            if (p > 0.5) night_now = !night_now;
+            if (p > 0.0 && p < 1.0) { face = abs(cos(p * 3.14159265)); turning = true; }
+        }
+        // The face shown, darker the more it is turned from the eye.
+        vec3 shown = (night_now ? u_fill_night : u_fill_day) * mix(0.72, 1.0, face);
+        ink = night_now ? u_ink_night : u_ink_day;
         // Beside the turning face (its square squeezed about its middle
         // line): the table beneath, in the shade - the edge soft.
         float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
         float fw = fwidth(v) * 1.5;
-        float beside = (p > 0.0 && p < 1.0) ? smoothstep(face - fw, face + fw, v) : 0.0;
-        vec3 beneath = mix(u_fill_from, u_fill_to, 0.5) * 0.82;
+        float beside = turning ? smoothstep(face - fw, face + fw, v) : 0.0;
+        vec3 beneath = mix(u_fill_day, u_fill_night, 0.5) * 0.82;
         vec3 fill = mix(shown, beneath, beside);
         lit *= 1.0 - beside;
         under = vec4(fill, 1.0);
@@ -201,11 +215,16 @@ impl Gpu {
             let under = g.under.map_or([0.0; 4], |c| [c[0], c[1], c[2], 1.0]);
             gl.uniform_4_f32(u("u_under").as_ref(), under[0], under[1], under[2], under[3]);
             gl.uniform_1_f32(u("u_width").as_ref(), g.width);
-            gl.uniform_1_f32(u("u_flip").as_ref(), g.flip);
-            gl.uniform_2_f32(u("u_flip_from").as_ref(), g.flip_from.0, g.flip_from.1);
-            gl.uniform_3_f32(u("u_fill_from").as_ref(), g.fill_from[0], g.fill_from[1], g.fill_from[2]);
-            gl.uniform_3_f32(u("u_fill_to").as_ref(), g.fill_to[0], g.fill_to[1], g.fill_to[2]);
-            gl.uniform_4_f32(u("u_ink_to").as_ref(), g.ink_to[0], g.ink_to[1], g.ink_to[2], g.ink_k);
+            gl.uniform_1_i32(u("u_wave_n").as_ref(), g.wave_n);
+            let ps: Vec<f32> = g.waves.iter().map(|w| w.0).collect();
+            let froms: Vec<f32> = g.waves.iter().flat_map(|w| [w.1 .0, w.1 .1]).collect();
+            gl.uniform_1_f32_slice(u("u_wave_p").as_ref(), &ps);
+            gl.uniform_2_f32_slice(u("u_wave_from").as_ref(), &froms);
+            gl.uniform_1_f32(u("u_base_night").as_ref(), if g.base_night { 1.0 } else { 0.0 });
+            gl.uniform_3_f32(u("u_fill_day").as_ref(), g.fill_day[0], g.fill_day[1], g.fill_day[2]);
+            gl.uniform_3_f32(u("u_fill_night").as_ref(), g.fill_night[0], g.fill_night[1], g.fill_night[2]);
+            gl.uniform_4_f32(u("u_ink_day").as_ref(), g.ink_day[0], g.ink_day[1], g.ink_day[2], 1.0);
+            gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);
