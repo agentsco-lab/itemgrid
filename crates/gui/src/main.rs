@@ -1898,8 +1898,10 @@ fn build(app: &adw::Application) {
                     let key = ui.page.borrow().as_ref().map(|(_, b)| b.lines[l].key.clone()).unwrap_or_default();
                     match key.as_str() {
                         "set:night" => turn_night_mode(&ui),
-                        "set:start" => {
-                            turn_start(&ui);
+                        k if k.starts_with("set:start:") => {
+                            if let Some(next) = intro::Start::of(&k["set:start:".len()..]) {
+                                turn_start(&ui, next);
+                            }
                             return;
                         }
                         "set:developer" => set_developer_mode(!developer_mode()),
@@ -5196,13 +5198,19 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     // (Night is the button on the table; the wallpaper and the developer
     // mode are not offered: 2026-10-08. More comes here.)
     let _ = (onoff, night);
-    vec![board::Line::new("set:start", format!("start  {}", ui.intro.borrow().kind.name()))]
+    // The start: each way a line, the one set marked; one clicked is
+    // taken and played (the owner choosing between them, 2026-10-08).
+    let now = ui.intro.borrow().kind;
+    let mut lines = vec![board::Line::new("", "start")];
+    for k in intro::STARTS {
+        lines.push(board::Line::new(format!("set:start:{}", k.name()), format!("{} {}", if k == now { "•" } else { "›" }, k.name())));
+    }
+    lines
 }
 
-/// The start turned to the next way (intro::Start): kept, the boards
-/// closed, the start played again to be looked at.
-fn turn_start(ui: &Ui) {
-    let next = ui.intro.borrow().kind.next();
+/// The start set to `next` (intro::Start): kept, the boards closed, the
+/// start played again to be looked at.
+fn turn_start(ui: &Ui, next: intro::Start) {
     next.keep();
     trace(format_args!("start: {}", next.name()));
     if let Some(b) = ui.board.borrow_mut().as_mut() {

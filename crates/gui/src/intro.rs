@@ -50,7 +50,7 @@ const BUTTONS_AFTER: f32 = 0.35;
 const BUTTONS_S: f32 = 1.2;
 
 /// How the start goes - the ways laid out for the owner to look at and
-/// choose between (2026-10-08; `start` in the settings turns them, ↻ plays
+/// choose between (2026-10-08; `start` in the settings lists them, ↻ plays
 /// the start again). Kept in ~/.config/itemgrid/start; ITEMGRID_START
 /// over it.
 ///
@@ -92,11 +92,6 @@ impl Start {
 
     pub fn of(name: &str) -> Option<Start> {
         STARTS.iter().copied().find(|s| s.name() == name.trim())
-    }
-
-    pub fn next(self) -> Start {
-        let i = STARTS.iter().position(|s| *s == self).unwrap_or(0);
-        STARTS[(i + 1) % STARTS.len()]
     }
 
     /// Whether the eye stands where it stays from the first frame (no
