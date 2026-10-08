@@ -5209,7 +5209,8 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
 }
 
 /// The start set to `next` (intro::Start): kept, the boards closed, the
-/// start played again to be looked at.
+/// start played again to be looked at - after a second of the bare
+/// table (the owner: no jump from the board into it, 2026-10-08).
 fn turn_start(ui: &Ui, next: intro::Start) {
     next.keep();
     trace(format_args!("start: {}", next.name()));
@@ -5223,7 +5224,7 @@ fn turn_start(ui: &Ui, next: intro::Start) {
     }
     let mut intro = ui.intro.borrow_mut();
     intro.kind = next;
-    intro.replay();
+    intro.replay_after(1.0);
 }
 
 /// Night or day shown as due: the table, the window.

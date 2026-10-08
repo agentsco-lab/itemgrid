@@ -179,7 +179,8 @@ fn smoother(x: f32) -> f32 {
 
 impl Intro {
     fn t(&self) -> f32 {
-        self.start.map_or(0.0, |s| s.elapsed().as_secs_f32())
+        // (The start may lie ahead: a pause before it, nothing shown.)
+        self.start.map_or(0.0, |s| Instant::now().saturating_duration_since(s).as_secs_f32())
     }
 
     /// Seconds since the start (for looking from outside).
@@ -198,7 +199,14 @@ impl Intro {
     /// From the beginning again, the cubes up (to look at it once more);
     /// they go where they were going after it.
     pub fn replay(&mut self) {
-        self.start = Some(Instant::now());
+        self.replay_after(0.0);
+    }
+
+    /// From the beginning again after `secs` of nothing on the table (a
+    /// start chosen in the settings: the board gone, a pause, then it -
+    /// not a jump from one to the other).
+    pub fn replay_after(&mut self, secs: f32) {
+        self.start = Some(Instant::now() + std::time::Duration::from_secs_f32(secs.max(0.0)));
         self.ended = false;
         self.sink = 0.0;
     }
