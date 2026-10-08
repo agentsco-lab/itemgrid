@@ -47,6 +47,9 @@ pub struct Grid {
     pub fill_night: [f32; 3],
     pub ink_day: [f32; 3],
     pub ink_night: [f32; 3],
+    /// How strong the lines are drawn (times the one strength: main.rs's
+    /// GRIDS), on the day's and the night's ink alike.
+    pub grid_k: f32,
     /// The table's point under the page's bottom middle: what the band
     /// too near the eye to be drawn takes its colour from.
     pub near_at: (f32, f32),
@@ -187,7 +190,7 @@ void main() {
         ink = (beside > 0.5 ? after : now) ? u_ink_night : u_ink_day;
         under = vec4(fill, 1.0);
     }
-    float k = a * ink.a * lit;
+    float k = min(a * ink.a * lit, 1.0);
     // The glow over the paper, the lines over both, premultiplied, gone at
     // the rim.
     float kh = min(halo * ink.a, 1.0);
@@ -271,8 +274,8 @@ impl Gpu {
             gl.uniform_1_f32(u("u_base_night").as_ref(), if g.base_night { 1.0 } else { 0.0 });
             gl.uniform_3_f32(u("u_fill_day").as_ref(), g.fill_day[0], g.fill_day[1], g.fill_day[2]);
             gl.uniform_3_f32(u("u_fill_night").as_ref(), g.fill_night[0], g.fill_night[1], g.fill_night[2]);
-            gl.uniform_4_f32(u("u_ink_day").as_ref(), g.ink_day[0], g.ink_day[1], g.ink_day[2], 1.0);
-            gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15);
+            gl.uniform_4_f32(u("u_ink_day").as_ref(), g.ink_day[0], g.ink_day[1], g.ink_day[2], g.grid_k);
+            gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15 * g.grid_k);
             gl.uniform_2_f32(u("u_near_at").as_ref(), g.near_at.0, g.near_at.1);
             gl.uniform_2_f32(u("u_size").as_ref(), g.size.0, g.size.1);
             gl.uniform_2_f32(u("u_lamp").as_ref(), g.lamp.0, g.lamp.1);

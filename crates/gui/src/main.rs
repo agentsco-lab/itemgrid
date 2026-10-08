@@ -128,6 +128,46 @@ fn keep_ink(i: usize) {
     let _ = std::fs::write(lines_file(), format!("{}\n", INKS[i].0));
 }
 
+/// The lines' width chosen in the settings (`width`: one of WIDTHS, px),
+/// kept in ~/.config/itemgrid/width over the layout's own.
+fn width_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("itemgrid/width")
+}
+
+fn kept_width() -> Option<usize> {
+    let v: f64 = std::fs::read_to_string(width_file()).ok()?.trim().parse().ok()?;
+    WIDTHS.iter().position(|w| (*w - v).abs() < 0.01)
+}
+
+fn keep_width(i: usize) {
+    let _ = std::fs::create_dir_all(width_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(width_file(), format!("{}\n", WIDTHS[i]));
+}
+
+/// How strong the squares' lines are drawn (`grid` in the settings): times
+/// the one strength they had. Kept in ~/.config/itemgrid/grid by name.
+const GRIDS: [(&str, f32); 5] = [("faint", 0.45), ("soft", 0.7), ("plain", 1.0), ("strong", 1.45), ("bold", 2.0)];
+static GRID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2);
+
+fn grid_k() -> f32 {
+    GRIDS[GRID.load(std::sync::atomic::Ordering::Relaxed).min(GRIDS.len() - 1)].1
+}
+
+fn grid_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("itemgrid/grid")
+}
+
+fn kept_grid() -> Option<usize> {
+    let name = std::fs::read_to_string(grid_file()).ok()?;
+    GRIDS.iter().position(|(n, _)| *n == name.trim())
+}
+
+fn set_grid(i: usize) {
+    GRID.store(i, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::create_dir_all(grid_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(grid_file(), format!("{}\n", GRIDS[i].0));
+}
+
 fn night_file() -> std::path::PathBuf {
     glib::user_config_dir().join("itemgrid/night")
 }
@@ -800,6 +840,12 @@ fn build(app: &adw::Application) {
     set_style(scene::layout().style);
     if let Some(ink) = kept_ink() {
         set_style(Style { ink, ..style() });
+    }
+    if let Some(width) = kept_width() {
+        set_style(Style { width, ..style() });
+    }
+    if let Some(g) = kept_grid() {
+        GRID.store(g, std::sync::atomic::Ordering::Relaxed);
     }
     let window = adw::ApplicationWindow::builder().application(app).title("item/grid").default_width(1000).default_height(800).build();
     if night() {
@@ -1981,6 +2027,20 @@ fn build(app: &adw::Application) {
                                 ui.floor.queue_draw();
                                 ui.floor_gl.queue_render();
                             }
+                        }
+                        // The lines' width (WIDTHS) and strength (GRIDS): the
+                        // next of each.
+                        "set:width" => {
+                            let w = (style().width + 1) % WIDTHS.len();
+                            set_style(Style { width: w, ..style() });
+                            keep_width(w);
+                            ui.floor.queue_draw();
+                            ui.floor_gl.queue_render();
+                        }
+                        "set:grid" => {
+                            set_grid((GRID.load(std::sync::atomic::Ordering::Relaxed) + 1) % GRIDS.len());
+                            ui.floor.queue_draw();
+                            ui.floor_gl.queue_render();
                         }
                         // The lamp under the table: how strong, how far, where -
                         // each turned a step round.
@@ -3870,7 +3930,8 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         grid: fv.grid,
         ink: if night { night_ink_rgb() } else { ink_rgb() }.map(|v| v as f32),
         width: (line_width() / 1.6) as f32,
-        ink_k: if night { 1.15 } else { 1.0 },
+        ink_k: if night { 1.15 } else { 1.0 } * grid_k(),
+        grid_k: grid_k(),
         waves: std::array::from_fn(|i| fv.waves.get(i).copied().unwrap_or((0.0, (0.0, 0.0)))),
         wave_n: fv.waves.len().min(grid_gl::WAVES) as i32,
         base_night: night,
@@ -5345,6 +5406,8 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     for (i, (name, _)) in INKS.iter().enumerate() {
         lines.push(board::Line::new(format!("set:lines:{name}"), format!("{} {name}", if i == ink { "•" } else { "›" })));
     }
+    lines.push(board::Line::new("set:width", format!("width {}", WIDTHS[style().width.min(WIDTHS.len() - 1)])));
+    lines.push(board::Line::new("set:grid", format!("grid {}", GRIDS[GRID.load(std::sync::atomic::Ordering::Relaxed).min(GRIDS.len() - 1)].0)));
     let lp = lamp::get();
     lines.push(board::Line::new("set:light", format!("light {}", lamp::STRENGTHS[lp.strength].0)));
     lines.push(board::Line::new("set:reach", format!("reach {}", lamp::REACHES[lp.reach].0)));
