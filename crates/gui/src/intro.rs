@@ -49,6 +49,90 @@ use crate::scene::{Trans, PHONE, START_STEPS, TRANS};
 const BUTTONS_AFTER: f32 = 0.35;
 const BUTTONS_S: f32 = 1.2;
 
+/// How the start goes - the ways laid out for the owner to look at and
+/// choose between (2026-10-08; `start` in the settings turns them, ↻ plays
+/// the start again). Kept in ~/.config/itemgrid/start; ITEMGRID_START
+/// over it.
+///
+/// - Flight: the word stands as the logo in the page's upper left and is
+///   carried down in a straight line to its place as the eye comes down.
+/// - Still: the eye where it stays all along; the word at its place, the
+///   table growing out under it.
+/// - Zoom: the word at its place; the table far, drawn in to it.
+/// - Corner: as the flight, from the page's middle to the corner.
+/// - Tilt: the word at its place; the table seen from straight above, tipped
+///   to the usual view.
+/// - Wave: as still, the squares turning over as the table grows out.
+/// - Quick: the table there, the word in; the buttons and the phone at once.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Start {
+    Flight,
+    Still,
+    Zoom,
+    Corner,
+    Tilt,
+    Wave,
+    Quick,
+}
+
+pub const STARTS: [Start; 7] = [Start::Flight, Start::Still, Start::Zoom, Start::Corner, Start::Tilt, Start::Wave, Start::Quick];
+
+impl Start {
+    pub fn name(self) -> &'static str {
+        match self {
+            Start::Flight => "flight",
+            Start::Still => "still",
+            Start::Zoom => "zoom",
+            Start::Corner => "corner",
+            Start::Tilt => "tilt",
+            Start::Wave => "wave",
+            Start::Quick => "quick",
+        }
+    }
+
+    pub fn of(name: &str) -> Option<Start> {
+        STARTS.iter().copied().find(|s| s.name() == name.trim())
+    }
+
+    pub fn next(self) -> Start {
+        let i = STARTS.iter().position(|s| *s == self).unwrap_or(0);
+        STARTS[(i + 1) % STARTS.len()]
+    }
+
+    /// Whether the eye stands where it stays from the first frame (no
+    /// camera movement at the start).
+    pub fn still_eye(self) -> bool {
+        matches!(self, Start::Still | Start::Wave | Start::Quick)
+    }
+
+    /// As set (the file, or ITEMGRID_START over it); the flight if neither.
+    pub fn set() -> Start {
+        if let Some(s) = std::env::var("ITEMGRID_START").ok().and_then(|v| Start::of(&v)) {
+            return s;
+        }
+        std::fs::read_to_string(start_file()).ok().and_then(|t| Start::of(&t)).unwrap_or(Start::Flight)
+    }
+
+    pub fn keep(self) {
+        let path = start_file();
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+        let _ = std::fs::write(path, format!("{}\n", self.name()));
+    }
+}
+
+fn start_file() -> std::path::PathBuf {
+    crate::scene::moved_path().with_file_name("start")
+}
+
+/// The quick start's steps: the table there, the word in, the buttons
+/// a moment after.
+const QUICK: [Trans; START_STEPS] = [
+    Trans { delay: 0.0, secs: 0.4, ease: crate::scene::Ease::Smooth },
+    Trans { delay: 0.0, secs: 0.01, ease: crate::scene::Ease::Linear },
+    Trans { delay: 0.0, secs: 0.01, ease: crate::scene::Ease::Linear },
+    Trans { delay: 0.25, secs: 0.8, ease: crate::scene::Ease::Linear },
+];
+
 pub struct Intro {
     start: Option<Instant>,
     last: Option<Instant>,
@@ -66,6 +150,8 @@ pub struct Intro {
     tapped: Option<((f32, f32), Instant)>,
     /// The steps' ways in (the layout's).
     pub timing: [Trans; crate::scene::STEPS.len()],
+    /// How the start goes.
+    pub kind: Start,
 }
 
 /// The wave goes on at least so long (a look over the cable alone is over
@@ -81,7 +167,7 @@ impl Default for Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| Instant::now() - std::time::Duration::from_secs_f32(30.0));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, timing: TRANS }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, timing: TRANS, kind: Start::set() }
     }
 }
 
@@ -122,14 +208,23 @@ impl Intro {
         self.sink = 0.0;
     }
 
+    /// The start's step `i` as timed: the layout's, or the quick start's
+    /// own.
+    fn trans(&self, i: usize) -> Trans {
+        if self.kind == Start::Quick && i < START_STEPS {
+            return QUICK[i];
+        }
+        self.timing[i]
+    }
+
     /// When the start's step `i` begins (each after the one before began).
     fn due(&self, i: usize) -> f32 {
-        self.timing[..=i.min(START_STEPS - 1)].iter().map(|t| t.delay).sum()
+        (0..=i.min(START_STEPS - 1)).map(|j| self.trans(j).delay).sum()
     }
 
     /// The start's step `i` on its way (0..1, its curve's).
     fn on(&self, i: usize) -> f32 {
-        let t = self.timing[i];
+        let t = self.trans(i);
         t.ease.at((self.t() - self.due(i)) / t.secs.max(1e-3))
     }
 
@@ -141,7 +236,7 @@ impl Intro {
 
     /// The eye down: the start's own part over (the credit gone).
     pub fn done(&self) -> bool {
-        self.begun() && self.t() >= self.due(2) + self.timing[2].secs
+        self.begun() && self.t() >= self.due(2) + self.trans(2).secs
     }
 
     /// The word and its squares: 0 not yet .. 1 there.
@@ -206,7 +301,8 @@ impl Intro {
             // item/ half a square high until the eye stops, then down into
             // the table (grid lies in it all along); a letter hops still
             // as the phone is looked for.
-            let stand = if i < ON_CUBES { 0.5 * risen * (1.0 - self.down(i)) } else { 0.0 };
+            // (The quick start: the word lies in the table from the first.)
+            let stand = if i < ON_CUBES && self.kind != Start::Quick { 0.5 * risen * (1.0 - self.down(i)) } else { 0.0 };
             let hop = self.hop(i).max(0.0) * 0.5;
             (there, (stand * (1.0 + self.hop(i)) + if stand <= 0.0 { hop } else { 0.0 }).max(0.0))
         })
@@ -311,7 +407,7 @@ impl Intro {
         if !self.begun() {
             return false;
         }
-        if !self.done() || self.t() < self.due(3) + self.timing[3].secs + 0.1 {
+        if !self.done() || self.t() < self.due(3) + self.trans(3).secs + 0.1 {
             return true;
         }
         if !self.ended {

@@ -1898,6 +1898,10 @@ fn build(app: &adw::Application) {
                     let key = ui.page.borrow().as_ref().map(|(_, b)| b.lines[l].key.clone()).unwrap_or_default();
                     match key.as_str() {
                         "set:night" => turn_night_mode(&ui),
+                        "set:start" => {
+                            turn_start(&ui);
+                            return;
+                        }
                         "set:developer" => set_developer_mode(!developer_mode()),
                         // Into the wallpaper or back (the boards closed on the
                         // way).
@@ -3680,6 +3684,8 @@ struct FloorView {
     near_at: (f32, f32),
     /// The page's size (px).
     size: (f32, f32),
+    /// The squares turning over as the table grows out (the wave start).
+    front: bool,
     /// The Duo's top left corner on the sheet (squares).
     duo_corner: (f32, f32),
     page_at: (f32, f32),
@@ -3763,6 +3769,7 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         ink_day: INKS[style().ink.min(INKS.len() - 1)].1.map(|v| v as f32),
         ink_night: [1.0; 3],
         near_at: fv.near_at,
+        front: fv.front,
         size: (fv.size.0, fv.size.1),
     })
 }
@@ -5188,8 +5195,27 @@ fn settings_lines(ui: &Ui) -> Vec<board::Line> {
     };
     // (Night is the button on the table; the wallpaper and the developer
     // mode are not offered: 2026-10-08. More comes here.)
-    let _ = (onoff, night, ui);
-    vec![board::Line::new("", "nothing to set yet")]
+    let _ = (onoff, night);
+    vec![board::Line::new("set:start", format!("start  {}", ui.intro.borrow().kind.name()))]
+}
+
+/// The start turned to the next way (intro::Start): kept, the boards
+/// closed, the start played again to be looked at.
+fn turn_start(ui: &Ui) {
+    let next = ui.intro.borrow().kind.next();
+    next.keep();
+    trace(format_args!("start: {}", next.name()));
+    if let Some(b) = ui.board.borrow_mut().as_mut() {
+        if !b.closing() {
+            b.close();
+        }
+    }
+    if let Some((_, p)) = ui.page.borrow_mut().as_mut() {
+        p.close();
+    }
+    let mut intro = ui.intro.borrow_mut();
+    intro.kind = next;
+    intro.replay();
 }
 
 /// Night or day shown as due: the table, the window.
@@ -5943,6 +5969,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let (page_w, page_h) = frame_size;
         let intro = ui.intro.borrow();
         let eye = intro.eye();
+        // The start chosen (intro::Start): some leave the eye where it
+        // stays from the first frame - the start's steps go by, the eye
+        // does not.
+        let kind = intro.kind;
+        let cam_eye = if kind.still_eye() { 1.0 } else { eye };
+        let front = kind == intro::Start::Wave;
         // As the wallpaper the eye nearly straight above (the word and the
         // buttons laid for that view).
         let w_mix = ui.wallpaper_mix.get();
@@ -6031,7 +6063,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 wall: wall_e,
             }
         };
-        let (step, step_now) = layout.at([intro.grid(), eye, intro.button(0)], marks);
+        let (step, step_now) = layout.at([intro.grid(), cam_eye, intro.button(0)], marks);
         let (place, shot) = (step.place, step.shot);
         ui.step_now.set(step_now);
         let word_home = cubes_at;
@@ -6097,7 +6129,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // seen from - and there it stays (the camera's home): what comes
         // after comes on the table, not by the eye (a section drawn back
         // below, the word's corner kept).
-        let mut e = mix(above, rest, eye);
+        let mut e = match kind {
+            // The table far (the lens drawn back), drawn in to the word.
+            intro::Start::Zoom => mix(Eye { tilt: tilt_rest, near: 0.3, ..above }, rest, eye),
+            _ => mix(above, rest, cam_eye),
+        };
         // The saver: the eye drifting slowly over the table, round the word.
         let drift = ui.saver_mix.get();
         // The page's size against the usual window's: the saver's scene as
@@ -6254,9 +6290,15 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // (where the eye at rest, with the step's own on it, shows it):
         // one movement with the eye's, pinned last - the adjustments
         // above bent it (the word went down a little, then up).
-        if eye < 1.0 {
-            let start_on = (page_w * START_AT.0 - off.0, page_h * START_AT.1 - off.1);
+        if cam_eye < 1.0 {
             let end_on = on_page(&matrix(adjust(rest)), cubes_at);
+            let start_on = match kind {
+                intro::Start::Flight => (page_w * START_AT.0 - off.0, page_h * START_AT.1 - off.1),
+                // From the page's middle into the corner.
+                intro::Start::Corner => (page_w * 0.5 - off.0, page_h * 0.42 - off.1),
+                // (Tilt, zoom: the word at its place all along.)
+                _ => end_on,
+            };
             let pin = (start_on.0 + (end_on.0 - start_on.0) * eye, start_on.1 + (end_on.1 - start_on.1) * eye);
             let shown = on_page(&matrix(e), cubes_at);
             if std::env::var_os("ITEMGRID_EYE").is_some() {
@@ -6610,9 +6652,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             ws.iter().map(|(since, from, _)| ((since.elapsed().as_secs_f32() / NIGHT_FLIP_S).min(1.0), *from)).collect()
         };
         let mut fv = ui.floor_view.borrow_mut();
-        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
+        let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.front != front || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), front, eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
