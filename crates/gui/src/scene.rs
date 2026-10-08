@@ -596,9 +596,12 @@ mod tests {
 
     #[test]
     fn the_layout_kept_in_the_app_is_read() {
-        let l = layout();
+        // (The one laid into the app, not a moved one of this computer's.)
+        let l = Layout::read(include_str!("../data/layout"));
         assert_eq!(FONTS[l.style.font].0, "open sans");
-        assert_eq!(l.steps[PHONE].place.duo, Some((11.0, 4.0)));
+        assert_eq!(l.steps[PHONE].place.duo, Some((11.0, 2.0)));
+        assert_eq!(l.steps[PHONE].place.word, (-3.0, -7.0));
+        assert_eq!(l.steps[MENU].place.menu, (0.0, 0.0));
         assert_eq!(Layout::read(&l.write()), l);
     }
 

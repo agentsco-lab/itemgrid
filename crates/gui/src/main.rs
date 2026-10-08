@@ -1591,6 +1591,8 @@ fn build(app: &adw::Application) {
             grid_drag.set(g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK));
         });
         let say_edit = say.clone();
+        let say_end = say.clone();
+        let drag_end = drag.clone();
         let (weak, f, pg, gd) = (Rc::downgrade(&ui), from, page.clone(), grid_drag2);
         drag.connect_drag_update(move |g, dx, dy| {
             let Some(ui) = weak.upgrade() else { return };
@@ -1669,20 +1671,23 @@ fn build(app: &adw::Application) {
             let on = !ui.editing.get();
             ui.editing.set(on);
             if on {
-                s(&ui, "moving: drag the word, the buttons, the phone, its words, the credit, the menu - E keeps".into());
+                s(&ui, "moving: drag the word, the buttons, the phone, its words, the credit, the menu - E ends".into());
             } else {
-                let path = scene::moved_path();
-                let text = ui.layout.get().write();
-                let kept = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text));
-                match kept {
-                    Ok(()) => s(&ui, format!("kept: {}", path.display())),
-                    Err(e) => s(&ui, format!("not kept: {e}")),
-                }
+                s(&ui, keep_moved(&ui));
             }
             redraw(&ui);
             glib::Propagation::Stop
         });
         ui.window.add_controller(edit_keys);
+        // Each part let go of: kept at once (E ending the moving kept them
+        // too, but a press that went to another window kept nothing).
+        let (weak, s) = (Rc::downgrade(&ui), say_end);
+        drag_end.connect_drag_end(move |_, _, _| {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.edit_from.borrow_mut().take().is_some() {
+                s(&ui, keep_moved(&ui));
+            }
+        });
         // The phone asleep when last seen (before a restart): lying shut on the
     // table, saying so, not looked for as gone.
     if let Some(seen) = LastSeen::read() {
@@ -5964,14 +5969,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The row under the word (a letter a square, from its left).
         let (left, under) = on_squares(k, (cubes_at.0 - WORD_HALF * cur, cubes_at.1 + 1.5 * cur));
         let rest_m = matrix(rest);
-        // The credit where it is seen from straight above as the squares
-        // grow out (to the right of the word and below it): the table's
-        // square under that point of the page then.
+        // The credit under the word, in its column, two rows down (with it
+        // wherever the layout puts the word); moved by the layout from there.
         let credit_at = {
-            let page_at = (page_w * 0.42 - off.0, page_h * 0.6 - off.1);
-            let p = (cubes_at.0 + page_at.0 - word_on.0, cubes_at.1 + page_at.1 - word_on.1);
-            let (sx, sy) = floor_shift(k);
-            (sx + ((p.0 - sx) / cur).floor() * cur + place.credit.0 * cur, sy + ((p.1 - sy) / cur).floor() * cur + place.credit.1 * cur)
+            let p = on_squares(k, (cubes_at.0 - WORD_HALF * cur, cubes_at.1 + 2.0 * cur));
+            (p.0 + place.credit.0 * cur, p.1 + place.credit.1 * cur)
         };
         // The eye: from straight above the word down to where the Duo is
         // seen from - and there it stays (the camera's home): what comes
@@ -6001,10 +6003,14 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let d = drift * drift * (3.0 - 2.0 * drift);
             e = mix(e, wander, d);
         }
-        // Coming down, the word kept where it is on the page.
+        // Coming down, the word carried from where the logo stands (the
+        // page's upper left, START_AT) to its own place (the layout's, as
+        // the eye at rest shows it): one movement with the eye's.
         if eye < 1.0 {
+            let start_on = (page_w * START_AT.0 - off.0, page_h * START_AT.1 - off.1);
+            let pin = (start_on.0 + (word_on.0 - start_on.0) * eye, start_on.1 + (word_on.1 - start_on.1) * eye);
             let shown = on_page(&matrix(e), cubes_at);
-            e.on = (e.on.0 + word_on.0 - shown.0, e.on.1 + word_on.1 - shown.1);
+            e.on = (e.on.0 + pin.0 - shown.0, e.on.1 + pin.1 - shown.1);
         }
         // The buttons in the word's row, at the page's right (as the usual
         // view shows it): the last in the square seen a square or so in
@@ -7141,6 +7147,19 @@ fn choose_ram_image(ui: &Rc<Ui>) {
 /// The phone's club number, quietly (once a run per serial): claimed if
 /// this computer does not know it, and written onto the phone (on Linux)
 /// if it is not there. Nothing said if it cannot be had now: next run.
+/// The parts as moved (E) kept in their file, said so (and in the trace).
+fn keep_moved(ui: &Ui) -> String {
+    let path = scene::moved_path();
+    let text = ui.layout.get().write();
+    let kept = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text));
+    let said = match kept {
+        Ok(()) => format!("kept: {}", path.display()),
+        Err(e) => format!("not kept: {e}"),
+    };
+    trace(format_args!("moved: {said}"));
+    said
+}
+
 fn claim_quietly(ui: &Rc<Ui>, serial: &str, host: Option<String>) {
     claim_quietly_as(ui, serial, serial, host)
 }
