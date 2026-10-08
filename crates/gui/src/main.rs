@@ -6003,15 +6003,6 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let d = drift * drift * (3.0 - 2.0 * drift);
             e = mix(e, wander, d);
         }
-        // Coming down, the word carried from where the logo stands (the
-        // page's upper left, START_AT) to its own place (the layout's, as
-        // the eye at rest shows it): one movement with the eye's.
-        if eye < 1.0 {
-            let start_on = (page_w * START_AT.0 - off.0, page_h * START_AT.1 - off.1);
-            let pin = (start_on.0 + (word_on.0 - start_on.0) * eye, start_on.1 + (word_on.1 - start_on.1) * eye);
-            let shown = on_page(&matrix(e), cubes_at);
-            e.on = (e.on.0 + pin.0 - shown.0, e.on.1 + pin.1 - shown.1);
-        }
         // The buttons in the word's row, at the page's right (as the usual
         // view shows it): the last in the square seen a square or so in
         // from the edge.
@@ -6105,21 +6096,14 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // above (each the step's own; the wheel's lens still raises it as
         // it draws back).
         let lens = (ui.zoom.get().0 * shot.zoom).powf(1.0 - ui.saver_mix.get());
-        e.near *= lens;
         let up = ((1.0 - ui.zoom.get().0) / 0.6).clamp(0.0, 1.0);
         let wheel_flat = up * up * (3.0 - 2.0 * up);
         let flat = (1.0 - (1.0 - shot.top.clamp(0.0, 1.0)) * (1.0 - wheel_flat)) * (1.0 - ui.saver_mix.get());
-        if flat > 0.0 {
-            let mid = (page_w * 0.5 - off.0, page_h * 0.5 - off.1);
-            // The row from the word's start to the buttons' end in the
-            // middle (the word lies in the table now). Where they come by
-            // themselves: moved by the layout (E), the eye stays.
-            let row_mid = ((word_home.0 - WORD_HALF * cur + buttons_home.0 + FLOOR_BUTTONS.len() as f32 * cur) / 2.0, word_home.1);
-            e.look = (e.look.0 + (row_mid.0 - e.look.0) * flat, e.look.1 + (row_mid.1 - e.look.1) * flat);
-            e.on = (e.on.0 + (mid.0 - e.on.0) * flat, e.on.1 + (mid.1 - e.on.1) * flat);
-            e.tilt *= 1.0 - flat;
-            e.far += (40.0 - e.far) * flat;
-        }
+        let mid = (page_w * 0.5 - off.0, page_h * 0.5 - off.1);
+        // The row from the word's start to the buttons' end in the middle
+        // (the word lies in the table now). Where they come by themselves:
+        // moved by the layout (E), the eye stays.
+        let row_mid = ((word_home.0 - WORD_HALF * cur + buttons_home.0 + FLOOR_BUTTONS.len() as f32 * cur) / 2.0, word_home.1);
         // The whole view half a square to the left (the buttons as far in
         // from the right as the word from the left: both margins alike).
         let half = {
@@ -6127,14 +6111,42 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let b = on_page(&rest_m, (cubes_at.0 + cur, cubes_at.1));
             (b.0 - a.0).abs() / 2.0
         };
-        e.on.0 -= half * (1.0 - flat);
-        // The step's eye tipped and turned (not as the saver drifts).
         let kept_s = 1.0 - ui.saver_mix.get();
-        e.tilt = (e.tilt + shot.tilt * kept_s).clamp(0.0, 85.0);
         let turn = shot.turn * kept_s;
-        // The step's eye moved over the table.
         let kept_k = 1.0 - ui.saver_mix.get();
-        e.look = (e.look.0 + shot.pan.0 * cur * kept_k, e.look.1 + shot.pan.1 * cur * kept_k);
+        // The step's own on an eye: its lens, drawn back as far as it has
+        // risen toward straight above (flat), the half square, tipped
+        // (not as the saver drifts), moved over the table.
+        let adjust = |mut e: Eye| -> Eye {
+            e.near *= lens;
+            if flat > 0.0 {
+                e.look = (e.look.0 + (row_mid.0 - e.look.0) * flat, e.look.1 + (row_mid.1 - e.look.1) * flat);
+                e.on = (e.on.0 + (mid.0 - e.on.0) * flat, e.on.1 + (mid.1 - e.on.1) * flat);
+                e.tilt *= 1.0 - flat;
+                e.far += (40.0 - e.far) * flat;
+            }
+            e.on.0 -= half * (1.0 - flat);
+            e.tilt = (e.tilt + shot.tilt * kept_s).clamp(0.0, 85.0);
+            e.look = (e.look.0 + shot.pan.0 * cur * kept_k, e.look.1 + shot.pan.1 * cur * kept_k);
+            e
+        };
+        e = adjust(e);
+        // Coming down, the word carried in a straight line from where the
+        // logo stands (the page's upper left, START_AT) to its own place
+        // (where the eye at rest, with the step's own on it, shows it):
+        // one movement with the eye's, pinned last - the adjustments
+        // above bent it (the word went down a little, then up).
+        if eye < 1.0 {
+            let start_on = (page_w * START_AT.0 - off.0, page_h * START_AT.1 - off.1);
+            let end_on = on_page(&matrix(adjust(rest)), cubes_at);
+            let pin = (start_on.0 + (end_on.0 - start_on.0) * eye, start_on.1 + (end_on.1 - start_on.1) * eye);
+            let shown = on_page(&matrix(e), cubes_at);
+            if std::env::var_os("ITEMGRID_EYE").is_some() {
+                let r = adjust(rest);
+                trace(format_args!("pin eye {eye:.3} start {start_on:?} end {end_on:?} shown {shown:?} e.on {:?} r.on {:?} e.look {:?} r.look {:?} e.near {:.3} r.near {:.3} e.tilt {:.1} r.tilt {:.1}", e.on, r.on, e.look, r.look, e.near, r.near, e.tilt, r.tilt));
+            }
+            e.on = (e.on.0 + pin.0 - shown.0, e.on.1 + pin.1 - shown.1);
+        }
         // A section open: the eye drawn back only as far as the word, the
         // menu and the section need to be seen whole - about the word's
         // corner, which stays where it is on the page (the anchor); closed,
@@ -6177,6 +6189,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let eye_x = e.look.0;
         let reach = 520.0 * k * page_scale / e.near.max(0.3);
         let grid_mid = e.look;
+        if std::env::var_os("ITEMGRID_EYE").is_some() {
+            let m = matrix(e);
+            trace(format_args!("eye {eye:.3} tilt {:.1} near {:.3} word {:?} origin {:?} on {:?} look {:?}", e.tilt, e.near, on_page(&m, cubes_at), on_page(&m, (0.0, 0.0)), e.on, e.look));
+        }
         // (Turned round the point it looks at.)
         let rest = gsk::Transform::new()
             .translate(&graphene::Point::new(e.on.0, e.on.1))
