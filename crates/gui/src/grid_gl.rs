@@ -42,11 +42,6 @@ pub struct Grid {
     /// before them; the table's fill and the lines' ink by day and night.
     pub waves: [(f32, (f32, f32)); WAVES],
     pub wave_n: i32,
-    /// Which way they come (main.rs's TURNS): 0 the squares turning over
-    /// in a ring, 1 ink spreading soft-edged, 2 the whole table fading, 3
-    /// the far corners first (to night; the middle first to day), 4 rows
-    /// turning over from the top down.
-    pub turn: i32,
     pub base_night: bool,
     pub fill_day: [f32; 3],
     pub fill_night: [f32; 3],
@@ -70,6 +65,14 @@ pub struct Grid {
     pub lamp: (f32, f32),
     pub lamp_r: f32,
     pub lamp_k: f32,
+    /// The rim (rim.rs): how wide, of the page's shorter side; its curve
+    /// (0 even, 1 soft, 2 thin, 3 deep); its form (0 a frame, 1 rounded,
+    /// 2 an oval); how far from the middle the lines fade (times the
+    /// reach; 0 never).
+    pub rim: f32,
+    pub rim_curve: i32,
+    pub rim_shape: i32,
+    pub lines_fade: f32,
 }
 
 /// How many waves may be on their way at once.
@@ -103,7 +106,6 @@ uniform float u_grid;
 uniform vec4 u_ink;
 uniform float u_width;
 uniform int u_wave_n;
-uniform int u_turn;
 uniform float u_wave_p[6];
 uniform vec2 u_wave_from[6];
 uniform float u_base_night;
@@ -113,10 +115,22 @@ uniform vec4 u_ink_day;
 uniform vec4 u_ink_night;
 uniform vec2 u_near_at;
 uniform vec2 u_size;
+uniform float u_rim;
+uniform int u_rim_curve;
+uniform int u_rim_shape;
+uniform float u_lines_fade;
 uniform vec2 u_lamp;
 uniform float u_lamp_r;
 uniform float u_lamp_k;
 out vec4 color;
+
+// The rim's way from nothing (0) to the table (1) across it.
+float curve(float x) {
+    if (u_rim_curve == 0) return x;
+    if (u_rim_curve == 2) return sqrt(x);
+    if (u_rim_curve == 3) return x * x;
+    return smoothstep(0.0, 1.0, x);
+}
 
 float line(float t, float shift) {
     // How far from the nearest line, in the page's device px.
@@ -132,13 +146,26 @@ void main() {
     vec2 t = q.xy / q.z;
     float a = 0.0;
     bool seen = dot(u_w, vec3(t, 1.0)) > 0.005;
-    // Toward the page's edges the table goes, paper and lines: a soft rim,
-    // see-through, not a cut.
-    float rim = 0.09 * min(u_size.x, u_size.y);
-    vec2 e = smoothstep(vec2(0.0), vec2(rim), min(page + u_off, u_size - page - u_off));
-    float edge = e.x * e.y;
+    // Toward the page's edges the table goes, paper and lines: a rim,
+    // see-through, not a cut - as wide, as curved and of the form set
+    // (rim.rs).
+    float rim = u_rim * min(u_size.x, u_size.y);
+    vec2 on = page + u_off;
+    float edge;
+    if (u_rim_shape == 0) {
+        vec2 e = clamp(min(on, u_size - on) / rim, 0.0, 1.0);
+        edge = curve(e.x) * curve(e.y);
+    } else if (u_rim_shape == 1) {
+        vec2 mid = 0.5 * u_size;
+        vec2 dq = abs(on - mid) - (mid - vec2(rim));
+        float sd = length(max(dq, 0.0)) + min(max(dq.x, dq.y), 0.0);
+        edge = curve(clamp(1.0 - sd / rim, 0.0, 1.0));
+    } else {
+        float r = length((on - 0.5 * u_size) / (0.5 * u_size));
+        edge = curve(clamp((1.0 - r) / (2.0 * u_rim), 0.0, 1.0));
+    }
     if (seen) {
-        float d = length(t - u_mid) / u_reach;
+        float d = u_lines_fade > 0.0 ? length(t - u_mid) / (u_reach * u_lines_fade) : 0.0;
         float reached = u_grid >= 1.0 ? 1.0 : clamp((u_grown - length(t - u_cubes)) / (2.0 * u_step), 0.0, 1.0);
         a = 0.15 * pow(max(1.0 - d, 0.0), 1.3) * reached;
         if (a < 0.004) a = 0.0;
@@ -177,52 +204,20 @@ void main() {
         float far = u_reach * 1.6 + spread;
         bool now = u_base_night > 0.5;
         bool after = now;
-        if (u_turn == 0 || u_turn == 4) {
-            // Each wave that has passed this square turned it over once:
-            // the face shown now, and what it is turning to (the one
-            // passing) - in a ring from where it began, or row by row
-            // from the top (blinds).
-            float face = 1.0;
-            for (int i = 0; i < 6; i++) {
-                if (i >= u_wave_n) break;
-                float p = u_turn == 4
-                    ? clamp((u_wave_p[i] * (far + 7.0 * u_step) - (c.y - u_wave_from[i].y + 4.0 * u_step)) / (3.0 * u_step), 0.0, 1.0)
-                    : clamp((u_wave_p[i] * far - length(c - u_wave_from[i])) / spread, 0.0, 1.0);
-                if (p > 0.5) now = !now;
-                if (p > 0.0) after = !after;
-                if (p > 0.0 && p < 1.0) face = abs(cos(p * 3.14159265));
-            }
-            // The square turned over about its middle line: its face
-            // squeezed to it and grown back the other colour, the other
-            // colour beside.
-            float v = abs(fract((t.y - u_shift.y) / u_step) - 0.5) * 2.0;
-            float fw = fwidth(v);
-            float beside = smoothstep(face - fw, face + fw, v);
-            vec3 fill = mix(now ? u_fill_night : u_fill_day, after ? u_fill_night : u_fill_day, beside);
-            ink = (beside > 0.5 ? after : now) ? u_ink_night : u_ink_day;
-            under = vec4(fill, 1.0);
-        } else {
-            // Soft: each wave mixes the colour under it toward the other
-            // side as far as it has come here - ink spreading from where it
-            // began, the whole table at once (switch), or from the far
-            // corners in (to night) and the middle out (to day): the lamp.
-            vec3 fill = now ? u_fill_night : u_fill_day;
-            ink = now ? u_ink_night : u_ink_day;
-            for (int i = 0; i < 6; i++) {
-                if (i >= u_wave_n) break;
-                float d = length(t - u_wave_from[i]);
-                float p;
-                if (u_turn == 2) p = u_wave_p[i];
-                else if (u_turn == 3 && !after) p = clamp((u_wave_p[i] * (u_reach + spread) - (u_reach - d)) / spread, 0.0, 1.0);
-                else if (u_turn == 3) p = clamp((u_wave_p[i] * (u_reach + spread) - d) / spread, 0.0, 1.0);
-                else p = clamp((u_wave_p[i] * far - d) / spread, 0.0, 1.0);
-                after = !after;
-                float m = smoothstep(0.0, 1.0, p);
-                fill = mix(fill, after ? u_fill_night : u_fill_day, m);
-                ink = mix(ink, after ? u_ink_night : u_ink_day, m);
-            }
-            under = vec4(fill, 1.0);
+        // Each wave mixes the colour under it toward the other side as far
+        // as it has come here: ink spreading from where it began, a soft
+        // edge six squares wide.
+        vec3 fill = now ? u_fill_night : u_fill_day;
+        ink = now ? u_ink_night : u_ink_day;
+        for (int i = 0; i < 6; i++) {
+            if (i >= u_wave_n) break;
+            float p = clamp((u_wave_p[i] * far - length(t - u_wave_from[i])) / spread, 0.0, 1.0);
+            after = !after;
+            float m = smoothstep(0.0, 1.0, p);
+            fill = mix(fill, after ? u_fill_night : u_fill_day, m);
+            ink = mix(ink, after ? u_ink_night : u_ink_day, m);
         }
+        under = vec4(fill, 1.0);
     }
     float k = min(a * ink.a * lit, 1.0);
     // The glow over the paper, the lines over both, premultiplied, gone at
@@ -301,7 +296,6 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink").as_ref(), g.ink[0], g.ink[1], g.ink[2], g.ink_k);
             gl.uniform_1_f32(u("u_width").as_ref(), g.width);
             gl.uniform_1_i32(u("u_wave_n").as_ref(), g.wave_n);
-            gl.uniform_1_i32(u("u_turn").as_ref(), g.turn);
             let ps: Vec<f32> = g.waves.iter().map(|w| w.0).collect();
             let froms: Vec<f32> = g.waves.iter().flat_map(|w| [w.1 .0, w.1 .1]).collect();
             gl.uniform_1_f32_slice(u("u_wave_p").as_ref(), &ps);
@@ -313,6 +307,10 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15 * g.grid_k);
             gl.uniform_2_f32(u("u_near_at").as_ref(), g.near_at.0, g.near_at.1);
             gl.uniform_2_f32(u("u_size").as_ref(), g.size.0, g.size.1);
+            gl.uniform_1_f32(u("u_rim").as_ref(), g.rim);
+            gl.uniform_1_i32(u("u_rim_curve").as_ref(), g.rim_curve);
+            gl.uniform_1_i32(u("u_rim_shape").as_ref(), g.rim_shape);
+            gl.uniform_1_f32(u("u_lines_fade").as_ref(), g.lines_fade);
             gl.uniform_2_f32(u("u_lamp").as_ref(), g.lamp.0, g.lamp.1);
             gl.uniform_1_f32(u("u_lamp_r").as_ref(), g.lamp_r);
             gl.uniform_1_f32(u("u_lamp_k").as_ref(), g.lamp_k);
