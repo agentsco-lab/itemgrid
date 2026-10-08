@@ -502,6 +502,9 @@ enum Place {
     Recovery(String),
     /// Android with USB debugging on.
     Android(String),
+    /// Not a Surface Duo 1 (a Duo 2, another phone), over adb or fastboot:
+    /// named, left alone - no install, no club number.
+    Other(String),
     /// On the USB, but neither adb nor fastboot answers: Android starting,
     /// or without USB debugging.
     Quiet(String),
@@ -3098,6 +3101,7 @@ fn look(ui: &Rc<Ui>) {
                 Mode::Fastboot => Place::Fastboot(seen.via.clone()),
                 Mode::Recovery => Place::Recovery(seen.via.clone()),
                 Mode::Android => Place::Android(seen.via.clone()),
+                Mode::Other => Place::Other(seen.via.clone()),
                 Mode::Gone if itemgrid_core::android::port_without_system() => Place::NoSystem,
                 Mode::Gone => itemgrid_core::android::on_usb_quietly().map(Place::Quiet).unwrap_or(Place::Gone),
             };
@@ -3351,6 +3355,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
             }
             ("phone-symbolic", "Android", "The Duo runs Android", if guest { "Stock Android, started by item/grid as a guest. Don't restart it from its own menu: Restart Android here does it the right way." } else { "Android runs on the phone." }, false)
         }
+        Place::Other(_) => ("phone-symbolic", "Another phone", "This is not a Surface Duo 1", "item/grid looks after the Surface Duo 1 only, and leaves this phone as it is.", false),
         Place::Quiet(_) => (
             "phone-symbolic",
             "Android",
@@ -3384,6 +3389,7 @@ fn away_from_linux(ui: &Rc<Ui>, place: &Place, guest: bool) {
         Place::Fastboot(_) => "Bootloader",
         Place::Recovery(_) => "Recovery",
         Place::Android(_) | Place::Quiet(_) => "Android",
+        Place::Other(_) => "Another phone",
         Place::NoSystem => "No system",
         _ => "Not seen just now",
     });
@@ -5085,9 +5091,13 @@ fn away_words(ui: &Ui) -> Option<Vec<String>> {
         Place::Android(_) if guest => vec!["android".into(), "as a guest".into()],
         Place::Android(_) => vec!["android".into(), "on cable".into()],
         Place::Quiet(_) => vec!["android".into(), "turn on".into(), "usb debugging".into()],
+        Place::Other(_) => vec!["other phone".into(), "not a duo 1".into()],
         Place::Fastboot(_) => vec!["bootloader".into()],
         Place::Recovery(_) => vec!["recovery".into()],
         Place::NoSystem => vec!["no system".into(), "reinstall".into()],
+        // Seen before, gone now (the cable out, the phone off): said so -
+        // the table said nothing and looked stuck (the owner, 2026-10-08).
+        Place::Gone if st.last_seen.is_some() => vec!["not seen".into(), "the cable?".into()],
         _ => return None,
     })
 }
@@ -6809,7 +6819,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             let wide = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cur;
             let _ = (mid, wide);
             words = Some(lines);
-        } else if let Some(lines) = (intro.duo() > 0.0 && ui.state.borrow().host.is_none() && !ui.shut_away.get()).then(|| away_words(ui)).flatten() {
+        } else if let Some(lines) = (intro.duo() > 0.0 && ui.state.borrow().host.is_none() && !ui.shut_away.get() && intro.note().is_none()).then(|| away_words(ui)).flatten() {
             // Stock Android on the cable: item put on it, a row under the
             // words (eleven letters: clear of the open phone).
             act_at = (words_at.0, words_at.1 + (lines.len() + 1) as f32 * cur);

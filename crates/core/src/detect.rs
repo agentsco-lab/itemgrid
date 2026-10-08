@@ -14,6 +14,9 @@ pub enum Mode {
     Recovery,
     /// Android (a test image), over adb.
     Android,
+    /// A phone that is not a Surface Duo 1 (a Duo 2, anything else) over
+    /// adb or fastboot: named, left alone.
+    Other,
     /// Nothing seen.
     Gone,
 }
@@ -25,6 +28,7 @@ impl Mode {
             Mode::Fastboot => "fastboot",
             Mode::Recovery => "recovery",
             Mode::Android => "Android",
+            Mode::Other => "another phone",
             Mode::Gone => "not seen",
         }
     }
@@ -36,6 +40,7 @@ impl Mode {
             Mode::Fastboot => "boot an image from RAM; flashing only after a good RAM boot (not yet in itemgrid)",
             Mode::Recovery => "backups and restores (not yet in itemgrid)",
             Mode::Android => "not Linux; switching images comes with flashing (not yet in itemgrid)",
+            Mode::Other => "not a Surface Duo 1: item/grid leaves it alone",
             Mode::Gone => "check the cable, the battery; hold power and volume down for fastboot",
         }
     }
@@ -62,14 +67,23 @@ pub fn detect() -> Seen {
     }
     if let Some(line) = lines("fastboot", &["devices"]).into_iter().next() {
         let serial = line.split_whitespace().next().unwrap_or_default().to_owned();
-        return Seen { mode: Mode::Fastboot, via: serial };
+        // A Duo 1 says "surfaceduo"; anything else is another phone.
+        let mode = match product(&serial, Mode::Fastboot) {
+            Some(p) if p != "surfaceduo" => Mode::Other,
+            _ => Mode::Fastboot,
+        };
+        return Seen { mode, via: serial };
     }
     for line in lines("adb", &["devices"]).into_iter().skip_while(|l| l.starts_with("List of devices")) {
         let mut parts = line.split_whitespace();
         let (Some(serial), Some(state)) = (parts.next(), parts.next()) else { continue };
         let mode = match state {
             "recovery" | "sideload" => Mode::Recovery,
-            "device" => Mode::Android,
+            // A Duo 1's Android says "duo"; anything else is another phone.
+            "device" => match product(serial, Mode::Android) {
+                Some(p) if p != "duo" => Mode::Other,
+                _ => Mode::Android,
+            },
             _ => continue,
         };
         return Seen { mode, via: serial.to_owned() };
@@ -96,6 +110,32 @@ pub fn detect() -> Seen {
         }
     }
     Seen { mode: Mode::Gone, via: String::new() }
+}
+
+/// What the phone at `serial` says it is: in Android `ro.product.device`
+/// ("duo" for a Duo 1), in the bootloader its `product` ("surfaceduo").
+/// Asked once per phone and mode, then remembered (the bootloader is never
+/// asked again and again; a look comes every few seconds). None: it did
+/// not say (then it is taken for a Duo, and asked again next look).
+fn product(serial: &str, mode: Mode) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static KNOWN: Mutex<Option<HashMap<(String, bool), String>>> = Mutex::new(None);
+    let key = (serial.to_owned(), mode == Mode::Fastboot);
+    if let Some(p) = KNOWN.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) {
+        return Some(p.clone());
+    }
+    let said = if mode == Mode::Fastboot {
+        // (fastboot answers getvar on stderr.)
+        let out = Command::new("timeout").args(["5", "fastboot", "-s", serial, "getvar", "product"]).stdin(Stdio::null()).output().ok()?;
+        let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        all.lines().find_map(|l| l.trim().strip_prefix("product:")).map(|v| v.trim().to_owned())
+    } else {
+        lines("adb", &["-s", serial, "shell", "getprop", "ro.product.device"]).into_iter().next()
+    };
+    let p = said.filter(|p| !p.is_empty())?;
+    KNOWN.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, p.clone());
+    Some(p)
 }
 
 /// The phone on the cable noted for Wi-Fi (link.rs): at the first look, then

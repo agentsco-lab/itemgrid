@@ -409,6 +409,11 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     if fb.serial != serial {
         return Err(format!("the bootloader shows another phone ({}): stopping", fb.serial));
     }
+    // Before the unlock (it erases the phone), not after: a Duo 2 or any
+    // other phone is left as it is.
+    if fb.product != "surfaceduo" {
+        return Err(format!("the bootloader shows a '{}', not a Duo 1: nothing is changed", fb.product));
+    }
     if fb.unlocked != "yes" {
         say("unlocking the bootloader: on the phone, choose Unlock with the volume keys, then press Power".into());
         crate::flash::log(serial, "bootloader unlock asked (Android is erased by it) - itemgrid")?;
