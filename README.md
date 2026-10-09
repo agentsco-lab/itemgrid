@@ -12,7 +12,7 @@ takes the phone back to stock Android and to Linux again. The command is
 **Until 1.0, item/grid is an experiment**, as item is. It writes to the
 phone's partitions, so the rules below are checks in its core that cannot be
 gone around, not notes to remember - but it has been used on one phone, the
-owner's. Keep your own backups of `boot_a`, `boot_b` and `misc` from TWRP
+owner's, from one Linux computer. Keep your own backups of `boot_a`, `boot_b` and `misc` from TWRP
 before you let it write anything.
 
 ## What it does
@@ -33,13 +33,37 @@ before you let it write anything.
 | `club`, `register` | the Duo owners' club: a token, the phone's number |
 
 **The window** shows the Duo drawn as it is held - the hinge and the
-gravity from the phone's sensors, its screen live from item's mirror - and
-a few lines on how it is: the phone's number in the club, item's version,
-the battery, the link. Settings hold Repair & Reset - the backup, a
-reinstall, the whole system back, Android - and Developer Mode, which shows
-the slots, images from RAM, every kind of backup and the logs.
+gravity from the phone's sensors, its screen live from item's mirror - on a
+table of light, and a few lines on how it is: the phone's number in the
+club, item's version, the battery, the link. The menu is three lines drawn
+on the same table: *updates* (item's version and build; the update),
+*stock* (the way back to the phone's Android), *settings* (the table's
+look: the lines' colour and width, the grid, the light, the lamp under the
+phone); Developer Mode adds a fourth with the slots, images from RAM, every
+kind of backup and the logs. What is not on the table yet is the command
+line's.
 
-![item/grid's window: the Duo on the table, open as a book, its screen live](docs/img/itemgrid-window.png)
+| | |
+|---|---|
+| ![the window: the Duo on the table, open as a book, its screen live](docs/img/itemgrid-window.png) | ![the menu: updates, stock, settings](docs/img/itemgrid-menu.png) |
+| The window: the Duo as it is held, its lock screen live from item's mirror; beside it the club's number, item's version, the battery, the cable. | The menu, drawn on the table as the rest. |
+| ![settings: the table's look](docs/img/itemgrid-settings.png) | |
+| Settings: the table's look - the lines' colour, the grid, the rim, the light, the lamp. | |
+
+`itemgrid status`, the same phone:
+
+```
+Phone:     Linux (172.16.42.1)
+Club:      00001
+System:    Droidian 102 (2026-08-30), kernel 4.14-190-perf-microsoft-surfaceduo, up 8 h 18 min
+item:      0.2.1 (built 2026-10-09 06:18), running
+Port:      0.22.0, sensorfw 0.14.8+itemae3
+Fingers:   1 enrolled
+Battery:   100%, discharging, 26 °C
+CPU:       32 °C
+Disk /         79.4 GB free of 89.3 GB
+Disk /userdata 9.9 GB free of 101.9 GB
+```
 
 ## The safety rules, as code
 
@@ -83,4 +107,4 @@ install -Dm755 target/release/itemgrid-gui ~/.local/bin/itemgrid-gui
 
 ## License
 
-Not chosen yet; until a LICENSE file is here, all rights are reserved.
+MIT, see [LICENSE](LICENSE).
