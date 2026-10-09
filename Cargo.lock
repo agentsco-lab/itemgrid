@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "duo-motion"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "endi"
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "itemgrid-core",
  "libc",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bzip2",
  "flate2",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "glow",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
