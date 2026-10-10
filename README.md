@@ -30,7 +30,6 @@ before you let it write anything.
 | `slots`, `confirm`, `ramboot` | the two boot slots and their state; a boot image tried from RAM first, by the rules |
 | `install` | erase and install item from a release image (`--keep-files` keeps home, Wi-Fi, the time zone, the PIN) |
 | `stock`, `android` | Microsoft's packages and their boot chain; the way to stock Android and back |
-| `club`, `register` | the Duo owners' club: a token, the phone's number |
 
 **The window** shows the Duo drawn as it is held - the hinge and the
 gravity from the phone's sensors, its screen live from item's mirror - on a
