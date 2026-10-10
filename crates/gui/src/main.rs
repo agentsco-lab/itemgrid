@@ -5046,13 +5046,19 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
 /// wrapped at its words (the table's column stays narrow: the eye draws
 /// back little).
 fn table_lines(rows: &[(&str, String)]) -> Vec<board::Line> {
-    const WIDE: usize = 19;
+    table_lines_wide(rows, 19)
+}
+
+/// The same, wrapped to `wide` squares (the job's words: the room left of
+/// the drawn Duo, which the narrow column may reach under).
+fn table_lines_wide(rows: &[(&str, String)], wide: usize) -> Vec<board::Line> {
+    let wide = wide.max(6);
     let name_w = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
     let mut lines = Vec::new();
     for (k, v) in rows {
         let k = k.to_lowercase();
         let one = if k.is_empty() { v.clone() } else { format!("{k:name_w$}  {v}") };
-        if one.chars().count() <= WIDE {
+        if one.chars().count() <= wide {
             lines.push(board::Line::new(k.clone(), one));
             continue;
         }
@@ -5061,9 +5067,9 @@ fn table_lines(rows: &[(&str, String)]) -> Vec<board::Line> {
         }
         let mut cur = String::new();
         for word in v.split_whitespace() {
-            for piece in word.chars().collect::<Vec<_>>().chunks(WIDE) {
+            for piece in word.chars().collect::<Vec<_>>().chunks(wide) {
                 let piece: String = piece.iter().collect();
-                if !cur.is_empty() && cur.chars().count() + 1 + piece.chars().count() > WIDE {
+                if !cur.is_empty() && cur.chars().count() + 1 + piece.chars().count() > wide {
                     lines.push(board::Line::new(k.clone(), std::mem::take(&mut cur)));
                 }
                 if !cur.is_empty() {
@@ -5235,7 +5241,12 @@ impl Ask {
 
 /// Words wrapped to the table's narrow column (19 squares).
 fn wrapped(text: &str) -> Vec<String> {
-    table_lines(&[("", text.to_lowercase())]).into_iter().map(|l| l.text).collect()
+    wrapped_to(text, 19)
+}
+
+/// Words wrapped to `wide` squares.
+fn wrapped_to(text: &str, wide: usize) -> Vec<String> {
+    table_lines_wide(&[("", text.to_lowercase())], wide).into_iter().map(|l| l.text).collect()
 }
 
 /// The question on its board beside the menu (laid anew; the lines that
@@ -6862,6 +6873,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             });
         let mut fills: Option<Vec<f32>> = None;
         let mut job_running = false;
+        // The job's words go under the word, left of the drawn Duo: wrapped
+        // to the squares between (one clear), not the column's 19 - that
+        // ran under the phone ("system starts fro...", the owner,
+        // 2026-10-10). Never narrower than 8.
+        let job_wide = (((sheet[0] + duo_corner.0 * cur - left) / cur).floor() as isize - 1).clamp(8, 19) as usize;
+        let jwrap = |text: &str| wrapped_to(text, job_wide);
         let job_lines: Option<Vec<String>> = job_now.and_then(|(kind, jlines, ended, over)| {
             if ended.is_some() && over > 60 {
                 return None;
@@ -6902,35 +6919,35 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             // The title; then, under the squares: the stage, what happens in
             // it (its first sentence), about how long it takes and how long
             // is left (the owner, 2026-10-08).
-            let mut lines = wrapped(title);
+            let mut lines = jwrap(title);
             match &ended {
                 None => {
                     if !stages.is_empty() {
                         let stage = &stages[at];
-                        lines.extend(wrapped(stage.title));
+                        lines.extend(jwrap(stage.title));
                         let first = stage.explain.split_once(". ").map_or(stage.explain.trim_end_matches('.'), |(a, _)| a);
-                        lines.extend(wrapped(first));
+                        lines.extend(jwrap(first));
                         let about = match stage.secs {
                             s if s < 50.0 => "under a minute".to_owned(),
                             s if s < 90.0 => "about a minute".to_owned(),
                             s => format!("about {} min", (s / 60.0).round()),
                         };
-                        lines.push(about);
+                        lines.extend(jwrap(&about));
                         let left = (journey::left(&stages, at, secs_in) / 60.0).ceil();
-                        lines.push(if left <= 1.0 { "a minute left in all".to_owned() } else { format!("{left} min left in all") });
+                        lines.extend(jwrap(&if left <= 1.0 { "a minute left in all".to_owned() } else { format!("{left} min left in all") }));
                     }
                     // What the hands do meanwhile: nothing - unless the
                     // phone asks (its bootloader's unlock, by its keys).
                     if jlines.last().is_some_and(|l| l.starts_with("unlocking")) {
-                        lines.extend(wrapped("on the phone: unlock, with the volume keys, then power"));
+                        lines.extend(jwrap("on the phone: unlock, with the volume keys, then power"));
                     } else {
-                        lines.push("hands off the phone".to_owned());
+                        lines.extend(jwrap("hands off the phone"));
                     }
                 }
                 Some(None) => lines.push("done".to_owned()),
                 Some(Some(e)) => {
                     lines.push("stopped".to_owned());
-                    lines.extend(wrapped(e).into_iter().take(3));
+                    lines.extend(jwrap(e).into_iter().take(4));
                 }
             }
             Some(lines)
