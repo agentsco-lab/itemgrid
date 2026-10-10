@@ -30,8 +30,7 @@ pub struct Release {
 /// Where release images are looked for: item/grid's own folder, and the port's
 /// out/release when its tree is here.
 pub fn places() -> Vec<PathBuf> {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let mut dirs = vec![home.join(".local/share/itemgrid/releases")];
+    let mut dirs = vec![crate::paths::data().join("releases")];
     if let Some(port) = crate::flash::port_tree() {
         dirs.push(port.join("out/release"));
     }
@@ -74,8 +73,7 @@ pub fn read(dir: &Path) -> Result<Release, String> {
 
 /// The key item/grid reaches phones with.
 pub fn public_key() -> Result<String, String> {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let candidates = std::env::var_os("SFDUO_PUBKEY").map(PathBuf::from).into_iter().chain(["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"].iter().map(|n| home.join(".ssh").join(n)));
+    let candidates = std::env::var_os("SFDUO_PUBKEY").map(PathBuf::from).into_iter().chain(["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"].iter().map(|n| crate::paths::ssh().join(n)));
     for c in candidates {
         if let Ok(k) = std::fs::read_to_string(&c) {
             let k = k.trim().to_owned();
@@ -214,15 +212,13 @@ fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick:
     Ok(())
 }
 
+/// The release image decompressed as it is read (zstd, a window of up to
+/// 2^27 as the images are made: build-release-image.sh's --long=27).
 fn decompress(path: &Path) -> Result<impl Read, String> {
-    let child = Command::new("zstd")
-        .args(["-dc", "--long=27"])
-        .arg(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("zstd: {e} - is zstd installed?"))?;
-    Ok(child.stdout.expect("piped"))
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut d = zstd::stream::read::Decoder::new(std::io::BufReader::with_capacity(4 << 20, file)).map_err(|e| format!("zstd: {e}"))?;
+    d.window_log_max(27).map_err(|e| format!("zstd: {e}"))?;
+    Ok(d)
 }
 
 fn hash_stream(r: &mut dyn Read) -> Result<(u64, String), String> {
@@ -354,7 +350,7 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
 fn push_text(serial: &str, text: &str, to: &str) -> Result<(), String> {
     let tmp = std::env::temp_dir().join(format!("itemgrid-push-{}", std::process::id()));
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
+    let out = Command::new(crate::programs::adb()).args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
     let _ = std::fs::remove_file(&tmp);
     if !out.status.success() {
         return Err(format!("adb push: {}", String::from_utf8_lossy(&out.stderr).trim()));

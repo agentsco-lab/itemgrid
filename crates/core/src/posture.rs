@@ -59,7 +59,7 @@ const INHIBIT: &str = "systemd-inhibit --what=sleep --who=item/grid --why='Follo
 /// duo-motion as built for the phone, here: ITEMGRID_MOTION, else
 /// ~/.local/share/itemgrid/duo-motion (tools/install-local.sh puts it there).
 fn motion_here() -> Option<std::path::PathBuf> {
-    let p = std::env::var_os("ITEMGRID_MOTION").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/itemgrid/duo-motion"));
+    let p = std::env::var_os("ITEMGRID_MOTION").map(std::path::PathBuf::from).unwrap_or_else(|| crate::paths::data().join("duo-motion"));
     p.exists().then_some(p)
 }
 

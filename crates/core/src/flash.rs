@@ -4,16 +4,16 @@
 //! the port's tree it is that tree's out/flash-state.json; elsewhere
 //! ~/.local/state/itemgrid/flash-state.json. Read here only, for now.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// RAM boots in a row not yet confirmed, before the gate closes.
 pub const MAX_UNCONFIRMED: u64 = 2;
 
 /// The port's tree: ITEMGRID_PORT, ~/.config/itemgrid/port, or the usual place.
 pub fn port_tree() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let home = crate::paths::home();
     let from_env = std::env::var_os("ITEMGRID_PORT").map(PathBuf::from);
-    let from_file = std::fs::read_to_string(home.join(".config/itemgrid/port")).ok().map(|s| PathBuf::from(s.trim()));
+    let from_file = std::fs::read_to_string(crate::paths::config().join("port")).ok().map(|s| PathBuf::from(s.trim()));
     let tree = from_env.or(from_file).unwrap_or_else(|| home.join("Desktop/projects/surfaceduo/surfaceduo-droidian"));
     tree.join("tools/flash-safely.sh").exists().then_some(tree)
 }
@@ -21,7 +21,7 @@ pub fn port_tree() -> Option<PathBuf> {
 pub fn state_path() -> PathBuf {
     match port_tree() {
         Some(t) => t.join("out/flash-state.json"),
-        None => Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/state/itemgrid/flash-state.json"),
+        None => crate::paths::state().join("flash-state.json"),
     }
 }
 
@@ -107,7 +107,7 @@ pub fn confirm_flashed(serial: &str, ev: &Evidence) -> Result<(), String> {
         ev.slot,
         ev.image.clone().unwrap_or_else(|| format!("Linux {}", ev.running_kernel))
     );
-    let ts = std::process::Command::new("date").arg("+%Y-%m-%d %H:%M:%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+    let ts = crate::clock::now();
     let history = d["history"].as_array_mut().ok_or("the state's history is not a list")?;
     history.push(serde_json::json!({"ts": ts, "event": event}));
     let keep = history.len().saturating_sub(50);
@@ -145,7 +145,7 @@ fn edit(serial: &str, change: impl FnOnce(&mut serde_json::Value) -> Result<(), 
 }
 
 fn stamp() -> String {
-    std::process::Command::new("date").arg("+%Y-%m-%d %H:%M:%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default()
+    crate::clock::now()
 }
 
 fn push_event(d: &mut serde_json::Value, event: &str) -> Result<(), String> {

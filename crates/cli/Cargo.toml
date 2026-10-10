@@ -9,5 +9,7 @@ name = "itemgrid"
 path = "src/main.rs"
 
 [dependencies]
-libc = "0.2"
 itemgrid-core = { path = "../core" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

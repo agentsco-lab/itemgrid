@@ -123,7 +123,7 @@ pub struct Fastboot {
 }
 
 pub(crate) fn fastboot(args: &[&str], limit: Duration) -> Result<String, String> {
-    let mut child = Command::new("fastboot").args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("fastboot: {e}"))?;
+    let mut child = Command::new(crate::programs::fastboot()).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("fastboot: {e}"))?;
     let start = Instant::now();
     loop {
         if let Some(_status) = child.try_wait().map_err(|e| e.to_string())? {
@@ -268,7 +268,7 @@ impl Expect {
 }
 
 fn adb(args: &[&str], limit: Duration) -> Result<String, String> {
-    let mut child = Command::new("adb").args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("adb: {e}"))?;
+    let mut child = Command::new(crate::programs::adb()).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("adb: {e}"))?;
     let start = Instant::now();
     loop {
         if child.try_wait().map_err(|e| e.to_string())?.is_some() {
@@ -316,7 +316,7 @@ fn android_up(serial: &str) -> bool {
 
 /// A USB device with this serial number attached.
 pub fn usb_serial_present(serial: &str) -> bool {
-    std::fs::read_dir("/sys/bus/usb/devices").is_ok_and(|d| d.flatten().any(|e| std::fs::read_to_string(e.path().join("serial")).is_ok_and(|s| s.trim() == serial)))
+    crate::usb::serial_present(serial)
 }
 
 /// From the recovery or Android (adb) into the bootloader.

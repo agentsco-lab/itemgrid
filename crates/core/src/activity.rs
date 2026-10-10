@@ -28,8 +28,7 @@ pub struct Activity {
 static CURRENT: Mutex<Option<Activity>> = Mutex::new(None);
 
 fn path() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    dir.join("itemgrid-activity.json")
+    crate::paths::runtime().join("itemgrid-activity.json")
 }
 
 fn now() -> u64 {
@@ -83,7 +82,7 @@ pub fn elsewhere(recent: u64) -> Option<Activity> {
     match a.ended_at {
         Some(t) => (now().saturating_sub(t) < recent).then_some(a),
         // Still running only if its process is.
-        None => std::path::Path::new(&format!("/proc/{}", a.pid)).exists().then_some(a),
+        None => crate::programs::alive(a.pid).then_some(a),
     }
 }
 

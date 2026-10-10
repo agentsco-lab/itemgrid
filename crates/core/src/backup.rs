@@ -16,7 +16,6 @@
 //! ~/itemgrid-backups/<serial>/<when>-<kind>/, each with its manifest.json;
 //! the directories are the owner's only (they hold keys and /etc/shadow).
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -128,7 +127,7 @@ impl Backup {
 }
 
 pub fn root() -> PathBuf {
-    Path::new(&std::env::var("HOME").unwrap_or_default()).join("itemgrid-backups")
+    crate::paths::backups()
 }
 
 /// The backups on this computer, newest first; of one phone if `serial`.
@@ -178,21 +177,14 @@ pub(crate) fn facts(host: &str) -> Result<Facts, String> {
 }
 
 pub(crate) fn now() -> String {
-    let out = std::process::Command::new("date").arg("+%Y-%m-%d %H:%M:%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
-    out
+    crate::clock::now()
 }
 
 /// Free space where the backups go (bytes).
 pub(crate) fn free_here() -> u64 {
     let dir = root();
     let _ = std::fs::create_dir_all(&dir);
-    std::process::Command::new("df")
-        .args(["-Pk", &dir.display().to_string()])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().nth(1).and_then(|l| l.split_whitespace().nth(3).and_then(|v| v.parse::<u64>().ok())))
-        .map(|k| k * 1024)
-        .unwrap_or(0)
+    crate::programs::free_space(&dir)
 }
 
 /// The size of each partition, read on the phone.
@@ -226,7 +218,9 @@ pub fn take(host: &str, kind: Kind, say: &mut dyn FnMut(String)) -> Result<Backu
     let phone_dir = root().join(&f.serial);
     let dir = phone_dir.join(format!("{stamp}-{}", kind.name()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[cfg(unix)]
     for d in [root(), phone_dir.clone(), dir.clone()] {
+        use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
     }
     let result = take_into(host, kind, &dir, say);
@@ -274,7 +268,7 @@ fn take_into(host: &str, kind: Kind, dir: &Path, say: &mut dyn FnMut(String)) ->
             // A tar read on the fly has nothing to compare with on the
             // phone: it is checked whole instead.
             say("checking the archive".into());
-            let ok = std::process::Command::new("gzip").args(["-t", &dir.join("home-etc.tar.gz").display().to_string()]).status().is_ok_and(|s| s.success());
+            let ok = gzip_whole(&dir.join("home-etc.tar.gz"));
             if !ok || size < 1024 {
                 return Err("the archive did not arrive whole - try again".into());
             }
@@ -312,4 +306,11 @@ pub fn has_device_data(serial: &str) -> bool {
 /// The phone's serial number, read on it.
 pub fn serial(host: &str) -> Result<String, String> {
     facts(host).map(|f| f.serial)
+}
+
+/// Whether a gzip file reads through to its end (as `gzip -t`).
+fn gzip_whole(path: &std::path::Path) -> bool {
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let mut d = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(f));
+    std::io::copy(&mut d, &mut std::io::sink()).is_ok()
 }

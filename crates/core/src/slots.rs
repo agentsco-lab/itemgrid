@@ -6,7 +6,7 @@
 //! kernel's version inside the image.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// One slot.
 #[derive(Debug, Clone, Default)]
@@ -124,7 +124,7 @@ fn images() -> Vec<PathBuf> {
 /// What the partitions' hashes are known to be: worked out once and kept
 /// (~/.cache/itemgrid/slots.tsv: partition hash, image).
 fn cache_path() -> PathBuf {
-    Path::new(&std::env::var("HOME").unwrap_or_default()).join(".cache/itemgrid/slots.tsv")
+    crate::paths::cache().join("slots.tsv")
 }
 
 fn known_images() -> HashMap<String, String> {

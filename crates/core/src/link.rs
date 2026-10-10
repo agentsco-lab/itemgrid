@@ -60,7 +60,7 @@ pub struct Known {
 }
 
 fn dir() -> PathBuf {
-    std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/share/itemgrid")
+    crate::paths::data()
 }
 
 fn known_path() -> PathBuf {
@@ -194,41 +194,36 @@ pub fn wifi_answers_quickly() -> bool {
     known().iter().filter(|k| !k.address.is_empty()).any(|k| port_open(&k.address))
 }
 
-/// A .local name to an address (nss-mdns through getent), quickly.
+/// A .local name to an address, quickly (2 s at most): nss-mdns through
+/// getent on Linux; the system's own resolver on Windows, asked from a
+/// thread that is left behind if it is slow.
 fn resolve(name: &str) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    let out = std::process::Command::new("timeout").args(["2", "getent", "ahostsv4", name]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout).split_whitespace().next().map(str::to_owned)
-}
-
-/// Whether the phone's USB network is up on this computer: an interface
-/// holding an address in 172.16.42.0/24. Without it 172.16.42.1 is no
-/// phone - some other network can answer there (one did, 8 ms away), and
-/// the cable's ssh checks no host key.
-///
-/// Read from the kernel's own table (/proc/net/fib_trie: each local
-/// address a line, "/32 host LOCAL" under it) - `ip addr show` was run for
-/// it, a process six times a second from the window's main thread, in the
-/// frames (2026-10-08).
-pub fn usb_up() -> bool {
-    std::fs::read_to_string("/proc/net/fib_trie").is_ok_and(|trie| usb_in(&trie))
-}
-
-fn usb_in(trie: &str) -> bool {
-    let mut address: Option<&str> = None;
-    for line in trie.lines() {
-        let t = line.trim_start_matches([' ', '|', '+', '-']).trim_end();
-        if t.starts_with("/32 host LOCAL") {
-            if address.is_some_and(|a| a.starts_with("172.16.42.") && a != "172.16.42.1") {
-                return true;
-            }
-        } else if t.starts_with(|c: char| c.is_ascii_digit()) {
-            address = Some(t);
-        }
+    #[cfg(unix)]
+    {
+        let mut c = std::process::Command::new("getent");
+        c.args(["ahostsv4", name]);
+        let out = crate::programs::output_within(c, std::time::Duration::from_secs(2))?;
+        String::from_utf8_lossy(&out.stdout).split_whitespace().next().map(str::to_owned)
     }
-    false
+    #[cfg(windows)]
+    {
+        use std::net::ToSocketAddrs;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = name.to_owned();
+        std::thread::spawn(move || {
+            let found = (name.as_str(), 22).to_socket_addrs().ok().and_then(|mut a| a.find(|a| a.is_ipv4())).map(|a| a.ip().to_string());
+            let _ = tx.send(found);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(2)).ok().flatten()
+    }
+}
+
+/// Whether the phone's USB network is up on this computer (usb.rs).
+pub fn usb_up() -> bool {
+    crate::usb::network_up()
 }
 
 /// `ITEMGRID_NO_CABLE=1`: the cable taken as not there (to try Wi-Fi with
@@ -252,33 +247,4 @@ pub fn need_cable(host: &str) -> Result<(), String> {
         return Ok(());
     }
     Err("plug in the cable: this takes the phone out of Linux, where Wi-Fi does not reach".into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TRIE: &str = "Main:
-  +-- 0.0.0.0/0 3 0 5
-     |-- 0.0.0.0
-        /0 universe UNICAST
-     +-- 172.16.42.0/24 2 0 2
-        |-- 172.16.42.0
-           /24 link UNICAST
-        |-- 172.16.42.2
-           /32 host LOCAL
-Local:
-  +-- 127.0.0.0/8 2 0 2
-     |-- 127.0.0.1
-        /32 host LOCAL
-";
-
-    #[test]
-    fn the_usb_network_is_seen_by_its_own_address() {
-        assert!(usb_in(TRIE));
-        // The phone's own address on this side is no phone's network.
-        assert!(!usb_in(&TRIE.replace("172.16.42.2", "172.16.42.1")));
-        assert!(!usb_in(&TRIE.replace("172.16.42", "172.16.43")));
-        assert!(!usb_in(""));
-    }
 }

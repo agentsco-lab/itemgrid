@@ -29,9 +29,10 @@ fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
     // phone has no key to match.
     c.args(["-o", "BatchMode=yes", "-o", &format!("ConnectTimeout={connect_timeout}"), "-o", "LogLevel=ERROR"]);
     c.args(host_key_args(host));
-    if shared {
-        let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-        c.args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={dir}/itemgrid-%C"), "-o", "ControlPersist=60", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
+    // (Windows' OpenSSH has no shared connections: each command its own.)
+    if shared && cfg!(unix) {
+        let dir = crate::paths::runtime();
+        c.args(["-o", "ControlMaster=auto", "-o", &format!("ControlPath={}/itemgrid-%C", dir.display()), "-o", "ControlPersist=60", "-o", "ServerAliveInterval=2", "-o", "ServerAliveCountMax=3"]);
     } else {
         // Its own: noticed dead within ~6 s too (a phone asleep on Wi-Fi
         // left it hanging for the system's own timeout, ~40 s).
@@ -41,14 +42,17 @@ fn ssh_with(host: &str, connect_timeout: u32, shared: bool) -> Command {
     c
 }
 
+/// A file with nothing in it, for ssh's known_hosts options.
+const NOWHERE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
 /// How ssh (and scp) check the phone's host key at `host`.
 pub fn host_key_args(host: &str) -> Vec<String> {
     let o = |v: String| ["-o".to_owned(), v];
     if host == crate::link::CABLE && crate::link::usb_up() {
-        return [o("UserKnownHostsFile=/dev/null".into()), o("StrictHostKeyChecking=no".into())].concat();
+        return [o(format!("UserKnownHostsFile={NOWHERE}")), o("StrictHostKeyChecking=no".into())].concat();
     }
     let alias = crate::link::serial_of(host).map(|s| format!("itemgrid-{s}")).unwrap_or_else(|| "itemgrid-unknown".into());
-    [o(format!("UserKnownHostsFile={}", crate::link::known_hosts_path().display())), o("StrictHostKeyChecking=yes".into()), o(format!("HostKeyAlias={alias}")), o("GlobalKnownHostsFile=/dev/null".into())].concat()
+    [o(format!("UserKnownHostsFile={}", crate::link::known_hosts_path().display())), o("StrictHostKeyChecking=yes".into()), o(format!("HostKeyAlias={alias}")), o(format!("GlobalKnownHostsFile={NOWHERE}"))].concat()
 }
 
 /// Whether the phone answers ssh at `host`.
@@ -313,7 +317,7 @@ pub(crate) fn upload(host: &str, local: &std::path::Path, remote: &str) -> Resul
 pub fn wake(host: &str) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < std::time::Duration::from_secs(40) {
-        let _ = std::process::Command::new("ping").args(["-c", "3", "-i", "0.2", "-W", "1", host]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        let _ = std::process::Command::new("ping").args(if cfg!(windows) { &["-n", "3", "-w", "1000"][..] } else { &["-c", "3", "-i", "0.2", "-W", "1"][..] }).arg(host).stdout(Stdio::null()).stderr(Stdio::null()).status();
         if ssh_with(host, 6, false).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
             return true;
         }
@@ -326,7 +330,7 @@ pub fn pings(host: &str) -> bool {
     if host == crate::link::CABLE && !crate::link::usb_up() {
         return false;
     }
-    std::process::Command::new("ping").args(["-c", "1", "-W", "1", host]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    std::process::Command::new("ping").args(if cfg!(windows) { &["-n", "1", "-w", "1000"][..] } else { &["-c", "1", "-W", "1"][..] }).arg(host).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// The phone kept from sleeping while item/grid works on it (a kernel wakelock,

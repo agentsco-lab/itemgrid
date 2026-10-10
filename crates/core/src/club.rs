@@ -25,10 +25,9 @@ const ACCOUNT: &str = "agentsco-registry";
 /// The registry's site: ITEMGRID_REGISTRY, ~/.config/itemgrid/registry, or
 /// agentsco.uk.
 pub fn server() -> String {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
     std::env::var("ITEMGRID_REGISTRY")
         .ok()
-        .or_else(|| std::fs::read_to_string(home.join(".config/itemgrid/registry")).ok().map(|s| s.trim().to_owned()))
+        .or_else(|| std::fs::read_to_string(crate::paths::config().join("registry")).ok().map(|s| s.trim().to_owned()))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "https://agentsco.uk".into())
         .trim_end_matches('/')
@@ -78,7 +77,7 @@ pub struct Device {
 }
 
 fn local_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/itemgrid/devices.json")
+    crate::paths::data().join("devices.json")
 }
 
 fn local() -> HashMap<String, Device> {

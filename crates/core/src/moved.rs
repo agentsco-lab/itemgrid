@@ -3,8 +3,6 @@
 //! put duo-motion in its own before it first ran), and theirs left empty
 //! taken away.
 
-use std::path::PathBuf;
-
 /// The old names' places and item/grid's, under the home directory (the
 /// newest name first).
 const PLACES: &[(&str, &str)] = &[
@@ -33,7 +31,7 @@ const PLACES: &[(&str, &str)] = &[
 
 /// Moves them (a rename: the stock images and backups are not copied).
 pub fn from_old_names() {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let home = crate::paths::home();
     for (old, new) in PLACES {
         let (old, new) = (home.join(old), home.join(new));
         if !old.exists() {

@@ -19,17 +19,16 @@ pub(crate) const UD: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name/userd
 /// TWRP's image: ITEMGRID_TWRP, or the port's out/twrp/, or item/grid's own
 /// ~/.local/share/itemgrid/twrp/.
 pub fn twrp() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let mut places: Vec<PathBuf> = std::env::var_os("ITEMGRID_TWRP").map(PathBuf::from).into_iter().collect();
     if let Some(port) = crate::flash::port_tree() {
         places.push(port.join("out/twrp/surfaceduo1-twrp.img"));
     }
-    places.push(home.join(".local/share/itemgrid/twrp/surfaceduo1-twrp.img"));
+    places.push(crate::paths::data().join("twrp/surfaceduo1-twrp.img"));
     places.into_iter().find(|p| p.exists())
 }
 
 pub(crate) fn adb_shell(serial: &str, cmd: &str) -> Result<String, String> {
-    let out = Command::new("adb").args(["-s", serial, "shell", cmd]).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
+    let out = Command::new(crate::programs::adb()).args(["-s", serial, "shell", cmd]).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() {
         return Err(format!("in TWRP, '{cmd}': {}{}", text.trim(), String::from_utf8_lossy(&out.stderr).trim()));
@@ -55,11 +54,11 @@ pub(crate) fn fast_tools(serial: &str) -> bool {
 /// command's output on a socket (nc) in TWRP, adb forwarding it here.
 fn adb_stream_fast(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<Streamed, String> {
     let port = 5599;
-    let fwd = Command::new("adb").args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
+    let fwd = Command::new(crate::programs::adb()).args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
     if !fwd.status.success() {
         return Err(format!("adb forward: {}", String::from_utf8_lossy(&fwd.stderr).trim()));
     }
-    let mut server = Command::new("adb").args(["-s", serial, "shell", &format!("{cmd} | nc -l -p {port}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
+    let mut server = Command::new(crate::programs::adb()).args(["-s", serial, "shell", &format!("{cmd} | nc -l -p {port}")]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
     // The listener needs a moment.
     let mut conn = None;
     for _ in 0..50 {
@@ -75,14 +74,14 @@ fn adb_stream_fast(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut
     };
     let _ = server.kill();
     let _ = server.wait();
-    let _ = Command::new("adb").args(["-s", serial, "forward", "--remove", &format!("tcp:{port}")]).output();
+    let _ = Command::new(crate::programs::adb()).args(["-s", serial, "forward", "--remove", &format!("tcp:{port}")]).output();
     result
 }
 
 /// A command's output in TWRP streamed into `path`, through adb's terminal
 /// (the fallback when TWRP lacks pigz or nc; single-threaded gzip).
 fn adb_stream(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<Streamed, String> {
-    let mut child = Command::new("adb").args(["-s", serial, "exec-out", cmd]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
+    let mut child = Command::new(crate::programs::adb()).args(["-s", serial, "exec-out", cmd]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
     let out = child.stdout.take().expect("piped");
     let result = stream_into(out, path, gunzip, say);
     let status = child.wait().map_err(|e| e.to_string())?;
@@ -186,6 +185,7 @@ pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
     let stamp = created.replace([' ', ':', '-'], "");
     let dir = crate::backup::root().join(&f.serial).join(format!("{stamp}-full"));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
@@ -267,7 +267,7 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     if head.len() <= SMALL {
         let tmp = std::env::temp_dir().join(format!("itemgrid-send-{}", std::process::id()));
         std::fs::write(&tmp, &head).map_err(|e| e.to_string())?;
-        let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg("/tmp/itemgrid-send").stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
+        let out = Command::new(crate::programs::adb()).args(["-s", serial, "push"]).arg(&tmp).arg("/tmp/itemgrid-send").stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
         let _ = std::fs::remove_file(&tmp);
         let out = out?;
         if !out.status.success() {
@@ -279,12 +279,12 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     let mut data = std::io::Cursor::new(head).chain(data);
     let data: &mut dyn Read = &mut data;
     let port = 5598u16;
-    let fwd = Command::new("adb").args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
+    let fwd = Command::new(crate::programs::adb()).args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
     if !fwd.status.success() {
         return Err(format!("adb forward: {}", String::from_utf8_lossy(&fwd.stderr).trim()));
     }
     let quoted = sink.replace('\'', "'\\''");
-    let mut server = Command::new("adb")
+    let mut server = Command::new(crate::programs::adb())
         .args(["-s", serial, "shell", &format!("nc -l -p {port} sh -c '{quoted}'")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -313,7 +313,7 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     })();
     let _ = server.kill();
     let _ = server.wait();
-    let _ = Command::new("adb").args(["-s", serial, "forward", "--remove", &format!("tcp:{port}")]).output();
+    let _ = Command::new(crate::programs::adb()).args(["-s", serial, "forward", "--remove", &format!("tcp:{port}")]).output();
     result
 }
 
@@ -321,7 +321,7 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
 pub(crate) fn push_file(serial: &str, data: &[u8], to: &str) -> Result<(), String> {
     let tmp = std::env::temp_dir().join(format!("itemgrid-push-{}-{}", std::process::id(), data.len()));
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
-    let out = Command::new("adb").args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
+    let out = Command::new(crate::programs::adb()).args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));
     let _ = std::fs::remove_file(&tmp);
     let out = out?;
     if !out.status.success() {

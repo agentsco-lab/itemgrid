@@ -28,7 +28,7 @@ impl Step {
 /// item's tree: ITEMGRID_ITEM, else ~/.config/itemgrid/item (a path in it),
 /// else ~/Desktop/projects/item/item/compositor if it is there.
 pub fn item_tree() -> Result<PathBuf, String> {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let home = crate::paths::home();
     let from_env = std::env::var_os("ITEMGRID_ITEM").map(PathBuf::from);
     let from_file = std::fs::read_to_string(home.join(".config/itemgrid/item")).ok().map(|s| PathBuf::from(s.trim()));
     let guess = home.join("Desktop/projects/item/item/compositor");
@@ -52,7 +52,7 @@ pub fn newer_than(commit: &str) -> Option<usize> {
 }
 
 fn cargo() -> PathBuf {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let home = crate::paths::home();
     let local = home.join(".cargo/bin/cargo");
     if local.exists() { local } else { PathBuf::from("cargo") }
 }

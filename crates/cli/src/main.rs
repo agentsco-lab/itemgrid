@@ -6,6 +6,7 @@ fn main() {
     itemgrid_core::moved::from_old_names();
     // Output cut short (| head) ends itemgrid quietly, as other tools.
     // SAFETY: setting SIGPIPE's disposition before any thread runs.
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
@@ -221,9 +222,9 @@ fn cmd_logs(args: &[String]) -> i32 {
                 }
             };
             let path = file.unwrap_or_else(|| {
-                let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("itemgrid-logs");
+                let dir = itemgrid_core::paths::home().join("itemgrid-logs");
                 let _ = std::fs::create_dir_all(&dir);
-                let stamp = std::process::Command::new("date").arg("+%Y-%m-%d-%H%M%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+                let stamp = itemgrid_core::clock::file_stamp();
                 let part = q.only.clone().unwrap_or_else(|| "all".into());
                 dir.join(format!("{stamp}-boot{}-{part}.log", q.boot)).display().to_string()
             });
@@ -813,9 +814,9 @@ fn cmd_reboot() -> i32 {
 fn cmd_screenshot(args: &[String]) -> i32 {
     let hinge = args.iter().any(|a| a == "--hinge");
     let path = args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| {
-        let dir = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("itemgrid-shots");
+        let dir = itemgrid_core::paths::home().join("itemgrid-shots");
         let _ = std::fs::create_dir_all(&dir);
-        let stamp = std::process::Command::new("date").arg("+%Y-%m-%d-%H%M%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+        let stamp = itemgrid_core::clock::file_stamp();
         dir.join(format!("{stamp}.png")).display().to_string()
     });
     let Some(host) = linux() else { return 1 };

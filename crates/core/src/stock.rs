@@ -12,11 +12,11 @@ use sha2::{Digest, Sha256};
 
 /// Where packages are kept, and what is taken out of them.
 pub fn packages_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/itemgrid/stock")
+    crate::paths::cache().join("stock")
 }
 
 pub fn extracted_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/itemgrid/stock")
+    crate::paths::data().join("stock")
 }
 
 /// A package on this computer.

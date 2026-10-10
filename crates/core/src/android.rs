@@ -135,8 +135,7 @@ pub fn kernel_of(path: &Path) -> Option<Kernel> {
 /// Where stock kernels are looked for: item/grid's own stock folder, its
 /// backups, and the port's out/backups/.
 fn kernel_places() -> Vec<PathBuf> {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let mut dirs = vec![home.join(".local/share/itemgrid/stock"), crate::backup::root()];
+    let mut dirs = vec![crate::paths::data().join("stock"), crate::backup::root()];
     if let Some(port) = crate::flash::port_tree() {
         dirs.push(port.join("out/backups"));
     }
@@ -233,23 +232,14 @@ pub fn plan(host: &str) -> Result<Plan, String> {
     Ok(Plan { builds, kernel, kernels_seen, battery: st.battery, full, full_fresh, device_data, losses, stops })
 }
 
-/// A manifest's local "YYYY-MM-DD HH:MM:SS" as UTC seconds (by date(1)).
+/// A manifest's local "YYYY-MM-DD HH:MM:SS" as UTC seconds.
 fn local_secs(stamp: &str) -> i64 {
-    std::process::Command::new("date")
-        .args(["-d", stamp, "+%s"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
-        .unwrap_or(0)
+    crate::clock::local_secs(stamp)
 }
 
 /// UTC seconds in words.
 pub fn when(utc: i64) -> String {
-    std::process::Command::new("date")
-        .args(["-u", "-d", &format!("@{utc}"), "+%Y-%m-%d %H:%M UTC"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .unwrap_or_default()
+    crate::clock::when_utc(utc)
 }
 
 #[cfg(test)]
@@ -277,7 +267,7 @@ pub(crate) fn guest_path_of(serial: &str) -> PathBuf {
 }
 
 fn guest_path(serial: &str) -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/itemgrid/android").join(format!("{serial}.json"))
+    crate::paths::config().join("android").join(format!("{serial}.json"))
 }
 
 fn remember_guest(serial: &str, kernel: &Path, slot: char) -> Result<(), String> {
@@ -572,12 +562,7 @@ pub fn away_serial() -> Option<String> {
 /// The port's kernel up with no system to start (Halium's initramfs shows
 /// itself on the USB as 18d1:d001): the guest Android restarted plainly.
 pub fn port_without_system() -> bool {
-    std::fs::read_dir("/sys/bus/usb/devices").is_ok_and(|d| {
-        d.flatten().any(|e| {
-            let read = |f: &str| std::fs::read_to_string(e.path().join(f)).map(|s| s.trim().to_owned()).unwrap_or_default();
-            read("idVendor") == "18d1" && read("idProduct") == "d001"
-        })
-    })
+    crate::usb::present(crate::usb::INITRAMFS)
 }
 
 /// A phone this computer has backed up, on the USB in a way adb and fastboot

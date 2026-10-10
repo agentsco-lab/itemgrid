@@ -1,7 +1,7 @@
 //! What the phone is doing, as seen from the computer: Linux answers ssh,
 //! the bootloader answers fastboot, recovery and Android answer adb.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// What the phone is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +134,9 @@ fn product(serial: &str, mode: Mode) -> Option<String> {
     }
     let said = if mode == Mode::Fastboot {
         // (fastboot answers getvar on stderr.)
-        let out = Command::new("timeout").args(["5", "fastboot", "-s", serial, "getvar", "product"]).stdin(Stdio::null()).output().ok()?;
+        let mut c = Command::new(crate::programs::fastboot());
+        c.args(["-s", serial, "getvar", "product"]);
+        let out = crate::programs::output_within(c, std::time::Duration::from_secs(5))?;
         let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         all.lines().find_map(|l| l.trim().strip_prefix("product:")).map(|v| v.trim().to_owned())
     } else {
@@ -166,8 +168,12 @@ fn lines(tool: &str, args: &[&str]) -> Vec<String> {
     // adb's first call starts its server, which keeps the output's pipe
     // open: the server started on its own first, its output nowhere.
     if tool == "adb" {
-        let _ = Command::new("timeout").args(["5", "adb", "start-server"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        let mut c = Command::new(crate::programs::adb());
+        c.arg("start-server");
+        let _ = crate::programs::output_within(c, std::time::Duration::from_secs(5));
     }
-    let Ok(out) = Command::new("timeout").arg("5").arg(tool).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return Vec::new() };
+    let mut c = Command::new(crate::programs::find(tool));
+    c.args(args);
+    let Some(out) = crate::programs::output_within(c, std::time::Duration::from_secs(5)) else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*')).map(str::to_owned).collect()
 }
