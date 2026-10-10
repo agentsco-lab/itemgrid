@@ -7,7 +7,10 @@ and the port, reads the phone's logs, takes screenshots, backs the phone up
 and - by the safety rules learned on this device, as code - RAM-boots and
 writes images to it, installs the whole system from a release image, and
 takes the phone back to stock Android and to Linux again. The command is
-`itemgrid`; the window is item/grid.
+`itemgrid`; the window is item/grid. The release images (`item-duo1-…` in
+[item's releases](https://github.com/agentsco-lab/item/releases): the
+image, the kernel, the recovery, a manifest) go in
+`~/.local/share/itemgrid/releases/<name>/`.
 
 **Until 1.0, item/grid is an experiment**, as item is. It writes to the
 phone's partitions, so the rules below are checks in its core that cannot be
