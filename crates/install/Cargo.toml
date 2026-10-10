@@ -1,0 +1,16 @@
+[package]
+name = "itemgrid-install"
+edition.workspace = true
+version.workspace = true
+description = "item on a Surface Duo from stock Android, in one go - the installer for a Windows (or any) computer"
+
+[[bin]]
+name = "itemgrid-install"
+path = "src/main.rs"
+
+[dependencies]
+itemgrid-core = { path = "../core" }
+serde_json = "1"
+sha2 = "0.10"
+ureq = { version = "3", features = ["json"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }

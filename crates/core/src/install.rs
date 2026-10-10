@@ -182,9 +182,16 @@ fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick:
         return Err("the image on the phone differs from the release - stopping in TWRP; run it again".into());
     }
 
-    say("putting this computer's ssh key in".into());
+    if key.is_empty() {
+        say("no ssh key to put in: the phone is reached from here by USB only".into());
+    } else {
+        say("putting this computer's ssh key in".into());
+    }
     adb_shell(&serial, "mkdir -p /tmp/r && mount -o loop,rw /tmp/ud/rootfs.img /tmp/r && echo ok")?;
     let put_key = (|| -> Result<(), String> {
+        if key.is_empty() {
+            return Ok(());
+        }
         // A small text by adb push: through the socket it did not arrive
         // (2026-10-04) - the big transfers go that way, this need not.
         push_text(&serial, key, "/tmp/itemgrid.pub")?;
@@ -367,12 +374,109 @@ fn push_text(serial: &str, text: &str, to: &str) -> Result<(), String> {
 /// from the running Linux and read back, and the phone restarted from its
 /// slot. `confirm`: the phone's word (android::confirm_word).
 pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
-    use std::time::{Duration, Instant};
     let host = crate::link::CABLE;
     if confirm.trim() != crate::android::confirm_word(serial) {
         return Err(format!("the confirmation does not match ({} expected) - nothing is changed", crate::android::confirm_word(serial)));
     }
     let key = public_key()?;
+    let p = prepare_from_stock(serial, release, say)?;
+    image_on_from_stock(serial, release, &p, &key, say)?;
+    let Prepared { slot, boot_file, boot_img, boot, vbmeta, .. } = p;
+
+    // The port's kernel from RAM: it proves itself on this phone first.
+    say("into the bootloader".into());
+    crate::ramboot::adb_to_bootloader(serial)?;
+    say("starting item from the computer - its first start grows it to fill the phone".into());
+    crate::ramboot::boot_in_fastboot_within(host, serial, slot, &boot_file, &boot_img, crate::ramboot::Expect::Linux, 600, say)?;
+    // Then written for good, both slots, from it.
+    let other = if slot == 'a' { 'b' } else { 'a' };
+    for s in [slot, other] {
+        crate::bootchain::write_from_linux(host, serial, s, &boot, say)?;
+        crate::bootchain::write_from_linux(host, serial, s, &vbmeta, say)?;
+    }
+    // And started from its own slot: it starts by itself now.
+    say("restarting from the phone's own boot".into());
+    crate::ramboot::arm_brake_linux(host)?;
+    crate::phone::reboot(host, &mut |b| say(b.words().to_owned()))?;
+    crate::flash::log(serial, &format!("{} installed from stock, started from slot {slot} - itemgrid", release.name))?;
+    say("item is up: unlock with 1234, then choose your own PIN".into());
+    Ok(())
+}
+
+/// Install from stock Android on a computer with no ssh to the phone (the
+/// Windows installer): the same way in, Linux known to be up by its USB
+/// gadget, and the boot chain written from TWRP instead of from Linux -
+/// after the owner's forced restart (the power button held: an unattended
+/// reset, which the parking brake parks in fastboot). `key`: an ssh public
+/// key to put in, or none.
+pub fn from_stock_by_usb(serial: &str, release: &Release, key: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+    let host = crate::link::CABLE;
+    let p = prepare_from_stock(serial, release, say)?;
+    image_on_from_stock(serial, release, &p, key, say)?;
+    let Prepared { slot, boot_file, boot_img, boot, vbmeta, twrp, twrp_img, .. } = p;
+
+    // The port's kernel from RAM: it proves itself on this phone first.
+    say("into the bootloader".into());
+    crate::ramboot::adb_to_bootloader(serial)?;
+    say("starting item from the computer - its first start grows it to fill the phone".into());
+    crate::ramboot::boot_in_fastboot_within(host, serial, slot, &boot_file, &boot_img, crate::ramboot::Expect::LinuxOnUsb, 600, say)?;
+
+    // Back into fastboot by the owner's hand: the brake flashed before the
+    // boot is still in misc, and a forced restart is the unattended reset
+    // it parks.
+    say("item is up from the computer. Now, on the phone: hold the power button until the screen goes dark (about 10 s) - it comes back in its bootloader".into());
+    let start = Instant::now();
+    while !crate::ramboot::in_fastboot(serial) {
+        if start.elapsed() > Duration::from_secs(900) {
+            return Err("the phone did not come back in its bootloader in 15 minutes: hold the power button until the screen goes dark, then run the install again".into());
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    crate::flash::log(serial, "back in fastboot after the RAM boot (the owner's forced restart) - itemgrid")?;
+
+    // The boot chain from TWRP, both slots.
+    say("into TWRP".into());
+    crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
+    let other = if slot == 'a' { 'b' } else { 'a' };
+    for s in [slot, other] {
+        crate::bootchain::write(serial, s, &[boot.clone(), vbmeta.clone()], say)?;
+    }
+    // misc cleared: the phone starts by itself now (no brake armed on the
+    // way out - from TWRP a reboot might consume it and park in fastboot).
+    say("clearing misc and restarting from the phone's own boot".into());
+    crate::full::adb_shell(serial, &format!("dd if=/dev/zero of={}/misc bs=2048 count=1 2>/dev/null; sync", crate::android::BLK))?;
+    crate::full::adb_shell(serial, "reboot").ok();
+    let start = Instant::now();
+    while !crate::ramboot::linux_on_usb(serial) {
+        if start.elapsed() > Duration::from_secs(600) {
+            return Err("the phone did not come up in 10 minutes: if it shows its bootloader, run the install again".into());
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    crate::flash::log(serial, &format!("{} installed from stock by USB, started from slot {slot} - itemgrid", release.name))?;
+    say("item is up: unlock with 1234, then choose your own PIN".into());
+    Ok(())
+}
+
+/// What a from-stock install has checked and found before the phone is
+/// changed.
+struct Prepared {
+    slot: char,
+    twrp: PathBuf,
+    twrp_img: crate::ramboot::Image,
+    boot_file: PathBuf,
+    boot_img: crate::ramboot::Image,
+    boot: crate::bootchain::Part,
+    vbmeta: crate::bootchain::Part,
+    /// The image's size, decompressed and hashed here.
+    size: u64,
+}
+
+/// The release and TWRP checked here, the phone into its bootloader and
+/// unlocked (the owner says so on the phone), its slot read.
+fn prepare_from_stock(serial: &str, release: &Release, say: crate::ramboot::Say) -> Result<Prepared, String> {
+    use std::time::{Duration, Instant};
     let twrp = crate::full::twrp().ok_or("no TWRP image")?;
     let twrp_img = crate::ramboot::check_image(&twrp)?;
     let (boot_file, boot_sha) = release.boot.clone().ok_or("this release has no boot image for a phone coming from Android")?;
@@ -397,6 +501,9 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     }
 
     // Into the bootloader, unlocked.
+    if !crate::programs::present("fastboot") || !crate::programs::present("adb") {
+        return Err("adb and fastboot are needed here and were not found".into());
+    }
     if !crate::ramboot::in_fastboot(serial) {
         say("into the bootloader".into());
         crate::ramboot::adb_to_bootloader(serial)?;
@@ -429,30 +536,15 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     let fb = crate::ramboot::probe()?;
     let slot = fb.slot.chars().next().ok_or("the bootloader did not say its slot")?;
     crate::flash::log(serial, &format!("install of {} from stock begun (slot {slot}) - itemgrid", release.name))?;
+    Ok(Prepared { slot, twrp, twrp_img, boot_file, boot_img, boot, vbmeta, size })
+}
 
+/// TWRP from RAM, and the image onto userdata from it (with `key`, if any).
+fn image_on_from_stock(serial: &str, release: &Release, p: &Prepared, key: &str, say: crate::ramboot::Say) -> Result<(), String> {
     say("into TWRP".into());
-    crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
+    crate::ramboot::boot_in_fastboot(crate::link::CABLE, serial, p.slot, &p.twrp, &p.twrp_img, crate::ramboot::Expect::Recovery, say)?;
     if !crate::full::fast_tools(serial) {
         return Err("this TWRP lacks pigz or nc".into());
     }
-    put_on_userdata(serial, release, size, &key, None, say)?;
-
-    // The port's kernel from RAM: it proves itself on this phone first.
-    say("into the bootloader".into());
-    crate::ramboot::adb_to_bootloader(serial)?;
-    say("starting item from the computer - its first start grows it to fill the phone".into());
-    crate::ramboot::boot_in_fastboot_within(host, serial, slot, &boot_file, &boot_img, crate::ramboot::Expect::Linux, 600, say)?;
-    // Then written for good, both slots, from it.
-    let other = if slot == 'a' { 'b' } else { 'a' };
-    for s in [slot, other] {
-        crate::bootchain::write_from_linux(host, serial, s, &boot, say)?;
-        crate::bootchain::write_from_linux(host, serial, s, &vbmeta, say)?;
-    }
-    // And started from its own slot: it starts by itself now.
-    say("restarting from the phone's own boot".into());
-    crate::ramboot::arm_brake_linux(host)?;
-    crate::phone::reboot(host, &mut |b| say(b.words().to_owned()))?;
-    crate::flash::log(serial, &format!("{} installed from stock, started from slot {slot} - itemgrid", release.name))?;
-    say("item is up: unlock with 1234, then choose your own PIN".into());
-    Ok(())
+    put_on_userdata(serial, release, p.size, key, None, say)
 }

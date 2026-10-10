@@ -253,6 +253,10 @@ pub type Say<'a> = &'a mut dyn FnMut(String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expect {
     Linux,
+    /// The port's Linux, known to be up only by its USB network gadget on
+    /// the cable (usb.rs) - from a computer that has no ssh to it (the
+    /// Windows installer). Nothing is armed from it afterwards.
+    LinuxOnUsb,
     Recovery,
     /// The phone's stock Android (android.rs): up when the phone has left
     /// fastboot and shows on USB as itself again.
@@ -323,6 +327,12 @@ pub fn usb_serial_present(serial: &str) -> bool {
 pub fn adb_to_bootloader(serial: &str) -> Result<(), String> {
     adb(&["-s", serial, "reboot", "bootloader"], Duration::from_secs(20))?;
     wait_fastboot(serial, 120)
+}
+
+/// Whether the port's Linux is up on the cable, by its USB network gadget
+/// (not in fastboot, and the gadget there).
+pub fn linux_on_usb(serial: &str) -> bool {
+    !in_fastboot(serial) && crate::usb::present(crate::usb::LINUX_GADGET)
 }
 
 /// Whether this phone is in recovery over adb.
@@ -520,6 +530,7 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
 
     let (what, up): (&str, Box<dyn Fn() -> bool>) = match expect {
         Expect::Linux => ("Linux", Box::new(|| crate::phone::answers_fresh(host))),
+        Expect::LinuxOnUsb => ("Linux", Box::new(|| linux_on_usb(&serial))),
         Expect::Recovery => ("the recovery", Box::new(|| in_recovery(&serial))),
         Expect::Android => ("Android", Box::new(|| android_up(&serial))),
     };
@@ -533,7 +544,7 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
     }
     // Only an image that boots Linux is ever confirmed for flashing: TWRP
     // never is (SAFETY.md), and the stock kernel only by its own step.
-    crate::flash::confirm_ram_boot(&serial, &img.sha256, &fb, expect == Expect::Linux)?;
+    crate::flash::confirm_ram_boot(&serial, &img.sha256, &fb, matches!(expect, Expect::Linux | Expect::LinuxOnUsb))?;
     say(format!("{what} is up: the RAM boot is confirmed"));
     say("re-arming the parking brake".into());
     match expect {
@@ -550,6 +561,9 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
         // No root in stock Android: no brake from it. An unattended reset
         // starts the port's kernel, still on the slot, or stops in fastboot.
         Expect::Android => say("done: Android is up from RAM".into()),
+        // Not reachable from here: the brake flashed before the boot is
+        // still in misc (fastboot boot does not consume it).
+        Expect::LinuxOnUsb => say("done: Linux is up from RAM, seen on the USB".into()),
     }
     Ok(())
 }

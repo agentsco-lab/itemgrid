@@ -1311,6 +1311,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "itemgrid-install"
+version = "0.2.0"
+dependencies = [
+ "itemgrid-core",
+ "serde_json",
+ "sha2",
+ "ureq",
+ "zip",
+]
+
+[[package]]
 name = "itemgrid-mcp"
 version = "0.2.0"
 dependencies = [
