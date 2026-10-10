@@ -93,17 +93,27 @@ Rust, GTK4 and libadwaita.
 | `crates/gui` | `itemgrid-gui`, the window: the table, the phone drawn as it is held, the night and day |
 | `crates/motion` | `duo-motion`, run on the phone over ssh while the window follows it: the hinge, the lid and the gravity from sensorfw |
 | `crates/mcp` | `itemgrid-mcp`, an MCP server that lets Claude Code look at the window and try it with a real pointer, on a screen of its own |
-| `tools/` | `package-deb.sh`, `install-local.sh`, `fetch-fonts.sh` |
+| `crates/install` | `itemgrid-install`, the installer for a computer without item/grid - Windows first: item on a Duo from stock Android, in one go, with adb, fastboot and the USB alone (no ssh); the release and the tools fetched by itself |
+| `tools/` | `package-deb.sh`, `install-local.sh`, `fetch-fonts.sh`, `package-windows.sh` |
 
 The phone is reached over ssh on the USB link (172.16.42.1), or over Wi-Fi
 once the cable has shown its key; fastboot and TWRP (adb) for the modes
-where Linux is not running.
+where Linux is not running. The installer alone does without ssh: it knows
+Linux came up by the phone's USB network gadget, and writes the boot chain
+from TWRP after the owner's forced restart (the parking brake parks it in
+fastboot) - the same rules, one more step by hand.
 
 ```
 cargo build --release
 install -Dm755 target/release/itemgrid     ~/.local/bin/itemgrid
 install -Dm755 target/release/itemgrid-gui ~/.local/bin/itemgrid-gui
 ```
+
+The installer for Windows is cross-built here (`apt install mingw-w64`,
+`rustup target add x86_64-pc-windows-gnu`): `tools/package-windows.sh`
+leaves `target/windows/itemgrid-install-<version>-windows.zip`. `cargo
+build -p itemgrid-install` builds it for this computer too (`--fetch-only`
+brings the image here and stops).
 
 ## License
 
