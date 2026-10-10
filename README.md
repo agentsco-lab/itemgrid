@@ -33,8 +33,8 @@ before you let it write anything.
 
 **The window** shows the Duo drawn as it is held - the hinge and the
 gravity from the phone's sensors, its screen live from item's mirror - on a
-table of light, and a few lines on how it is: the phone's number in the
-club, item's version, the battery, the link. The menu is three lines drawn
+table of light, and a few lines on how it is: item's version, the battery,
+the link. The menu is three lines drawn
 on the same table: *updates* (item's version and build; the update),
 *stock* (the way back to the phone's Android), *settings* (the table's
 look: the lines' colour and width, the grid, the light, the lamp under the
@@ -45,7 +45,7 @@ line's.
 | | |
 |---|---|
 | ![the window: the Duo on the table, open as a book, its screen live](docs/img/itemgrid-window.png) | ![the menu: updates, stock, settings](docs/img/itemgrid-menu.png) |
-| The window: the Duo as it is held, its lock screen live from item's mirror; beside it the club's number, item's version, the battery, the cable. | The menu, drawn on the table as the rest. |
+| The window: the Duo as it is held, its lock screen live from item's mirror; beside it item's version, the battery, the cable. | The menu, drawn on the table as the rest. |
 | ![settings: the table's look](docs/img/itemgrid-settings.png) | |
 | Settings: the table's look - the lines' colour, the grid, the rim, the light, the lamp. | |
 
@@ -53,7 +53,6 @@ line's.
 
 ```
 Phone:     Linux (172.16.42.1)
-Club:      00001
 System:    Droidian 102 (2026-08-30), kernel 4.14-190-perf-microsoft-surfaceduo, up 8 h 18 min
 item:      0.2.1 (built 2026-10-09 06:18), running
 Port:      0.22.0, sensorfw 0.14.8+itemae3
@@ -92,7 +91,6 @@ Rust, GTK4 and libadwaita.
 | `crates/motion` | `duo-motion`, run on the phone over ssh while the window follows it: the hinge, the lid and the gravity from sensorfw |
 | `crates/mcp` | `itemgrid-mcp`, an MCP server that lets Claude Code look at the window and try it with a real pointer, on a screen of its own |
 | `tools/` | `package-deb.sh`, `install-local.sh`, `fetch-fonts.sh` |
-| `docs/` | [REGISTRY.md](docs/REGISTRY.md), the club's server side |
 
 The phone is reached over ssh on the USB link (172.16.42.1), or over Wi-Fi
 once the cable has shown its key; fastboot and TWRP (adb) for the modes

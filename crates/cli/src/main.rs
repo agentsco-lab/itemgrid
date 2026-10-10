@@ -855,8 +855,6 @@ fn usage() {
                --keep-files keeps home, Wi-Fi, time zone, PIN; --full-copy backs up the whole system)");
     println!("  stock        Microsoft's packages here, their boot chain taken out and checked ([PACKAGE])");
     println!("  brake        arm the parking brake (misc): the next restart stops in the bootloader");
-    println!("  club         the Duo owners' club: club token (paste one from the site), club forget");
-    println!("  register     this Duo's number in the club (00001...), written onto the phone");
     println!("  android      the plan for returning to the phone's stock Android (reads only);");
     println!("               go --yes: there (erases userdata; asks for the phone's number); start: Android again;");
     println!("               back --yes: Linux again, from the whole-system backup");
