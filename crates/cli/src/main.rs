@@ -40,6 +40,7 @@ fn main() {
         Some("status") => cmd_status(),
         Some("update") => cmd_update(&args[1..]),
         Some("logs") => cmd_logs(&args[1..]),
+        Some("keys") => cmd_keys(&args[1..]),
         Some("run") => cmd_run(&args[1..]),
         Some("shell") => cmd_shell(&args[1..]),
         Some("reboot") => cmd_reboot(),
@@ -276,6 +277,53 @@ fn cmd_run(args: &[String]) -> i32 {
         eprintln!("itemgrid: {e}");
         1
     })
+}
+
+/// `keys set NAME` (the value on standard input), `keys set-all FILE
+/// [--delete]`, `keys list`, `keys forget NAME`: the phone's keyring (keys.rs).
+fn cmd_keys(args: &[String]) -> i32 {
+    use itemgrid_core::keys;
+    let Some(host) = linux() else { return 1 };
+    let said = |r: Result<String, String>| -> i32 {
+        match r {
+            Ok(s) => {
+                println!("{s}");
+                0
+            }
+            Err(e) => {
+                eprintln!("itemgrid keys: {e}");
+                1
+            }
+        }
+    };
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["set", name] => {
+            let mut value = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut value);
+            said(keys::set(&host, name, value.trim()).map(|()| format!("{name}: on the phone, in its keyring")))
+        }
+        ["set-all", path, rest @ ..] => {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("itemgrid keys: {path}: {e}");
+                    return 2;
+                }
+            };
+            let r = keys::set_all(&host, &text).map(|names| format!("on the phone, in its keyring: {}", names.join(", ")));
+            if r.is_ok() && rest.contains(&"--delete") {
+                let _ = std::fs::remove_file(path);
+                println!("{path}: deleted");
+            }
+            said(r)
+        }
+        ["list"] => said(keys::list(&host).map(|n| if n.is_empty() { "no keys on the phone".to_owned() } else { n.join("\n") })),
+        ["forget", name] => said(keys::forget(&host, name).map(|was| if was { format!("{name}: forgotten") } else { format!("{name}: there was none") })),
+        _ => {
+            eprintln!("itemgrid keys set NAME (the value on stdin) | set-all FILE [--delete] | list | forget NAME");
+            2
+        }
+    }
 }
 
 fn cmd_shell(args: &[String]) -> i32 {
@@ -837,6 +885,7 @@ fn usage() {
     println!("itemgrid - look after a connected Surface Duo\n");
     println!("  status       what the phone is doing; on Linux its versions, battery, heat, space, failed services");
     println!("  update       build item, install it, reboot, wait until it runs (--no-build: install what is built)");
+    println!("  keys         the phone's keyring: set NAME (stdin) | set-all FILE [--delete] | list | forget NAME");
     println!("  logs         the phone's journal: --boot -1, --only item|sensorfw|kernel|posture|pen|UNIT,");
     println!("               --grep PATTERN, --since TIME, -n N|all (200), -f, --save [FILE], --boots");
     println!("  run          a command (or --file SCRIPT) on the phone as root, or --user as its owner;");

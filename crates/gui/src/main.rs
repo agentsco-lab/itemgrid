@@ -429,7 +429,7 @@ headerbar { background: #ffffff; box-shadow: none; border-bottom: none; }
 .navigation-sidebar > row:selected { background: alpha(black, 0.05); }
 .navigation-sidebar > row:selected label { font-weight: 600; }
 .navigation-sidebar image { opacity: 0.6; }
-.boxed-list { background: #ffffff; box-shadow: none; border: 1px solid alpha(black, 0.08); }
+.boxed-list { background: @card_bg_color; box-shadow: none; border: 1px solid alpha(black, 0.08); }
 .navigation-sidebar > row.nav-apart { margin-top: 14px; }
 .boxed-list button.pill { padding: 3px 14px; min-height: 26px; font-weight: 500; }
 .boxed-list button.pill.destructive-action { background: alpha(#e01b24, 0.08); color: #c01c28; }
@@ -719,7 +719,9 @@ struct Ui {
     /// The steps after the start that the app has no way of its own for:
     /// looked for, not found, opened (on Wi-Fi), on the cable - each's way
     /// (0..1, not yet eased) as it goes.
-    marks_raw: std::cell::Cell<[f32; 4]>,
+    marks_raw: std::cell::Cell<[f32; 5]>,
+    /// A job going on this frame (the job's step: the eye drawn back).
+    job_on: std::cell::Cell<bool>,
     /// The Duo put away while the menu is open (eased 0 .. 1).
     duo_away: std::cell::Cell<f32>,
     /// The phone's words on the table (its name, its charge; or how to
@@ -859,6 +861,7 @@ fn trace(what: std::fmt::Arguments) {
 const NAV: &[(&str, &str, &str)] = &[
     ("overview", "Overview", "phone-symbolic"),
     ("agent", "Agent", "system-users-symbolic"),
+    ("keys", "Keys", "dialog-password-symbolic"),
     ("look", "Wallpapers & Look", "preferences-desktop-wallpaper-symbolic"),
     ("battery", "Battery", "battery-good-symbolic"),
     ("storage", "Storage", "drive-harddisk-symbolic"),
@@ -1575,7 +1578,8 @@ fn build(app: &adw::Application) {
         duo_on_sheet: std::cell::Cell::new(None),
         layout: std::cell::Cell::new(scene::layout()),
         step_now: std::cell::Cell::new(0),
-        marks_raw: std::cell::Cell::new([0.0; 4]),
+        marks_raw: std::cell::Cell::new([0.0; 5]),
+        job_on: std::cell::Cell::new(false),
         duo_away: std::cell::Cell::new(0.0),
         words: RefCell::new(None),
         duo_drawn_at: std::cell::Cell::new(None),
@@ -2365,6 +2369,7 @@ fn build(app: &adw::Application) {
             match r.visible_child_name().as_deref() {
                 Some("battery") => sections::load_battery(&ui.sections, host),
                 Some("look") => sections::load_look(&ui.sections, host, toaster(&ui)),
+                Some("keys") => sections::load_keys(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui)),
                 _ => {}
             }
         }
@@ -2375,6 +2380,22 @@ fn build(app: &adw::Application) {
             let Some(ui) = ui.upgrade() else { return };
             let Some(host) = ui.state.borrow().host.clone() else { return };
             sections::add_pictures(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
+        }
+    });
+    section_ui.add_key.connect_clicked({
+        let ui = Rc::downgrade(&ui);
+        move |_| {
+            let Some(ui) = ui.upgrade() else { return };
+            let Some(host) = ui.state.borrow().host.clone() else { return };
+            sections::add_key(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
+        }
+    });
+    section_ui.keys_file.connect_clicked({
+        let ui = Rc::downgrade(&ui);
+        move |_| {
+            let Some(ui) = ui.upgrade() else { return };
+            let Some(host) = ui.state.borrow().host.clone() else { return };
+            sections::add_keys_file(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
         }
     });
     section_ui.back_up.connect_clicked({
@@ -2823,12 +2844,12 @@ fn build(app: &adw::Application) {
                     let wifi = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Wifi);
                     let intro = ui.intro.borrow();
                     let cable = ui.state.borrow().host.as_deref().is_some_and(|h| itemgrid_core::link::Via::of(h) == itemgrid_core::link::Via::Cable);
-                    let to = [intro.searching(), intro.note().is_some(), wifi && ui.wifi_open.get(), cable];
+                    let to = [intro.searching(), intro.note().is_some(), wifi && ui.wifi_open.get(), cable, ui.job_on.get()];
                     drop(intro);
                     let now = ui.marks_raw.get();
-                    let next: [f32; 4] = std::array::from_fn(|k| {
+                    let next: [f32; 5] = std::array::from_fn(|k| {
                         let to = if to[k] { 1.0 } else { 0.0 };
-                        let all = timing[[scene::SEARCH, scene::NOT_FOUND, scene::PHONE_OPEN, scene::CABLE][k]].all();
+                        let all = timing[[scene::SEARCH, scene::NOT_FOUND, scene::PHONE_OPEN, scene::CABLE, scene::JOB][k]].all();
                         now[k] + (to - now[k]).signum() * (dt.clamp(0.0, 0.1) / all).min((to - now[k]).abs())
                     });
                     ui.marks_raw.set(next);
@@ -2976,6 +2997,27 @@ fn build(app: &adw::Application) {
             }
             i += 1;
         }
+    }
+    // ITEMGRID_JOB=kind: a job shown as if going on (install-stock,
+    // update...), to lay its words out without a phone.
+    // ITEMGRID_JOB_AFTER=secs: begun that long after the start (6: the phone
+    // found first, as it is when a job is asked for).
+    if let Ok(kind) = std::env::var("ITEMGRID_JOB") {
+        let kind: &'static str = Box::leak(kind.into_boxed_str());
+        let after = std::env::var("ITEMGRID_JOB_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(6.0);
+        let weak = Rc::downgrade(&ui);
+        glib::timeout_add_local_once(std::time::Duration::from_secs_f64(after), move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let stages = journey::stages(kind);
+            let line = stages.get(2).or(stages.first()).and_then(|s| s.starts.first()).map(|s| format!("{} item-duo1 on the phone", s.trim_start_matches('=')));
+            ui.state.borrow_mut().job = Some(OwnJob { kind, lines: line.into_iter().collect(), started: std::time::Instant::now(), ended: None, took: None });
+            let weak = Rc::downgrade(&ui);
+            glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+                let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+                show_fold(&ui, ui.fold.get().0);
+                glib::ControlFlow::Continue
+            });
+        });
     }
     // ITEMGRID_SHOT=file.png: the window drawn into a picture 4 s after the start
     // (to see it without a screen grab).
@@ -6469,6 +6511,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 menu: away,
                 section: back_now,
                 wall: wall_e,
+                job: t[scene::JOB].eased(raw[4]),
             }
         };
         let (step, step_now) = layout.at([intro.grid(), eye, intro.button(0)], marks);
@@ -6876,8 +6919,9 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         // The job's words go under the word, left of the drawn Duo: wrapped
         // to the squares between (one clear), not the column's 19 - that
         // ran under the phone ("system starts fro...", the owner,
-        // 2026-10-10). Never narrower than 8.
-        let job_wide = (((sheet[0] + duo_corner.0 * cur - left) / cur).floor() as isize - 1).clamp(8, 19) as usize;
+        // 2026-10-10). Never narrower than 8; the job's step moves the Duo
+        // right (scene::JOB_DUO_RIGHT) for a wider column.
+        let job_wide = (((sheet[0] + duo_corner.0 * cur - left) / cur).floor() as isize - 1).clamp(8, 34) as usize;
         let jwrap = |text: &str| wrapped_to(text, job_wide);
         let job_lines: Option<Vec<String>> = job_now.and_then(|(kind, jlines, ended, over)| {
             if ended.is_some() && over > 60 {
@@ -6952,6 +6996,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             }
             Some(lines)
         });
+        ui.job_on.set(job_running);
         // The phone's words wanted this frame (none: the board fades).
         let mut words: Option<Vec<String>> = None;
         let mut progress: Option<Progress> = None;

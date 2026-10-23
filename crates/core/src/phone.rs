@@ -196,14 +196,17 @@ pub fn stream(host: &str, script: &str) -> Result<i32, String> {
 }
 
 /// A script made to run as the phone's owner (the user logged in), with
-/// their session bus - for gdbus --session, systemctl --user and the like.
-/// The phone's owner found: $U their name, $I their uid.
-pub const OWNER: &str = r#"U=$(loginctl list-users --no-legend 2>/dev/null | awk '$2 != "root" {print $2; exit}'); U=${U:-droidian}; I=$(id -u "$U")"#;
+/// their session bus - for gdbus --session, systemctl --user and the like -
+/// in their home, as them (sudo -H: HOME theirs, not root's, so `~`, git
+/// --global and the like are theirs; the run begins in their home: root's,
+/// where ssh lands, is not theirs to read).
+/// The phone's owner found: $U their name, $I their uid, $H their home.
+pub const OWNER: &str = r#"U=$(loginctl list-users --no-legend 2>/dev/null | awk '$2 != "root" {print $2; exit}'); U=${U:-droidian}; I=$(id -u "$U"); H=$(getent passwd "$U" | cut -d: -f6)"#;
 
 pub fn as_owner(script: &str) -> String {
     let user = OWNER;
     format!(
-        "{user}\nexec sudo -u \"$U\" env XDG_RUNTIME_DIR=/run/user/$I DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$I/bus sh -c {}\n",
+        "{user}\ncd \"$H\" 2>/dev/null; exec sudo -H -u \"$U\" env XDG_RUNTIME_DIR=/run/user/$I DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$I/bus sh -c {}\n",
         crate::logs::quote(script)
     )
 }

@@ -1,7 +1,7 @@
 //! The sections under the Duo that show the phone itself (#169): About,
-//! Battery, Storage, Wallpapers & Look, Updates & Backups. Each a page of
-//! its own; what it shows read when it is opened (Battery, Look) or with
-//! each look at the phone (About, Storage).
+//! Battery, Storage, Wallpapers & Look, Updates & Backups, Keys. Each a
+//! page of its own; what it shows read when it is opened (Battery, Look,
+//! Keys) or with each look at the phone (About, Storage).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -40,6 +40,9 @@ pub struct Pages {
     pub update_tree: gtk::Button,
     pub backups: gtk::ListBox,
     pub back_up: gtk::Button,
+    pub keys: gtk::ListBox,
+    pub add_key: gtk::Button,
+    pub keys_file: gtk::Button,
 }
 
 fn title(page: &gtk::Box, text: &str) {
@@ -169,8 +172,22 @@ pub fn build() -> (Pages, Vec<(&'static str, gtk::Box)>) {
     let backups = list();
     updates_page.append(&backups);
 
-    let pages = Pages { about, battery, chart, history, disks, parts, accents, walls, add_walls, look_note, updates, update_tree, backups, back_up };
-    (pages, vec![("about", about_page), ("battery", battery_page), ("storage", storage_page), ("look", look_page), ("updates", updates_page)])
+    // Keys: the phone's keyring, by name (keys.rs).
+    let keys_page = page();
+    let khead = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    khead.append(&gtk::Label::builder().label("Keys").xalign(0.0).hexpand(true).css_classes(["status-title"]).build());
+    let keys_file = gtk::Button::builder().label("From a File…").css_classes(["pill"]).build();
+    let add_key = gtk::Button::builder().label("Add Key…").css_classes(["pill", "suggested-action"]).build();
+    khead.append(&keys_file);
+    khead.append(&add_key);
+    keys_page.append(&khead);
+    keys_page.append(&note("The services the phone speaks to, by name. A key goes into the phone's keyring over the same link as every command, never into a file here or a log; item and the agent read it there (item-secret get NAME). The phone must be unlocked."));
+    let keys = list();
+    waiting(&keys, "Waiting for your Duo…");
+    keys_page.append(&keys);
+
+    let pages = Pages { about, battery, chart, history, disks, parts, accents, walls, add_walls, look_note, updates, update_tree, backups, back_up, keys, add_key, keys_file };
+    (pages, vec![("about", about_page), ("battery", battery_page), ("storage", storage_page), ("look", look_page), ("updates", updates_page), ("keys", keys_page)])
 }
 
 /// About, Storage's disks and Updates from a look at the phone.
@@ -597,6 +614,137 @@ pub fn add_pictures(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: To
             }
             p.look_note.set_label("Click a picture to put it on both panels. Pictures you add here are yours on the phone; the ones item came with stay.");
             load_look(&p, host, toast);
+        });
+    });
+}
+
+// ---- Keys -----------------------------------------------------------------
+
+/// The names in the phone's keyring, each with what it is for (keys::about)
+/// and a Forget button; never a value.
+pub fn load_keys(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: Toast) {
+    let p = p.clone();
+    let window = window.clone();
+    waiting(&p.keys, "Reading the phone's keyring…");
+    glib::spawn_future_local(async move {
+        let h = host.clone();
+        let Ok(r) = gio::spawn_blocking(move || itemgrid_core::keys::list(&h)).await else { return };
+        clear(&p.keys);
+        let names = match r {
+            Ok(n) => n,
+            Err(e) => {
+                p.keys.append(&adw::ActionRow::builder().title("Could not read the keyring").subtitle(&e).subtitle_lines(3).use_markup(false).css_classes(["dim-label"]).build());
+                return;
+            }
+        };
+        if names.is_empty() {
+            p.keys.append(&adw::ActionRow::builder().title("No keys on the phone yet").css_classes(["dim-label"]).build());
+            return;
+        }
+        for name in names {
+            let subtitle = match itemgrid_core::keys::about(&name) {
+                Some((service, purpose)) => format!("{service} · {purpose}"),
+                None => "A name item/grid does not know; the agent reads it with item-secret get.".to_owned(),
+            };
+            let row = adw::ActionRow::builder().title(&name).subtitle(&subtitle).subtitle_lines(3).use_markup(false).build();
+            let forget = gtk::Button::builder().label("Forget").css_classes(["pill"]).valign(gtk::Align::Center).build();
+            forget.connect_clicked({
+                let (p, host, toast, window, name) = (p.clone(), host.clone(), toast.clone(), window.clone(), name.clone());
+                move |_| {
+                    let dialog = adw::AlertDialog::new(Some(&format!("Forget {name}?")), Some("The key leaves the phone's keyring. item/grid keeps no copy: to have it again, add it anew."));
+                    dialog.add_responses(&[("cancel", "Cancel"), ("forget", "Forget")]);
+                    dialog.set_response_appearance("forget", adw::ResponseAppearance::Destructive);
+                    dialog.set_default_response(Some("cancel"));
+                    dialog.set_close_response("cancel");
+                    let (p, host, toast, window2, name) = (p.clone(), host.clone(), toast.clone(), window.clone(), name.clone());
+                    dialog.connect_response(None, move |_, response| {
+                        if response != "forget" {
+                            return;
+                        }
+                        let (p, host, toast, window, name) = (p.clone(), host.clone(), toast.clone(), window2.clone(), name.clone());
+                        glib::spawn_future_local(async move {
+                            let (h, n) = (host.clone(), name.clone());
+                            match gio::spawn_blocking(move || itemgrid_core::keys::forget(&h, &n)).await {
+                                Ok(Ok(true)) => toast(&format!("{name}: forgotten on the phone")),
+                                Ok(Ok(false)) => toast(&format!("{name}: there was none")),
+                                Ok(Err(e)) => toast(&e),
+                                Err(_) => {}
+                            }
+                            load_keys(&p, &window, host, toast);
+                        });
+                    });
+                    dialog.present(Some(&window));
+                }
+            });
+            row.add_suffix(&forget);
+            p.keys.append(&row);
+        }
+    });
+}
+
+/// A key by hand: its name and its value (hidden as it is typed), onto the
+/// phone.
+pub fn add_key(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: Toast) {
+    let dialog = adw::AlertDialog::new(Some("Add a key"), Some("Its name as the agent will ask for it (openrouter, spotify_client_id) and the key itself. It goes into the phone's keyring over the link; nothing of it stays on this computer."));
+    let form = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let name = gtk::Entry::builder().placeholder_text("name: letters, digits, _ and -").build();
+    let value = gtk::PasswordEntry::builder().show_peek_icon(true).placeholder_text("the key").build();
+    form.append(&name);
+    form.append(&value);
+    dialog.set_extra_child(Some(&form));
+    dialog.add_responses(&[("cancel", "Cancel"), ("save", "Put on the Phone")]);
+    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("save"));
+    dialog.set_close_response("cancel");
+    let (p, window2) = (p.clone(), window.clone());
+    dialog.connect_response(None, move |_, response| {
+        if response != "save" {
+            return;
+        }
+        let n = name.text().trim().to_owned();
+        let v = value.text().to_string();
+        value.set_text("");
+        let (p, host, toast, window) = (p.clone(), host.clone(), toast.clone(), window2.clone());
+        glib::spawn_future_local(async move {
+            let (h, n2) = (host.clone(), n.clone());
+            match gio::spawn_blocking(move || itemgrid_core::keys::set(&h, &n2, &v)).await {
+                Ok(Ok(())) => {
+                    toast(&format!("{n}: on the phone, in its keyring"));
+                    load_keys(&p, &window, host, toast);
+                }
+                Ok(Err(e)) => toast(&e),
+                Err(_) => {}
+            }
+        });
+    });
+    dialog.present(Some(window));
+}
+
+/// Keys from a file, a line each (NAME=VALUE, # lines skipped), onto the
+/// phone. The file stays where it is: delete it yourself once they are on.
+pub fn add_keys_file(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: Toast) {
+    let dialog = gtk::FileDialog::builder().title("Keys from a File").modal(true).build();
+    let (p, window2) = (p.clone(), window.clone());
+    dialog.open(Some(window), gio::Cancellable::NONE, move |r| {
+        let Ok(file) = r else { return };
+        let Some(path) = file.path() else { return };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                toast(&format!("{}: {e}", path.display()));
+                return;
+            }
+        };
+        glib::spawn_future_local(async move {
+            let h = host.clone();
+            match gio::spawn_blocking(move || itemgrid_core::keys::set_all(&h, &text)).await {
+                Ok(Ok(names)) => {
+                    toast(&format!("On the phone: {}. The file stays here; delete it once you are sure.", names.join(", ")));
+                    load_keys(&p, &window2, host, toast);
+                }
+                Ok(Err(e)) => toast(&e),
+                Err(_) => {}
+            }
         });
     });
 }
