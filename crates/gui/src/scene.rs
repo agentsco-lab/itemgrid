@@ -19,14 +19,24 @@ pub const REF_WALL: (f32, f32) = (1600.0, 900.0);
 /// buttons up; no phone: looked for (the wave), not found (the note); the
 /// phone there (on Wi-Fi, shut), opened (a click), on the cable; the menu
 /// and a section open (with the phone, and with none: "bare"); the
-/// wallpaper.
-pub const STEPS: [&str; 14] = [
-    "logo", "agentsco", "cubes", "buttons", "search", "not found", "phone", "phone open", "cable", "menu", "section", "menu bare", "section bare", "wallpaper",
+/// wallpaper; a job going on (the eye drawn back and the Duo moved right,
+/// so the job's words have room: the owner, 2026-10-21).
+pub const STEPS: [&str; 15] = [
+    "logo", "agentsco", "cubes", "buttons", "search", "not found", "phone", "phone open", "cable", "menu", "section", "menu bare", "section bare", "wallpaper", "job",
 ];
 
 /// Where a step not yet laid out (not in the file) takes its places and
 /// eye from: the one it comes from.
-const PARENT: [usize; STEPS.len()] = [0, 0, 1, 2, 3, 4, 3, 6, 6, 6, 9, 9, 10, 3];
+const PARENT: [usize; STEPS.len()] = [0, 0, 1, 2, 3, 4, 3, 6, 6, 6, 9, 9, 10, 3, 8];
+
+/// The job's step where a file has none: from the one it comes from, the
+/// eye's lens drawn back by this much and the Duo this many squares to the
+/// right (the words' column grows by as many).
+pub const JOB_ZOOM: f32 = 0.76;
+pub const JOB_DUO_RIGHT: f32 = 9.0;
+/// And the eye moved over the table (squares), so the words and the Duo
+/// sit in the page's middle.
+pub const JOB_PAN: (f32, f32) = (1.0, -3.5);
 
 /// The parts laid out (their index is the part's number everywhere): the
 /// phone's words, the Duo, the word, the buttons, the menu, the credit.
@@ -275,6 +285,7 @@ pub const TRANS: [Trans; STEPS.len()] = [
     Trans { delay: 0.0, secs: 0.35, ease: Ease::Smooth },
     Trans { delay: 0.0, secs: 0.9, ease: Ease::Smooth },
     Trans { delay: 0.0, secs: 0.8, ease: Ease::Smooth },
+    Trans { delay: 0.0, secs: 1.2, ease: Ease::Smoother },
 ];
 
 /// The steps by name (their index).
@@ -288,6 +299,7 @@ pub const SECTION: usize = 10;
 pub const MENU_BARE: usize = 11;
 pub const SECTION_BARE: usize = 12;
 pub const WALLPAPER: usize = 13;
+pub const JOB: usize = 14;
 
 /// The start's steps: those that come by themselves, one after the other.
 pub const START_STEPS: usize = 4;
@@ -325,6 +337,8 @@ pub struct Marks {
     pub menu: f32,
     pub section: f32,
     pub wall: f32,
+    /// A job going on (its step over the phone's).
+    pub job: f32,
 }
 
 
@@ -382,6 +396,7 @@ impl Layout {
         b = b.into_step(SEARCH, m.search).into_step(NOT_FOUND, m.not_found);
         let phone = Blend::of(PHONE).into_step(PHONE_OPEN, m.open).into_step(CABLE, m.cable);
         b = b.to(phone, m.phone);
+        b = b.into_step(JOB, m.job);
         b = b.to(Blend::of(MENU_BARE).into_step(MENU, m.phone), m.menu);
         b = b.to(Blend::of(SECTION_BARE).into_step(SECTION, m.phone), m.section);
         b = b.into_step(WALLPAPER, m.wall);
@@ -498,6 +513,14 @@ impl Layout {
         for i in 0..STEPS.len() {
             l.steps[i] = match steps[i] {
                 Some(s) => s,
+                None if i == JOB => {
+                    let mut s = Step { trans: TRANS[i], ..l.steps[PARENT[i]] };
+                    // (To three places, as the file keeps it: read back the same.)
+                    s.shot.zoom = (s.shot.zoom * JOB_ZOOM * 1000.0).round() / 1000.0;
+                    s.shot.pan = (s.shot.pan.0 + JOB_PAN.0, s.shot.pan.1 + JOB_PAN.1);
+                    s.place.duo = s.place.duo.map(|(x, y)| (x + JOB_DUO_RIGHT, y));
+                    s
+                }
                 None if !FIRST.contains(&STEPS[i]) => Step { trans: TRANS[i], ..l.steps[PARENT[i]] },
                 None => {
                     // The eye rose with the lens then (drawn back): kept so.
@@ -566,12 +589,19 @@ mod tests {
     #[test]
     fn an_older_file_is_read_for_every_step() {
         let l = Layout::read("words 0 15\nduo 11 4\nmenu 0 1\nzoom 0.751\npaper lilac\nfont open sans\n");
-        for s in &l.steps {
+        for (i, s) in l.steps.iter().enumerate() {
             assert_eq!(s.place.words, (0.0, 15.0));
-            assert_eq!(s.place.duo, Some((11.0, 4.0)));
             assert_eq!(s.place.menu, (0.0, 1.0));
-            assert!((s.shot.zoom - 0.751).abs() < 1e-4);
             assert!(s.shot.top > 0.3 && s.shot.top < 0.4);
+            if i == JOB {
+                // The job's step from the cable's: the eye drawn back, the
+                // Duo to the right.
+                assert_eq!(s.place.duo, Some((11.0 + JOB_DUO_RIGHT, 4.0)));
+                assert!((s.shot.zoom - 0.751 * JOB_ZOOM).abs() < 1e-3);
+            } else {
+                assert_eq!(s.place.duo, Some((11.0, 4.0)));
+                assert!((s.shot.zoom - 0.751).abs() < 1e-4);
+            }
         }
         assert_eq!(PAPERS[l.style.paper].0, "lilac");
         assert_eq!(FONTS[l.style.font].0, "open sans");

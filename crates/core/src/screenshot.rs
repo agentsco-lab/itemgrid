@@ -38,15 +38,17 @@ pub fn take(host: &str) -> Result<Vec<u8>, String> {
 
 /// item asked for its next frame; where it was written on the phone.
 fn next_frame(host: &str) -> Result<String, String> {
-    crate::phone::run(host, &crate::phone::as_owner("rm -f /tmp/item-shot-*.rgba; touch /tmp/item-shot"))?;
+    // In the owner's runtime directory ($XDG_RUNTIME_DIR, theirs alone), as
+    // item writes it since 0.3: a frame of the screen is nobody else's.
+    crate::phone::run(host, &crate::phone::as_owner("rm -f \"$XDG_RUNTIME_DIR\"/item-shot-*.rgba; touch \"$XDG_RUNTIME_DIR\"/item-shot"))?;
     let want = SCREEN.0 * SCREEN.1 * 4;
     // The frame is drawn and written within a few frames; while the screen
     // is dark nothing is drawn.
-    let found = format!(
-        "for i in $(seq 30); do f=$(ls /tmp/item-shot-*.rgba 2>/dev/null | head -1); \
+    let found = crate::phone::as_owner(&format!(
+        "for i in $(seq 30); do f=$(ls \"$XDG_RUNTIME_DIR\"/item-shot-*.rgba 2>/dev/null | head -1); \
          if [ -n \"$f\" ] && [ \"$(stat -c %s \"$f\")\" = {want} ]; then echo \"$f\"; exit 0; fi; sleep 0.1; done; \
-         rm -f /tmp/item-shot; exit 1"
-    );
+         rm -f \"$XDG_RUNTIME_DIR\"/item-shot; exit 1"
+    ));
     let path = crate::phone::run(host, &found)?.trim().to_owned();
     if path.is_empty() {
         return Err("no frame came: the screen is off or item is not drawing - wake the screen and try again".to_owned());

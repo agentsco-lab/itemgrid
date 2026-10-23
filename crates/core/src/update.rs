@@ -33,7 +33,7 @@ pub fn item_tree() -> Result<PathBuf, String> {
     let from_file = std::fs::read_to_string(home.join(".config/itemgrid/item")).ok().map(|s| PathBuf::from(s.trim()));
     let guess = home.join("Desktop/projects/item/item/compositor");
     let tree = from_env.or(from_file).unwrap_or(guess);
-    if tree.join("tools/install-phone.sh").exists() {
+    if tree.join("tools/package-deb.sh").exists() {
         Ok(tree)
     } else {
         Err(format!("item's tree not found at {} - set ITEMGRID_ITEM or write its path in ~/.config/itemgrid/item", tree.display()))
@@ -63,7 +63,9 @@ fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
 }
 
 /// Builds item's package (unless `build` is false: then the newest built),
-/// installs it on the phone at `host` with apt, reboots it and waits until
+/// installs it on the phone at `host` with apt (--reinstall: a build of the
+/// same version as the one on the phone - dirty builds share one - goes on
+/// too), reboots it and waits until
 /// item runs again; `step` hears each stage.
 pub fn update(host: &str, build: bool, step: &mut dyn FnMut(Step)) -> Result<(), String> {
     let _ = crate::phone::keep_awake(host, true);
@@ -81,7 +83,7 @@ pub fn update(host: &str, build: bool, step: &mut dyn FnMut(Step)) -> Result<(),
     crate::phone::put(host, &deb, "/var/tmp/item.deb")?;
     // A changed conffile (the composer drop-in) takes the package's version:
     // there is no one to ask.
-    crate::phone::run_checked(host, "apt-get install -y -o Dpkg::Options::=--force-confnew /var/tmp/item.deb >/var/tmp/item-install.log 2>&1; rc=$?; rm -f /var/tmp/item.deb; sync; [ $rc = 0 ] || tail -5 /var/tmp/item-install.log; exit $rc\n")
+    crate::phone::run_checked(host, "apt-get install -y --reinstall -o Dpkg::Options::=--force-confnew /var/tmp/item.deb >/var/tmp/item-install.log 2>&1; rc=$?; rm -f /var/tmp/item.deb; sync; [ $rc = 0 ] || tail -5 /var/tmp/item-install.log; exit $rc\n")
         .map_err(|e| format!("installing the package: {e}"))?;
     crate::phone::reboot(host, &mut |b| step(Step::Boot(b)))
 }
