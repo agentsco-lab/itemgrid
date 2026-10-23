@@ -40,6 +40,7 @@ mod clock;
 mod scene;
 mod stage;
 mod sections;
+mod keyring;
 
 const APP_ID: &str = "lab.agentsco.ItemGrid";
 const REFRESH_S: u32 = 5;
@@ -741,6 +742,9 @@ struct Ui {
     section_words: RefCell<std::collections::HashMap<&'static str, Vec<(&'static str, String)>>>,
     /// The updates' details (when built, its commit) shown.
     details_open: std::cell::Cell<bool>,
+    /// The keys section: the names on the phone, about keys open, what
+    /// the last doing said (keyring.rs).
+    keys: RefCell<keyring::Keys>,
     /// A question on the table before a job (repair, update): its board
     /// beside the menu.
     asking: RefCell<Option<Ask>>,
@@ -826,6 +830,9 @@ struct Ui {
     /// tried again for a while (an item without a mirror).
     live: RefCell<Option<itemgrid_core::live::Stop>>,
     live_failed: RefCell<Option<std::time::Instant>>,
+    /// The phone's session locked, as the last look said (the mirror is
+    /// off while it is).
+    locked: std::cell::Cell<Option<bool>>,
     live_badge: gtk::Label,
     state: RefCell<State>,
     sections: Rc<sections::Pages>,
@@ -1589,6 +1596,7 @@ fn build(app: &adw::Application) {
         zoom: std::cell::Cell::new((1.0, 1.0)),
         section_words: RefCell::default(),
         details_open: std::cell::Cell::new(false),
+        keys: RefCell::default(),
         asking: RefCell::new(None),
         cable_plug: cable_plug.clone(),
         duo_size: (mid as f32, bh as f32),
@@ -1634,6 +1642,7 @@ fn build(app: &adw::Application) {
         parts: RefCell::default(),
         live: RefCell::default(),
         live_failed: RefCell::default(),
+        locked: std::cell::Cell::new(None),
         live_badge,
         state: RefCell::default(),
         sections: section_ui.clone(),
@@ -1944,9 +1953,9 @@ fn build(app: &adw::Application) {
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed({
         let weak = Rc::downgrade(&ui);
-        move |_, key, _, _| {
+        move |_, key, _, state| {
             let Some(ui) = weak.upgrade() else { return glib::Propagation::Proceed };
-            if ask_key(&ui, key) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+            if ask_key(&ui, key, state) { glib::Propagation::Stop } else { glib::Propagation::Proceed }
         }
     });
     ui.window.add_controller(keys);
@@ -2121,6 +2130,16 @@ fn build(app: &adw::Application) {
                             board_action(&ui, k);
                             return;
                         }
+                        // The keys: about them opened or closed; a name's
+                        // question (what for, forget).
+                        "more:keys" => {
+                            keyring::toggle_about(&ui);
+                            return;
+                        }
+                        k if k.starts_with("key:") => {
+                            keyring::clicked(&ui, &k["key:".len()..]);
+                            return;
+                        }
                         "more:updates" => {
                             ui.details_open.set(!ui.details_open.get());
                             let lines = updates_lines(&ui);
@@ -2168,6 +2187,10 @@ fn build(app: &adw::Application) {
                 // item/grid's own: its settings (lines to click), about it.
                 let own = match key.as_deref() {
                     Some("settings") => Some(settings_lines(&ui)),
+                    Some("keys") => {
+                        keyring::load(&ui);
+                        Some(keyring::lines(&ui))
+                    }
                     Some("itemgrid") => Some(vec![board::Line::new("", format!("itemgrid  {}", env!("CARGO_PKG_VERSION")))]),
                     Some("repair") => Some(repair_lines(&ui)),
                     _ => None,
@@ -2369,7 +2392,6 @@ fn build(app: &adw::Application) {
             match r.visible_child_name().as_deref() {
                 Some("battery") => sections::load_battery(&ui.sections, host),
                 Some("look") => sections::load_look(&ui.sections, host, toaster(&ui)),
-                Some("keys") => sections::load_keys(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui)),
                 _ => {}
             }
         }
@@ -2380,30 +2402,6 @@ fn build(app: &adw::Application) {
             let Some(ui) = ui.upgrade() else { return };
             let Some(host) = ui.state.borrow().host.clone() else { return };
             sections::add_pictures(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
-        }
-    });
-    section_ui.add_key.connect_clicked({
-        let ui = Rc::downgrade(&ui);
-        move |_| {
-            let Some(ui) = ui.upgrade() else { return };
-            let Some(host) = ui.state.borrow().host.clone() else { return };
-            sections::add_key(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
-        }
-    });
-    section_ui.keys_file.connect_clicked({
-        let ui = Rc::downgrade(&ui);
-        move |_| {
-            let Some(ui) = ui.upgrade() else { return };
-            let Some(host) = ui.state.borrow().host.clone() else { return };
-            sections::add_keys_file(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
-        }
-    });
-    section_ui.keys_save.connect_clicked({
-        let ui = Rc::downgrade(&ui);
-        move |_| {
-            let Some(ui) = ui.upgrade() else { return };
-            let Some(host) = ui.state.borrow().host.clone() else { return };
-            sections::save_keys_file(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
         }
     });
     section_ui.back_up.connect_clicked({
@@ -5224,16 +5222,37 @@ struct Ask {
     ready: bool,
     /// The go line's word ("erase", "install", "update").
     verb: &'static str,
-    go: Option<Rc<dyn Fn(&Rc<Ui>, &'static str)>>,
+    /// Words typed on the board (a key's name and value), the one being
+    /// typed into; all must be filled to go.
+    entries: Vec<Entry>,
+    entry: usize,
+    /// The section whose board comes back as the question closes.
+    back: Option<&'static str>,
+    /// Asked to go: with the choice taken and the entries as typed.
+    go: Option<Rc<dyn Fn(&Rc<Ui>, &'static str, &[String])>>,
+}
+
+/// A word typed on a question's board: under `label`; `hidden`, shown as
+/// dots (a key).
+pub struct Entry {
+    label: &'static str,
+    text: String,
+    hidden: bool,
+}
+
+impl Entry {
+    pub fn new(label: &'static str, hidden: bool) -> Entry {
+        Entry { label, text: String::new(), hidden }
+    }
 }
 
 impl Ask {
     fn new(title: &str, info: Vec<String>) -> Ask {
-        Ask { title: title.into(), info, choices: Vec::new(), chosen: 0, word: None, typed: String::new(), ready: true, verb: "go", go: None }
+        Ask { title: title.into(), info, choices: Vec::new(), chosen: 0, word: None, typed: String::new(), ready: true, verb: "go", entries: Vec::new(), entry: 0, back: None, go: None }
     }
 
     fn can_go(&self) -> bool {
-        self.ready && self.go.is_some() && self.word.as_ref().is_none_or(|w| *w == self.typed)
+        self.ready && self.go.is_some() && self.word.as_ref().is_none_or(|w| *w == self.typed) && self.entries.iter().all(|e| !e.text.trim().is_empty())
     }
 
     /// The question's board: its title dark; a blank; what it does, grey;
@@ -5259,6 +5278,29 @@ impl Ask {
                 } else {
                     lines.push(board::Line::new(key, format!("○ {label}")));
                 }
+            }
+        }
+        // The entries: each its label (the one typed into dark) and the
+        // word so far, a cursor after it; a key as dots, a long one
+        // shortened (the board stays on the table).
+        if !self.entries.is_empty() {
+            lines.push(board::Line::new("", ""));
+            for (i, e) in self.entries.iter().enumerate() {
+                let cur = i == self.entry;
+                let n = e.text.chars().count();
+                let shown: String = if e.hidden {
+                    "•".repeat(n.min(12))
+                } else if n > 16 {
+                    format!("…{}", e.text.chars().skip(n - 15).collect::<String>())
+                } else {
+                    e.text.clone()
+                };
+                let text = format!("{}  {shown}{}", e.label, if cur { "_" } else { "" });
+                let mut l = board::Line::new(format!("ask:entry:{i}"), text);
+                if cur {
+                    l.accent = Some((0, e.label.chars().count(), DARK));
+                }
+                lines.push(l);
             }
         }
         if let (true, Some(w)) = (self.ready && self.go.is_some(), &self.word) {
@@ -5335,7 +5377,7 @@ fn open_ask(ui: &Rc<Ui>, ask: Ask) {
 }
 
 fn close_ask(ui: &Rc<Ui>) {
-    ui.asking.borrow_mut().take();
+    let back = ui.asking.borrow_mut().take().and_then(|a| a.back);
     // Asked from the phone's line: back to the phone, the menu away too.
     if ui.menu_for_ask.replace(false) {
         if let Some(b) = ui.board.borrow_mut().as_mut() {
@@ -5348,16 +5390,56 @@ fn close_ask(ui: &Rc<Ui>) {
         }
     }
     show_fold(ui, ui.fold.get().0);
+    // The section's board back where the question was.
+    if back == Some("keys") {
+        keyring::reopen(ui);
+    }
+}
+
+/// `lines` on the section's board on the table, if that section's is
+/// the open one (laid anew, the lines that changed turning up again).
+fn set_page(ui: &Rc<Ui>, key: &str, lines: Vec<board::Line>) {
+    let mut page = ui.page.borrow_mut();
+    match page.as_mut() {
+        Some((k, b)) if k == key && !b.closing() => {
+            let now = crate::clock::now();
+            // The line chosen stays the one with that key, where it is now.
+            let chosen = b.chosen.and_then(|c| b.lines.get(c)).map(|l| l.key.clone());
+            b.chosen = chosen.filter(|k| !k.is_empty()).and_then(|k| lines.iter().position(|l| l.key == k));
+            // The pointer's line is found again as it moves.
+            b.hover = None;
+            b.lines.truncate(lines.len());
+            for (i, mut l) in lines.into_iter().enumerate() {
+                if i < b.lines.len() {
+                    if b.lines[i].text != l.text || b.lines[i].key != l.key {
+                        let text = l.text.clone();
+                        b.lines[i].key = l.key;
+                        b.lines[i].accent = l.accent;
+                        b.set_line(i, text);
+                    }
+                } else {
+                    l.since = Some(now);
+                    b.lines.push(l);
+                }
+            }
+        }
+        _ => return,
+    }
+    drop(page);
+    show_fold(ui, ui.fold.get().0);
 }
 
 /// A line of a board clicked that asks for a job ("do:"), or answers its
 /// question ("ask:").
 fn board_action(ui: &Rc<Ui>, key: &str) {
     match key {
+        "do:key-add" => keyring::add(ui),
+        "do:keys-from" => keyring::from_file(ui),
+        "do:keys-to" => keyring::to_file(ui),
         "do:update" => {
             let mut ask = Ask::new("update item", vec!["keeps your files".into(), "restarts the phone".into(), "about 3 min".into()]);
             ask.verb = "update";
-            ask.go = Some(Rc::new(|ui, _| run_job(ui, Job::Update)));
+            ask.go = Some(Rc::new(|ui, _, _| run_job(ui, Job::Update)));
             open_ask(ui, ask);
         }
         "do:reinstall" => {
@@ -5367,7 +5449,7 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
                     let mut ask = Ask::new("reinstall item", vec!["erases the phone".into(), format!("new item {version}"), "keep the cable in".into()]);
                     ask.choices = vec![("erase", "erase all · 10 min".into()), ("keep", "keep files · 15 min".into())];
-                    ask.go = Some(Rc::new(move |ui, choice| {
+                    ask.go = Some(Rc::new(move |ui, choice, _| {
                         let mode = if choice == "keep" { itemgrid_core::install::Mode::KeepFiles } else { itemgrid_core::install::Mode::Erase };
                         run_job(ui, Job::Install(Box::new(release.clone()), mode));
                     }));
@@ -5397,7 +5479,7 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                     Ok(plan) => {
                         let mut ask = Ask::new("back to android", vec!["erases item".into(), "android as it came".into(), "10 min · cable in".into()]);
                             ask.verb = "erase";
-                        ask.go = Some(Rc::new(move |ui, choice| run_job(ui, Job::AndroidClean(Box::new(plan.clone()), choice == "copy"))));
+                        ask.go = Some(Rc::new(move |ui, choice, _| run_job(ui, Job::AndroidClean(Box::new(plan.clone()), choice == "copy"))));
                         ask
                     }
                 };
@@ -5413,20 +5495,26 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
                     let mut ask = Ask::new("install item", vec!["erases android".into(), format!("puts item {version}"), "15 min · cable in".into()]);
                     ask.verb = "install";
-                    ask.go = Some(Rc::new(move |ui, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));
+                    ask.go = Some(Rc::new(move |ui, _, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));
                     ask
                 }
             };
             open_ask(ui, ask);
         }
         "ask:go" => {
-            let go = ui.asking.borrow().as_ref().filter(|a| a.can_go()).and_then(|a| a.go.clone().map(|g| (g, a.choices.get(a.chosen).map_or("", |c| c.0))));
-            if let Some((go, choice)) = go {
+            let go = ui.asking.borrow().as_ref().filter(|a| a.can_go()).and_then(|a| {
+                a.go.clone().map(|g| (g, a.choices.get(a.chosen).map_or("", |c| c.0), a.entries.iter().map(|e| e.text.clone()).collect::<Vec<_>>(), a.back.is_some()))
+            });
+            if let Some((go, choice, typed, back)) = go {
                 close_ask(ui);
-                if let Some(b) = ui.board.borrow_mut().as_mut() {
-                    b.close();
+                // A job's question: the menu goes with it (a section's
+                // stays, its board back).
+                if !back {
+                    if let Some(b) = ui.board.borrow_mut().as_mut() {
+                        b.close();
+                    }
                 }
-                go(ui, choice);
+                go(ui, choice, &typed);
             }
         }
         "ask:cancel" => close_ask(ui),
@@ -5437,16 +5525,29 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                 }
                 show_ask(ui);
             }
+            // An entry clicked: typed into from now.
+            if let Some(i) = k.strip_prefix("ask:entry:").and_then(|i| i.parse::<usize>().ok()) {
+                if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                    a.entry = i.min(a.entries.len().saturating_sub(1));
+                }
+                show_ask(ui);
+            }
         }
     }
 }
 
 /// A key while a question is on the table: the number typed, Enter to go,
-/// Escape to let it be. Whether it was the question's.
-fn ask_key(ui: &Rc<Ui>, key: gdk::Key) -> bool {
+/// Escape to let it be; with entries, the letters into the one being
+/// typed into (Ctrl+V pastes), Tab and Enter to the next, Enter on the
+/// last to go. Whether it was the question's.
+fn ask_key(ui: &Rc<Ui>, key: gdk::Key, state: gdk::ModifierType) -> bool {
     let open = ui.page.borrow().as_ref().is_some_and(|(k, b)| k == "ask" && !b.closing());
     if !open || ui.asking.borrow().is_none() {
         return false;
+    }
+    let entries = ui.asking.borrow().as_ref().is_some_and(|a| !a.entries.is_empty());
+    if entries {
+        return entry_key(ui, key, state);
     }
     match key {
         gdk::Key::Escape => close_ask(ui),
@@ -5465,6 +5566,71 @@ fn ask_key(ui: &Rc<Ui>, key: gdk::Key) -> bool {
                 let Some(w) = a.word.clone() else { return false };
                 if a.typed.chars().count() < w.chars().count() {
                     a.typed.push(ch);
+                }
+            }
+            show_ask(ui);
+        }
+    }
+    true
+}
+
+/// A key typed into a question's entries (ask_key). Whether it was taken.
+fn entry_key(ui: &Rc<Ui>, key: gdk::Key, state: gdk::ModifierType) -> bool {
+    let n = ui.asking.borrow().as_ref().map_or(0, |a| a.entries.len());
+    let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+    match key {
+        gdk::Key::Escape => close_ask(ui),
+        gdk::Key::Tab | gdk::Key::ISO_Left_Tab => {
+            if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                a.entry = (a.entry + 1) % n.max(1);
+            }
+            show_ask(ui);
+        }
+        gdk::Key::Return | gdk::Key::KP_Enter => {
+            let last = ui.asking.borrow().as_ref().is_some_and(|a| a.entry + 1 >= n);
+            if last {
+                board_action(ui, "ask:go");
+            } else {
+                if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                    a.entry += 1;
+                }
+                show_ask(ui);
+            }
+        }
+        gdk::Key::BackSpace => {
+            if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                let i = a.entry;
+                if let Some(e) = a.entries.get_mut(i) {
+                    e.text.pop();
+                }
+            }
+            show_ask(ui);
+        }
+        // Ctrl+V: the clipboard's first line into the entry (a key is
+        // pasted, not typed).
+        gdk::Key::v | gdk::Key::V if ctrl => {
+            let ui = ui.clone();
+            ui.window.clipboard().read_text_async(gio::Cancellable::NONE, move |r| {
+                let Ok(Some(text)) = r else { return };
+                let line = text.lines().next().unwrap_or("").trim().to_owned();
+                if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                    let i = a.entry;
+                    if let Some(e) = a.entries.get_mut(i) {
+                        e.text.push_str(&line);
+                    }
+                }
+                show_ask(&ui);
+            });
+        }
+        k => {
+            if ctrl {
+                return false;
+            }
+            let Some(ch) = k.to_unicode().filter(|c| !c.is_control()) else { return false };
+            if let Some(a) = ui.asking.borrow_mut().as_mut() {
+                let i = a.entry;
+                if let Some(e) = a.entries.get_mut(i) {
+                    e.text.push(ch);
                 }
             }
             show_ask(ui);
@@ -7342,6 +7508,7 @@ fn fill(ui: &Rc<Ui>, s: &status::Status, link: &str) {
     // background unit - fstrim on the loop rootfs, a suspend the cable kept
     // busy - is for Developer Mode).
     simple_status(ui, s, &s.warnings(), link);
+    ui.locked.set(s.locked);
     // A job that ended well and asked for the PIN: done with once the phone
     // is unlocked (the card said "enter the PIN" after it was).
     if s.locked == Some(false) && s.item_running {
@@ -7667,7 +7834,11 @@ fn live_sync(ui: &Rc<Ui>) {
             // Ended by itself (no mirror in this item, item gone): rest.
             *ui.live_failed.borrow_mut() = Some(std::time::Instant::now());
             if frames == 0 {
-                ui.toasts.add_toast(adw::Toast::new("No live view: this item has no mirror yet - update item"));
+                ui.toasts.add_toast(adw::Toast::new(if ui.locked.get() == Some(true) {
+                    "No live view while the phone is locked"
+                } else {
+                    "No live view: this item has no mirror yet - update item"
+                }));
             }
         }
     });
