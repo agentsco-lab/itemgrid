@@ -384,16 +384,21 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
     let twrp = crate::full::twrp().ok_or("no TWRP image")?;
     let _ = crate::ramboot::check_image(&twrp)?;
 
-    // The whole system, fresh and whole.
-    let full = if plan.full_fresh {
-        let b = plan.full.clone().expect("fresh");
-        verify_full(&b, say)?;
-        b
-    } else {
-        say("taking the whole system's backup first".into());
-        crate::full::take(host, say)?
+    // A whole-system backup is used when a fresh one is there, and not
+    // taken otherwise (18 minutes nobody needed, the owner 2026-10-23): the
+    // way back to Linux is then a fresh install from a release image (the
+    // device data and the quick backup carry what is the owner's).
+    let backed = match plan.full.as_ref().filter(|_| plan.full_fresh) {
+        Some(b) => {
+            verify_full(b, say)?;
+            format!("the system backed up in {}", b.dir.display())
+        }
+        None => {
+            say("no whole-system backup: the way back to Linux is a fresh install".into());
+            "no whole-system backup".to_owned()
+        }
     };
-    crate::flash::log(&serial, &format!("return to Android begun: the system backed up in {} - itemgrid", full.dir.display()))?;
+    crate::flash::log(&serial, &format!("return to Android begun: {backed} - itemgrid"))?;
 
     // Into TWRP, where the way back is tried and userdata erased.
     say("into TWRP".into());

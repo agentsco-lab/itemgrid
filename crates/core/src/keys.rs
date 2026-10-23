@@ -74,6 +74,35 @@ pub fn set(host: &str, name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The key under `name`, from the phone's keyring (over the link, in memory).
+pub fn get(host: &str, name: &str) -> Result<String, String> {
+    check_name(name)?;
+    let out = crate::phone::run_checked(host, &owner_script(&format!("get {name}"), None))?;
+    let value = out.trim().to_owned();
+    if value.is_empty() {
+        return Err(format!("{name}: nothing kept"));
+    }
+    Ok(value)
+}
+
+/// Every key on the phone into the file at `path`, `NAME=VALUE` a line,
+/// readable by this user alone (0600) - for moving to another phone or a
+/// fresh install (the owner's choice: the file holds the keys in the
+/// clear). Returns the names written.
+pub fn export(host: &str, path: &std::path::Path) -> Result<Vec<String>, String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let names = list(host)?;
+    let mut lines = String::new();
+    for name in &names {
+        let value = get(host, name)?;
+        lines.push_str(&format!("{name}={value}\n"));
+    }
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    f.write_all(lines.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(names)
+}
+
 /// The names of the keys on the phone.
 pub fn list(host: &str) -> Result<Vec<String>, String> {
     let out = crate::phone::run_checked(host, &owner_script("list", None))?;

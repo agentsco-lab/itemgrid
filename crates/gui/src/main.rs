@@ -1232,7 +1232,7 @@ fn build(app: &adw::Application) {
 
     // Android: the phone's own Android, for a while.
     let android = section("Android");
-    android.append(&body("Stock Android can come back for a while. item/grid backs everything up first and tests the way back, then clears Linux's data and starts Android. Back to Linux puts it all back from the backup."));
+    android.append(&body("Stock Android can come back for a while. item/grid keeps the device data and tests the way back, then clears Linux's data and starts Android. Back to Linux puts Linux back from a whole-system backup if a fresh one is there, else as a fresh install."));
     let android_row = row();
     let to_android = pill("Return to Android…");
     let get_android = pill("Get Android from Microsoft…");
@@ -2396,6 +2396,14 @@ fn build(app: &adw::Application) {
             let Some(ui) = ui.upgrade() else { return };
             let Some(host) = ui.state.borrow().host.clone() else { return };
             sections::add_keys_file(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
+        }
+    });
+    section_ui.keys_save.connect_clicked({
+        let ui = Rc::downgrade(&ui);
+        move |_| {
+            let Some(ui) = ui.upgrade() else { return };
+            let Some(host) = ui.state.borrow().host.clone() else { return };
+            sections::save_keys_file(&ui.sections, ui.window.upcast_ref(), host, toaster(&ui));
         }
     });
     section_ui.back_up.connect_clicked({

@@ -43,6 +43,7 @@ pub struct Pages {
     pub keys: gtk::ListBox,
     pub add_key: gtk::Button,
     pub keys_file: gtk::Button,
+    pub keys_save: gtk::Button,
 }
 
 fn title(page: &gtk::Box, text: &str) {
@@ -176,17 +177,21 @@ pub fn build() -> (Pages, Vec<(&'static str, gtk::Box)>) {
     let keys_page = page();
     let khead = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     khead.append(&gtk::Label::builder().label("Keys").xalign(0.0).hexpand(true).css_classes(["status-title"]).build());
+    let keys_save = gtk::Button::builder().label("Save to a File…").css_classes(["pill"]).build();
     let keys_file = gtk::Button::builder().label("From a File…").css_classes(["pill"]).build();
     let add_key = gtk::Button::builder().label("Add Key…").css_classes(["pill", "suggested-action"]).build();
+    khead.append(&keys_save);
     khead.append(&keys_file);
     khead.append(&add_key);
     keys_page.append(&khead);
+    keys_page.append(&note("Where a key goes: into the phone's keyring (gnome-keyring, unlocked by the PIN), over the same ssh link as every command here. item/grid keeps no copy and writes none to a file or a log unless you ask for a file with Save. The phone sends a key only to the service it is for, and only when you use that service: the keyboard's microphone key to OpenRouter, your own scripts to theirs. item itself sends nothing anywhere."));
+    keys_page.append(&note("Without keys everything of item works: the microphone key says it has no key, Claude Code signs in with your account, and the services below stay silent until their key is here. Save to a File is for a fresh install or another phone: the file holds the keys in the clear, readable by you alone; load it with From a File and delete it."));
     keys_page.append(&note("The services the phone speaks to, by name. A key goes into the phone's keyring over the same link as every command, never into a file here or a log; item and the agent read it there (item-secret get NAME). The phone must be unlocked."));
     let keys = list();
     waiting(&keys, "Waiting for your Duo…");
     keys_page.append(&keys);
 
-    let pages = Pages { about, battery, chart, history, disks, parts, accents, walls, add_walls, look_note, updates, update_tree, backups, back_up, keys, add_key, keys_file };
+    let pages = Pages { about, battery, chart, history, disks, parts, accents, walls, add_walls, look_note, updates, update_tree, backups, back_up, keys, add_key, keys_file, keys_save };
     (pages, vec![("about", about_page), ("battery", battery_page), ("storage", storage_page), ("look", look_page), ("updates", updates_page), ("keys", keys_page)])
 }
 
@@ -747,6 +752,37 @@ pub fn add_keys_file(p: &Rc<Pages>, window: &gtk::Window, host: String, toast: T
             }
         });
     });
+}
+
+/// Every key on the phone into a file the owner names (keys.txt), for a
+/// fresh install or another phone; said what it means first.
+pub fn save_keys_file(_p: &Rc<Pages>, window: &gtk::Window, host: String, toast: Toast) {
+    let dialog = adw::AlertDialog::new(Some("Save the keys to a file?"), Some("The file will hold every key of the phone's keyring in the clear, as NAME=VALUE lines, readable by you alone (0600). Keep it where only you can read it, load it on the new phone with From a File, and delete it. Nothing is sent anywhere."));
+    dialog.add_responses(&[("cancel", "Cancel"), ("save", "Choose the File…")]);
+    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let window2 = window.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "save" {
+            return;
+        }
+        let chooser = gtk::FileDialog::builder().title("Keys to a File").initial_name("keys.txt").modal(true).build();
+        let (host, toast) = (host.clone(), toast.clone());
+        chooser.save(Some(&window2), gio::Cancellable::NONE, move |r| {
+            let Ok(file) = r else { return };
+            let Some(path) = file.path() else { return };
+            glib::spawn_future_local(async move {
+                let (h, path2) = (host.clone(), path.clone());
+                match gio::spawn_blocking(move || itemgrid_core::keys::export(&h, &path2)).await {
+                    Ok(Ok(names)) => toast(&format!("{} keys in {}: yours to keep safe, and to delete once the new phone has them.", names.len(), path.display())),
+                    Ok(Err(e)) => toast(&e),
+                    Err(_) => {}
+                }
+            });
+        });
+    });
+    dialog.present(Some(window));
 }
 
 #[cfg(test)]

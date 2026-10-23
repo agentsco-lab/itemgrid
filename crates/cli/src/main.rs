@@ -318,9 +318,10 @@ fn cmd_keys(args: &[String]) -> i32 {
             said(r)
         }
         ["list"] => said(keys::list(&host).map(|n| if n.is_empty() { "no keys on the phone".to_owned() } else { n.join("\n") })),
+        ["export", path] => said(keys::export(&host, std::path::Path::new(path)).map(|n| format!("{} keys in {path} (0600, in the clear): yours to keep safe and to delete once the new phone has them", n.len()))),
         ["forget", name] => said(keys::forget(&host, name).map(|was| if was { format!("{name}: forgotten") } else { format!("{name}: there was none") })),
         _ => {
-            eprintln!("itemgrid keys set NAME (the value on stdin) | set-all FILE [--delete] | list | forget NAME");
+            eprintln!("itemgrid keys set NAME (the value on stdin) | set-all FILE [--delete] | export FILE | list | forget NAME");
             2
         }
     }
@@ -816,7 +817,7 @@ fn cmd_android(args: &[String]) -> i32 {
     println!("Device data:    {}", if plan.device_data { "backed up" } else { "NOT backed up" });
     match &plan.full {
         Some(b) => println!("Whole system:   backed up {}{}", b.manifest.created, if plan.full_fresh { " - fresh" } else { " - not fresh: a new one is taken first (~18 min)" }),
-        None => println!("Whole system:   no backup - one is taken first (~18 min)"),
+        None => println!("Whole system:   no backup - none is taken; the way back to Linux is a fresh install"),
     }
     if !plan.losses.is_empty() {
         println!("Lost with userdata (in no backup):");
@@ -833,7 +834,7 @@ fn cmd_android(args: &[String]) -> i32 {
         }
     }
     if args.first().map(String::as_str) != Some("go") || !yes || !plan.stops.is_empty() {
-        println!("\n`itemgrid android go --yes`: the whole system backed up (or checked); TWRP from RAM; the way back");
+        println!("\n`itemgrid android go --yes`: a fresh whole-system backup checked if there is one; TWRP from RAM; the way back");
         println!("tried; then, after you type the phone's number, metadata and userdata ERASED and stock Android");
         println!("started from RAM - as a guest: the port's kernel stays on the slot, so a plain restart finds no system;");
         println!("hold Volume Down + Power for the bootloader, then `itemgrid android start` runs Android again and");
