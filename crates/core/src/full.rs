@@ -300,6 +300,7 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     // item/grid's own recovery: straight into the sink (adb exec-in); its
     // exit is not told that way, so the sink says it at the end.
     if ours(serial) {
+        let _ = adb_shell(serial, "rm -f /tmp/itemgrid-sink-rc");
         let mut child = Command::new(crate::programs::adb())
             .args(["-s", serial, "exec-in", &format!("{sink}; echo $? > /tmp/itemgrid-sink-rc")])
             .stdin(Stdio::piped())
@@ -315,11 +316,23 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
         if !out.status.success() {
             return Err(format!("adb exec-in: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
-        let rc = adb_shell(serial, "cat /tmp/itemgrid-sink-rc; rm -f /tmp/itemgrid-sink-rc")?;
-        if rc.trim() != "0" {
-            return Err(format!("the receiving end said {}", rc.trim()));
+        // adb returns as its stream closes, the sink may still be at work:
+        // its exit waited for (written at its end).
+        let start = std::time::Instant::now();
+        loop {
+            let rc = adb_shell(serial, "cat /tmp/itemgrid-sink-rc 2>/dev/null")?;
+            if !rc.trim().is_empty() {
+                let _ = adb_shell(serial, "rm -f /tmp/itemgrid-sink-rc");
+                if rc.trim() != "0" {
+                    return Err(format!("the receiving end said {}", rc.trim()));
+                }
+                return Ok(n);
+            }
+            if start.elapsed() > std::time::Duration::from_secs(600) {
+                return Err("the receiving end did not finish in 10 minutes".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        return Ok(n);
     }
     let port = 5598u16;
     let fwd = Command::new(crate::programs::adb()).args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;

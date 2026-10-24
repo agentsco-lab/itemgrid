@@ -15,7 +15,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::init::{FFS, GADGET};
@@ -29,9 +31,14 @@ const A_WRTE: u32 = 0x4554_5257;
 const VERSION: u32 = 0x0100_0001;
 /// The largest payload offered (the host's own may be smaller).
 const MAX_PAYLOAD: usize = 256 * 1024;
-/// A read from the OUT endpoint (f_fs keeps what a larger transfer has
-/// beyond it for the next read).
-const READ: usize = 64 * 1024;
+/// Bytes queued for a stream's service that the reader acks on arrival;
+/// past them the service acks what it takes (the reader never waits: a
+/// service waiting for an OKAY it routes would never get it).
+const QUEUED_ACKED: usize = 64 << 20;
+/// A read from the OUT endpoint: a whole payload and its header (f_fs
+/// would keep what a larger transfer has beyond a read for the next one,
+/// copying; at 64 KB a gigabyte took 69 s).
+const READ: usize = MAX_PAYLOAD + 4096;
 const BANNER: &str = "recovery::ro.product.name=surfaceduo;ro.product.model=Surface Duo;ro.product.device=duo;features=shell_v2,cmd";
 
 /// shell v2's packet ids.
@@ -169,7 +176,8 @@ pub fn run() -> ! {
 /// away when the host closes it), its OKAYs.
 struct Stream {
     remote: u32,
-    input: Sender<Vec<u8>>,
+    input: Sender<Input>,
+    queued: Arc<AtomicUsize>,
     okay: Sender<()>,
 }
 
@@ -214,14 +222,20 @@ fn serve(from_host: &mut File, out: Sender<Packet>) -> ! {
                     next = next.wrapping_add(1).max(1);
                     let (input, input_rx) = channel();
                     let (okay, okay_rx) = channel();
-                    streams.insert(local, Stream { remote: arg0, input, okay });
+                    let queued = Arc::new(AtomicUsize::new(0));
+                    streams.insert(local, Stream { remote: arg0, input, queued: queued.clone(), okay });
                     let _ = out.send(packet(A_OKAY, local, arg0, Vec::new()));
                     let ctx = Ctx { local, remote: arg0, out: out.clone(), max };
-                    std::thread::spawn(move || open(ctx, &service, input_rx, okay_rx));
+                    let input = Inbound { ctx: ctx.clone(), rx: input_rx, queued };
+                    std::thread::spawn(move || open(ctx, &service, input, okay_rx));
                 }
                 A_WRTE => match streams.get(&arg1) {
                     Some(s) if s.remote == arg0 => {
-                        let _ = s.input.send(data);
+                        let owed = s.queued.fetch_add(data.len(), Ordering::Relaxed) > QUEUED_ACKED;
+                        let _ = s.input.send(Input { data, owed });
+                        if !owed {
+                            let _ = out.send(packet(A_OKAY, arg1, arg0, Vec::new()));
+                        }
                     }
                     _ => {
                         let _ = out.send(packet(A_CLSE, 0, arg0, Vec::new()));
@@ -238,6 +252,32 @@ fn serve(from_host: &mut File, out: Sender<Packet>) -> ! {
                 _ => {}
             }
         }
+    }
+}
+
+/// A payload from the host for a service, and whether the service owes
+/// the host its OKAY (the queue was long when it came).
+struct Input {
+    data: Vec<u8>,
+    owed: bool,
+}
+
+/// A service's side of the host's input.
+struct Inbound {
+    ctx: Ctx,
+    rx: Receiver<Input>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl Inbound {
+    /// The next payload (None: the host closed the stream), acked if owed.
+    fn next(&self) -> Option<Vec<u8>> {
+        let Input { data, owed } = self.rx.recv().ok()?;
+        self.queued.fetch_sub(data.len(), Ordering::Relaxed);
+        if owed {
+            let _ = self.ctx.out.send(packet(A_OKAY, self.ctx.local, self.ctx.remote, Vec::new()));
+        }
+        Some(data)
     }
 }
 
@@ -262,17 +302,12 @@ impl Ctx {
         true
     }
 
-    /// The host's last write taken: it may send the next.
-    fn ack(&self) {
-        let _ = self.out.send(packet(A_OKAY, self.local, self.remote, Vec::new()));
-    }
-
     fn close(&self) {
         let _ = self.out.send(packet(A_CLSE, self.local, self.remote, Vec::new()));
     }
 }
 
-fn open(ctx: Ctx, service: &str, input: Receiver<Vec<u8>>, okay: Receiver<()>) {
+fn open(ctx: Ctx, service: &str, input: Inbound, okay: Receiver<()>) {
     let (head, rest) = service.split_once(':').unwrap_or((service, ""));
     let mut words = head.split(',');
     let kind = words.next().unwrap_or_default();
@@ -304,7 +339,7 @@ enum Mode {
     Exec,
 }
 
-fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Receiver<Vec<u8>>, okay: Receiver<()>) {
+fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Inbound, okay: Receiver<()>) {
     let mut c = Command::new("/bin/sh");
     if cmd.is_empty() {
         c.arg("-i");
@@ -320,13 +355,12 @@ fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Receiver<Vec<u8>>, okay: Recei
             return;
         }
     };
-    // The host's input into the command (framed in v2), each write taken
-    // only once it is in; its end closes the command's stdin.
+    // The host's input into the command (framed in v2); its end closes
+    // the command's stdin.
     let mut stdin = child.stdin.take();
-    let ack = ctx.clone();
     std::thread::spawn(move || {
         let mut framed: Vec<u8> = Vec::new();
-        for data in input {
+        while let Some(data) = input.next() {
             if mode == Mode::V2 {
                 framed.extend_from_slice(&data);
                 while framed.len() >= 5 {
@@ -352,7 +386,6 @@ fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Receiver<Vec<u8>>, okay: Recei
                     stdin = None;
                 }
             }
-            ack.ack();
         }
     });
     // The command's output, both streams onto one queue in turn.
@@ -400,20 +433,18 @@ fn framed(id: u8, data: &[u8]) -> Vec<u8> {
     f
 }
 
-/// The host's bytes as a sync request reads them: taken in (and acked) as
-/// they are needed.
-struct Incoming<'a> {
-    ctx: &'a Ctx,
-    input: Receiver<Vec<u8>>,
+/// The host's bytes as a sync request reads them, taken as they are
+/// needed.
+struct Incoming {
+    input: Inbound,
     have: Vec<u8>,
 }
 
-impl Incoming<'_> {
+impl Incoming {
     fn take(&mut self, n: usize) -> Option<Vec<u8>> {
         while self.have.len() < n {
-            let d = self.input.recv().ok()?;
+            let d = self.input.next()?;
             self.have.extend_from_slice(&d);
-            self.ctx.ack();
         }
         Some(self.have.drain(..n).collect())
     }
@@ -446,8 +477,8 @@ fn stat_words(path: &str) -> [u32; 3] {
     }
 }
 
-fn sync(ctx: &Ctx, input: Receiver<Vec<u8>>, okay: Receiver<()>) {
-    let mut inc = Incoming { ctx, input, have: Vec::new() };
+fn sync(ctx: &Ctx, input: Inbound, okay: Receiver<()>) {
+    let mut inc = Incoming { input, have: Vec::new() };
     while let Some((id, len)) = inc.request() {
         let ok = match &id {
             b"STAT" => {

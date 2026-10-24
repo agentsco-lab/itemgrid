@@ -8,11 +8,13 @@
 //! reboot. Nothing else: no network, no touch, no Android.
 //!
 //! As `reboot`, `poweroff` or `halt` (busybox's would signal PID 1): the
-//! filesystems synced, then that.
+//! filesystems synced, then that. As `truncate` and `mountpoint`: those,
+//! which the port's busybox has not.
 
 mod adb;
 mod init;
 mod log;
+mod tools;
 
 fn main() {
     let argv0 = std::env::args().next().unwrap_or_default();
@@ -21,6 +23,9 @@ fn main() {
     match name.as_str() {
         "reboot" => init::reboot(args.iter().find(|a| !a.starts_with('-')).map(String::as_str)),
         "poweroff" | "halt" => init::power_off(),
+        // What item/grid uses and the port's busybox lacks.
+        "truncate" => std::process::exit(tools::truncate(&args)),
+        "mountpoint" => std::process::exit(tools::mountpoint(&args)),
         _ => match args.first().map(String::as_str) {
             // The daemon, as init's child (init reaps orphans; the daemon
             // waits for its own children).

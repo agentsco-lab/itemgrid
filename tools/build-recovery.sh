@@ -90,19 +90,21 @@ R=$W/root
 rm -rf "$R" && mkdir -p "$R"/bin "$R"/sbin "$R"/lib/e2fs "$R"/etc "$R"/proc "$R"/sys "$R"/dev "$R"/tmp "$R"/run "$R"/mnt
 install -m755 "$W/item-recovery" "$R/sbin/item-recovery"
 ln -s sbin/item-recovery "$R/init"
-for a in reboot poweroff halt; do ln -s item-recovery "$R/sbin/$a"; done
+for a in reboot poweroff halt truncate mountpoint; do ln -s item-recovery "$R/sbin/$a"; done
 install -m755 "$W/boot/rd/bin/busybox" "$R/bin/busybox"
-# Every applet the port's initramfs links to busybox, but those that are
-# PID 1's to do (init, and reboot: busybox's would only signal PID 1).
-for d in bin sbin; do
-    for f in "$W/boot/rd/$d"/*; do
-        [ -L "$f" ] || continue
-        case "$(readlink "$f")" in *busybox) ;; *) continue ;; esac
-        a=$(basename "$f")
-        case "$a" in init|reboot|poweroff|halt|linuxrc) continue ;; esac
-        [ -e "$R/bin/$a" ] || [ -e "$R/sbin/$a" ] || ln -s busybox "$R/bin/$a"
-    done
+# Every applet busybox has (its own list, run here under qemu; else the
+# names the port's initramfs gives it, hard links there), but those that
+# are PID 1's (init; reboot: busybox's would only signal PID 1) or ours.
+if command -v qemu-aarch64-static >/dev/null; then
+    APPLETS=$(qemu-aarch64-static "$R/bin/busybox" --list)
+else
+    APPLETS=$(for f in "$W/boot/rd/bin"/* "$W/boot/rd/sbin"/*; do [ "$f" -ef "$W/boot/rd/bin/busybox" ] && basename "$f"; done)
+fi
+for a in $APPLETS; do
+    case "$a" in busybox|init|reboot|poweroff|halt|linuxrc|truncate|mountpoint) continue ;; esac
+    [ -e "$R/bin/$a" ] || ln -s busybox "$R/bin/$a"
 done
+[ -e "$R/bin/sh" ] || die "no sh among busybox's applets"
 cp "$E2"/mke2fs "$E2"/*.so* "$R/lib/e2fs/"
 chmod 755 "$R/lib/e2fs/mke2fs" "$R/lib/e2fs/ld-linux-aarch64.so.1"
 cp "$E2/mke2fs.conf" "$R/etc/mke2fs.conf"
