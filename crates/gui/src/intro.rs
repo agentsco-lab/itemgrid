@@ -21,6 +21,12 @@ use std::time::Instant;
 const CAPTION_S: f32 = 2.5;
 
 pub const WORD: [&str; 9] = ["i", "t", "e", "m", "/", "g", "r", "i", "d"];
+/// The word turned by its "/" (main.rs's dials): the table's edge and its
+/// light, a cube each; the last cube blank.
+pub const EDGE: [&str; 9] = ["e", "d", "g", "e", "/", "l", "i", "t", ""];
+/// How long the word takes to turn over (seconds); its letters change at
+/// the middle.
+const FLIP_S: f32 = 0.6;
 
 /// The word's letters on cubes: item/ (grid lies in the table's squares,
 /// flat).
@@ -67,6 +73,9 @@ pub struct Intro {
     note: Option<(String, Instant)>,
     /// What the last cube turned set, since when.
     caption: Option<(String, Instant)>,
+    /// The word turned to edge/lit (and since when it turned either way).
+    edge: bool,
+    flipped: Option<Instant>,
     /// A square of the table clicked (its middle, px) and when.
     tapped: Option<((f32, f32), Instant)>,
     /// The steps' ways in (the layout's).
@@ -86,7 +95,7 @@ impl Default for Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| crate::clock::now() - std::time::Duration::from_secs_f32(30.0));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, caption: None, tapped: None, timing: TRANS }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, caption: None, edge: false, flipped: None, tapped: None, timing: TRANS }
     }
 }
 
@@ -212,7 +221,7 @@ impl Intro {
             // the table (grid lies in it all along); a letter hops still
             // as the phone is looked for.
             let stand = if i < ON_CUBES { 0.5 * risen * (1.0 - self.down(i)) } else { 0.0 };
-            let hop = self.hop(i).max(0.0) * 0.5;
+            let hop = (self.hop(i).max(0.0) + self.flip_hop(i)) * 0.5;
             (there, (stand * (1.0 + self.hop(i)) + if stand <= 0.0 { hop } else { 0.0 }).max(0.0))
         })
     }
@@ -223,6 +232,24 @@ impl Intro {
     pub fn turn(&mut self, i: usize, caption: String) {
         self.pressed = Some((i, crate::clock::now()));
         self.caption = Some((caption, crate::clock::now()));
+    }
+
+    /// The word turned over: item/grid to edge/lit and back.
+    pub fn flip(&mut self) {
+        self.edge = !self.edge;
+        self.flipped = Some(crate::clock::now());
+    }
+
+    /// Whether the word is edge/lit (its cubes the table's edge and light).
+    pub fn edge(&self) -> bool {
+        self.edge
+    }
+
+    /// The word's letters as drawn now: the new ones from the turn's
+    /// middle.
+    pub fn letters(&self) -> [&'static str; WORD.len()] {
+        let turning = self.flipped.is_some_and(|at| crate::clock::secs_since(at) < FLIP_S / 2.0);
+        if self.edge != turning { EDGE } else { WORD }
     }
 
     /// The caption of the last cube turned and its strength (it fades
@@ -289,6 +316,17 @@ impl Intro {
         Some(took)
     }
 
+    /// A cube's hop as the word turns over: along it, one after another.
+    fn flip_hop(&self, i: usize) -> f32 {
+        let Some(at) = self.flipped else { return 0.0 };
+        let t = crate::clock::secs_since(at) / FLIP_S - i as f32 * 0.04;
+        if (0.0..1.0).contains(&t) {
+            0.5 * (t * std::f32::consts::PI).sin()
+        } else {
+            0.0
+        }
+    }
+
     /// Each cube's lift above its height (a part of it): the press, the
     /// wave along the word.
     fn hop(&self, i: usize) -> f32 {
@@ -343,7 +381,9 @@ impl Intro {
         let moving = self.pressed.is_some_and(|(_, at)| crate::clock::secs_since(at) < PRESS_S + 0.05)
             || self.tapped.is_some_and(|(_, at)| crate::clock::secs_since(at) < TAP_S + 0.05)
             || self.search.is_some_and(|(since, _)| crate::clock::secs_since(since) < 30.0 && (self.searching() || crate::clock::secs_since(since) < SEARCH_MIN_S + 0.4))
-            || self.note.as_ref().is_some_and(|(_, at)| crate::clock::secs_since(*at) < 0.5);
+            || self.note.as_ref().is_some_and(|(_, at)| crate::clock::secs_since(*at) < 0.5)
+            || self.flipped.is_some_and(|at| crate::clock::secs_since(at) < FLIP_S + 0.4)
+            || self.caption.as_ref().is_some_and(|(_, at)| crate::clock::secs_since(*at) < CAPTION_S + 0.1);
         let sink_to = self.sink_to;
         let d = sink_to - self.sink;
         if d.abs() < 1e-4 {

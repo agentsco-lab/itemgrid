@@ -81,11 +81,12 @@ const FLOOR_SQUARE: f64 = 20.0;
 
 /// Half the word's width, in squares (its cubes laid about their middle).
 const WORD_HALF: f32 = intro::WORD.len() as f32 / 2.0;
-/// The "/" in the word (intro::WORD): the night-and-day button - a letter
-/// as the others, but pressed, night (or day) comes from it. The owner:
-/// "кнопку смены темы ... прямо на '/'" (2026-10-08; its colour was the
-/// other side's for a moment, then "давай не инвертировать").
+/// The "/" in the word (intro::WORD): it turns the word over, item/grid to
+/// edge/lit and back (the owner, 2026-10-24); night moved to grid's i.
 const SLASH: usize = 4;
+/// item/grid's second "i": night (or day) comes from it when pressed (on
+/// the "/" from 2026-10-08 until the word turned over).
+const NIGHT_CUBE: usize = 7;
 
 /// Night: the table dark, its lines light - by the night button on the
 /// table (kept in ~/.config/itemgrid/night: day or night).
@@ -129,10 +130,6 @@ fn kept_ink() -> Option<usize> {
     INKS.iter().position(|(n, _)| *n == name.trim())
 }
 
-fn keep_ink(i: usize) {
-    let _ = std::fs::create_dir_all(lines_file().parent().unwrap_or(std::path::Path::new(".")));
-    let _ = std::fs::write(lines_file(), format!("{}\n", INKS[i].0));
-}
 
 /// The lines' width chosen in the settings (`width`: one of WIDTHS, px),
 /// kept in ~/.config/itemgrid/width over the layout's own.
@@ -324,13 +321,18 @@ fn hex_rgb(hex: &str) -> [f64; 3] {
 
 // ---- the dials: cubes of the word turned for a setting -------------------
 
-/// The word's cubes that are dials (i t e m / g r i d), for the table's
-/// grid - here and on the recovery's screen on the phone: g its colour, r
-/// its strength, d its lines' width. "/" turns night (its own code); the
-/// rest look for the phone.
-const DIAL_COLOUR: usize = 5;
-const DIAL_GRID: usize = 6;
-const DIAL_WIDTH: usize = 8;
+/// The word's cubes that are dials. item/grid: g the grid's colour, r its
+/// strength, d its lines' width (the table here and the recovery's screen
+/// on the phone); i t e m look for the phone, the second i is night.
+/// edge/lit: e the rim's width, d its shape, g its curve, e the lines'
+/// fade; l the light's strength, i its reach, t the lamp's place.
+fn dial_name(i: usize, edge: bool) -> Option<&'static str> {
+    if edge {
+        ["edge", "shape", "curve", "fade", "", "light", "reach", "lamp", ""].get(i).copied().filter(|n| !n.is_empty())
+    } else {
+        ["", "", "", "", "", "colour", "grid", "", "lines"].get(i).copied().filter(|n| !n.is_empty())
+    }
+}
 
 /// The colours the colour cube goes round: item's accents (core's
 /// look::PALETTE) after "ink" (the lines as the settings have them).
@@ -371,26 +373,58 @@ fn keep_accent(i: usize) {
     let _ = std::fs::write(accent_file(), format!("{}\n", ACCENTS[i].0));
 }
 
-/// A dial turned a step: the grid's setting, said on the word's row, and
+/// A dial turned a step: its setting, said on the word's row; the grid's
 /// kept for the recovery's screen.
-fn dial(ui: &Rc<Ui>, i: usize) {
-    let caption = match i {
-        DIAL_COLOUR => {
+fn dial(ui: &Rc<Ui>, i: usize, edge: bool) {
+    let name = dial_name(i, edge).unwrap_or("");
+    let caption = match name {
+        "edge" | "shape" | "curve" | "fade" => {
+            let r = rim::get();
+            let r = match name {
+                "edge" => rim::Rim { width: lamp::next(r.width, rim::WIDTHS.len()), ..r },
+                "shape" => rim::Rim { shape: lamp::next(r.shape, rim::SHAPES.len()), ..r },
+                "curve" => rim::Rim { curve: lamp::next(r.curve, rim::CURVES.len()), ..r },
+                _ => rim::Rim { fade: lamp::next(r.fade, rim::FADES.len()), ..r },
+            };
+            rim::set(r);
+            match name {
+                "edge" => format!("edge {}", rim::WIDTHS[r.width].0),
+                "shape" => format!("shape {}", rim::SHAPES[r.shape]),
+                "curve" => format!("curve {}", rim::CURVES[r.curve]),
+                _ => format!("fade {}", rim::FADES[r.fade].0),
+            }
+        }
+        "light" | "reach" | "lamp" => {
+            let l = lamp::get();
+            let l = match name {
+                "light" => lamp::Lamp { strength: lamp::next(l.strength, lamp::STRENGTHS.len()), ..l },
+                "reach" => lamp::Lamp { reach: lamp::next(l.reach, lamp::REACHES.len()), ..l },
+                _ => lamp::Lamp { mode: lamp::next(l.mode, lamp::MODES.len()), ..l },
+            };
+            lamp::set(l);
+            match name {
+                "light" => format!("light {}", lamp::STRENGTHS[l.strength].0),
+                "reach" => format!("reach {}", lamp::REACHES[l.reach].0),
+                _ => format!("lamp {}", lamp::MODES[l.mode]),
+            }
+        }
+        "colour" => {
             let n = (accent_index() + 1) % ACCENTS.len();
             keep_accent(n);
             format!("colour {}", ACCENTS[n].0)
         }
-        DIAL_WIDTH => {
+        "lines" => {
             let w = (style().width + 1) % WIDTHS.len();
             set_style(Style { width: w, ..style() });
             keep_width(w);
             format!("lines {}", WIDTHS[w])
         }
-        _ => {
+        "grid" => {
             let g = (GRID.load(std::sync::atomic::Ordering::Relaxed) + 1) % GRIDS.len();
             set_grid(g);
             format!("grid {}", GRIDS[g].0)
         }
+        _ => return,
     };
     keep_recovery_grid();
     trace(format_args!("dial {i}: {caption}"));
@@ -2167,61 +2201,6 @@ fn build(app: &adw::Application) {
                 if let Some(l) = page_line {
                     let key = ui.page.borrow().as_ref().map(|(_, b)| b.lines[l].key.clone()).unwrap_or_default();
                     match key.as_str() {
-                        "set:night" => turn_night_mode(&ui),
-                        // The lines' colour: the one clicked taken, the table
-                        // drawn again in it.
-                        k if k.starts_with("set:lines:") => {
-                            if let Some(i) = INKS.iter().position(|(n, _)| *n == &k["set:lines:".len()..]) {
-                                set_style(Style { ink: i, ..style() });
-                                keep_ink(i);
-                                ui.floor.queue_draw();
-                                ui.floor_gl.queue_render();
-                            }
-                        }
-                        // The lines' width (WIDTHS) and strength (GRIDS): the
-                        // next of each.
-                        "set:width" => {
-                            let w = (style().width + 1) % WIDTHS.len();
-                            set_style(Style { width: w, ..style() });
-                            keep_width(w);
-                            ui.floor.queue_draw();
-                            ui.floor_gl.queue_render();
-                        }
-                        "set:grid" => {
-                            set_grid((GRID.load(std::sync::atomic::Ordering::Relaxed) + 1) % GRIDS.len());
-                            ui.floor.queue_draw();
-                            ui.floor_gl.queue_render();
-                        }
-                        // The table's rim: how wide, its curve, its form; how
-                        // far the lines fade - each turned a step round.
-                        "set:rim" | "set:curve" | "set:shape" | "set:fade" => {
-                            let r = rim::get();
-                            rim::set(match key.as_str() {
-                                "set:rim" => rim::Rim { width: lamp::next(r.width, rim::WIDTHS.len()), ..r },
-                                "set:curve" => rim::Rim { curve: lamp::next(r.curve, rim::CURVES.len()), ..r },
-                                "set:shape" => rim::Rim { shape: lamp::next(r.shape, rim::SHAPES.len()), ..r },
-                                _ => rim::Rim { fade: lamp::next(r.fade, rim::FADES.len()), ..r },
-                            });
-                            ui.floor.queue_draw();
-                            ui.floor_gl.queue_render();
-                        }
-                        // The lamp under the table: how strong, how far, where -
-                        // each turned a step round.
-                        "set:light" | "set:reach" | "set:lamp" => {
-                            let l = lamp::get();
-                            lamp::set(match key.as_str() {
-                                "set:light" => lamp::Lamp { strength: lamp::next(l.strength, lamp::STRENGTHS.len()), ..l },
-                                "set:reach" => lamp::Lamp { reach: lamp::next(l.reach, lamp::REACHES.len()), ..l },
-                                _ => lamp::Lamp { mode: lamp::next(l.mode, lamp::MODES.len()), ..l },
-                            });
-                            show_fold(&ui, ui.fold.get().0);
-                            ui.floor.queue_draw();
-                            ui.floor_gl.queue_render();
-                        }
-                        "set:developer" => set_developer_mode(!developer_mode()),
-                        // Into the wallpaper or back (the boards closed on the
-                        // way).
-                        "set:wallpaper" => wallpaper(&ui),
                         // The updates' details: opened or closed (their lines
                         // turning up, or gone).
                         k if k.starts_with("do:") || k.starts_with("ask:") => {
@@ -2261,11 +2240,6 @@ fn build(app: &adw::Application) {
                         }
                         _ => return,
                     }
-                    trace(format_args!("setting {key} turned"));
-                    keep_recovery_grid();
-                    let _ = l;
-                    refresh_settings(&ui);
-                    return;
                 }
                 let fv = ui.floor_view.borrow();
                 let line = table_under(&fv, (x, y)).and_then(|t| ui.board.borrow().as_ref().and_then(|b| b.line_at(fv.board_at, square() * fv.k, t)));
@@ -2285,7 +2259,6 @@ fn build(app: &adw::Application) {
                 let on_table = on_table.or_else(|| key.as_deref().filter(|k| ["about", "storage", "updates"].contains(k)).map(|k| (k.to_owned(), vec![("", "no duo yet".to_owned())])));
                 // item/grid's own: its settings (lines to click), about it.
                 let own = match key.as_deref() {
-                    Some("settings") => Some(settings_lines(&ui)),
                     Some("keys") => {
                         keyring::load(&ui);
                         Some(keyring::lines(&ui))
@@ -2341,11 +2314,25 @@ fn build(app: &adw::Application) {
             // once they have.
             if n == 1 && ui.intro.borrow().done() {
                 let fv = ui.floor_view.borrow();
-                if cube_at(&fv, (x, y)) == Some(SLASH) {
-                    let cur = square() * fv.k;
-                    let from = (fv.cubes_at.0 + (SLASH as f32 - WORD_HALF + 0.5) * cur, fv.cubes_at.1);
+                let at = cube_at(&fv, (x, y));
+                let edge = ui.intro.borrow().edge();
+                // The "/": the word turned over, item/grid to edge/lit (its
+                // cubes the table's edge and light) and back.
+                if at == Some(SLASH) {
                     drop(fv);
-                    trace(format_args!("the slash pressed: night turned"));
+                    ui.intro.borrow_mut().flip();
+                    trace(format_args!("the word turned: {}", if edge { "item/grid" } else { "edge/lit" }));
+                    show_fold(&ui, ui.fold.get().0);
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    return;
+                }
+                // item/grid's second i: night (or day) coming from it, the
+                // squares turning over from it; the colours follow.
+                if at == Some(NIGHT_CUBE) && !edge {
+                    let cur = square() * fv.k;
+                    let from = (fv.cubes_at.0 + (NIGHT_CUBE as f32 - WORD_HALF + 0.5) * cur, fv.cubes_at.1);
+                    drop(fv);
+                    trace(format_args!("the night cube pressed: night turned"));
                     if ui.night_waves.borrow().len() < grid_gl::WAVES {
                         ui.night_waves.borrow_mut().push((crate::clock::now(), from, false));
                     }
@@ -2354,13 +2341,12 @@ fn build(app: &adw::Application) {
                 }
                 // A dial (with the phone there or not): its setting turned
                 // round, nothing looked for.
-                let dial_at = cube_at(&fv, (x, y)).filter(|i| [DIAL_COLOUR, DIAL_GRID, DIAL_WIDTH].contains(i));
                 drop(fv);
-                if let Some(i) = dial_at {
+                if let Some(i) = at.filter(|i| dial_name(*i, edge).is_some()) {
                     if let Some(b) = ui.board.borrow_mut().as_mut() {
                         b.close();
                     }
-                    dial(&ui, i);
+                    dial(&ui, i, edge);
                     g.set_state(gtk::EventSequenceState::Claimed);
                     return;
                 }
@@ -4040,6 +4026,8 @@ struct FloorView {
     grid: f32,
     word: f32,
     cubes: [(f32, f32); intro::WORD.len()],
+    /// The word's letters now (item/grid, or edge/lit turned by its "/").
+    letters: [&'static str; intro::WORD.len()],
     /// How far the eye has come down (0 straight above .. 1).
     eye: f32,
     /// The cubes' middle on the table (px, in the table's squares).
@@ -4525,7 +4513,7 @@ fn draw_cubes(fv: &FloorView, cr: &gtk::cairo::Context) {
             cr.set_line_width(1.6);
             let _ = cr.stroke();
         }
-        let Some(letter) = intro::WORD.get(c.i) else { continue };
+        let Some(letter) = fv.letters.get(c.i).filter(|l| !l.is_empty()) else { continue };
         // The letter on the top: the face's own frame (its corners), the
         // letter laid in it.
         let ch = letter.chars().next().unwrap_or(' ');
@@ -5762,7 +5750,7 @@ fn menu_lines(ui: &Ui) -> Vec<board::Line> {
     if let Some(serial) = stock_android(ui) {
         let _ = serial;
         // (install: under the phone's words, its line to click.)
-        return vec![board::Line::new("settings", "settings"), board::Line::new("itemgrid", "about")];
+        return vec![board::Line::new("itemgrid", "about")];
     }
     let mut lines: Vec<board::Line> = if phone {
         // (repair shown as "stock": the way back to the phone's Android.)
@@ -5770,32 +5758,13 @@ fn menu_lines(ui: &Ui) -> Vec<board::Line> {
     } else {
         Vec::new()
     };
-    lines.push(board::Line::new("settings", "settings"));
+    // (The table's look is the word's cubes: dial().)
     if !phone {
         lines.push(board::Line::new("itemgrid", "about"));
     }
     lines
 }
 
-/// The settings' board, if open, set to the settings as they are now: its
-/// lines turned up anew where changed; laid anew if lines came or went.
-fn refresh_settings(ui: &Ui) {
-    let lines = settings_lines(ui);
-    let mut page = ui.page.borrow_mut();
-    let Some((key, b)) = page.as_mut() else { return };
-    if key != "settings" || b.closing() {
-        return;
-    }
-    if b.lines.len() != lines.len() {
-        *b = board::Board::open(lines);
-        return;
-    }
-    for (i, new) in lines.into_iter().enumerate() {
-        if b.lines[i].text != new.text {
-            b.set_line(i, new.text);
-        }
-    }
-}
 
 /// A click at `p` on the page (the floor's px): on the drawn Duo over Wi-Fi,
 /// it is opened flat or shut (a picture only); whether it was on it.
@@ -5949,45 +5918,6 @@ fn saver_off(ui: &Ui) {
     }
 }
 
-/// item/grid's settings as a board's lines (each clicked turns it).
-fn settings_lines(ui: &Ui) -> Vec<board::Line> {
-    let night = match night_mode().as_str() {
-        "night" => "on".to_owned(),
-        "day" => "off".to_owned(),
-        _ => "auto".to_owned(),
-    };
-    // (Night is the button on the table; the wallpaper and the developer
-    // mode are not offered: 2026-10-08.)
-    let _ = (night, ui);
-    // The lines' colour (INKS), the one set marked; the light under the
-    // table.
-    let ink = style().ink;
-    let mut lines = vec![board::Line::new("", "lines")];
-    for (i, (name, _)) in INKS.iter().enumerate() {
-        lines.push(board::Line::new(format!("set:lines:{name}"), format!("{} {name}", if i == ink { "•" } else { "›" })));
-    }
-    lines.push(board::Line::new("set:width", format!("width {}", WIDTHS[style().width.min(WIDTHS.len() - 1)])));
-    lines.push(board::Line::new("set:grid", format!("grid {}", GRIDS[GRID.load(std::sync::atomic::Ordering::Relaxed).min(GRIDS.len() - 1)].0)));
-    let r = rim::get();
-    lines.push(board::Line::new("set:rim", format!("rim {}", rim::WIDTHS[r.width].0)));
-    lines.push(board::Line::new("set:curve", format!("curve {}", rim::CURVES[r.curve])));
-    lines.push(board::Line::new("set:shape", format!("shape {}", rim::SHAPES[r.shape])));
-    lines.push(board::Line::new("set:fade", format!("lines fade {}", rim::FADES[r.fade].0)));
-    let lp = lamp::get();
-    lines.push(board::Line::new("set:light", format!("light {}", lamp::STRENGTHS[lp.strength].0)));
-    lines.push(board::Line::new("set:reach", format!("reach {}", lamp::REACHES[lp.reach].0)));
-    lines.push(board::Line::new("set:lamp", format!("lamp {}", lamp::MODES[lp.mode])));
-    lines
-}
-
-/// Night or day shown as due: the table, the window.
-fn show_night(ui: &Ui) {
-    let on = night_due();
-    if on == night() {
-        return;
-    }
-    set_night_now(ui, on);
-}
 
 /// Night (or day) shown now: the window's colours, the table's.
 fn set_night_now(ui: &Ui, on: bool) {
@@ -6008,24 +5938,16 @@ fn set_night_css(ui: &Ui, on: bool) {
     ui.floor_gl.queue_render();
 }
 
-/// The night setting turned: night, day.
-fn turn_night_mode(ui: &Ui) {
-    let next = if night_mode() == "night" { "day" } else { "night" };
-    let _ = std::fs::create_dir_all(night_file().parent().unwrap_or(std::path::Path::new(".")));
-    let _ = std::fs::write(night_file(), format!("{next}\n"));
-    show_night(ui);
-}
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum FloorButton {
     Menu,
     Close,
 }
 
-/// In the word's row at the page's right (the wallpaper turned in the
-/// settings). (Two more stood here once: the start played again - still
-/// there from the window's socket, "replay" - and night and day, the
-/// word's "/" now (SLASH); the owner, 2026-10-08.)
+/// In the word's row at the page's right. (Two more stood here once: the
+/// start played again - still there from the window's socket, "replay" -
+/// and night and day, a cube of the word now (NIGHT_CUBE); the owner,
+/// 2026-10-08.)
 const FLOOR_BUTTONS: [Option<FloorButton>; BUTTONS] = [Some(FloorButton::Menu), Some(FloorButton::Close)];
 const BUTTONS: usize = 2;
 
@@ -7135,6 +7057,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             }
         }
         let (grid, word, cubes) = (intro.grid(), intro.word(), intro.cubes());
+        let letters = intro.letters();
         let note = intro.note().map(|(t, a)| (t.to_owned(), a));
         let tapped = intro.tapped();
         let hover_button = ui.buttons.borrow().hover;
@@ -7487,7 +7410,7 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let mut fv = ui.floor_view.borrow_mut();
         let changed = fv.off != off || fv.at != at || fv.matrix != Some(rest) || fv.hole.is_some() != (ui.cable.is_visible() && shown > 0.5) || (fv.grid, fv.word, fv.cubes, fv.eye, fv.cubes_at) != (grid, word, cubes, eye, cubes_at) || fv.note != note || fv.tapped != tapped || fv.texts != texts || fv.tiles != tiles || fv.board_at != board_at || fv.page_at != page_at || fv.act_at != act_at || fv.waves != waves || fv.near_at != near_at || fv.eye_x != eye_x || fv.hover_button != hover_button || fv.buttons_at != buttons_at || fv.button_lift != button_lift || fv.button_in != button_in || fv.reach != reach || fv.grid_mid != grid_mid || fv.sheet != Some(sheet) || fv.part_alpha != part_alpha || fv.lamp != lamp_at || fv.lamp_r != lamp_r || fv.lamp_k != lamp_k || fv.lamp_mark != lamp_mark || fv.progress != progress;
         // The hole only with the cable going down it.
-        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid, lamp: lamp_at, lamp_r, lamp_k, lamp_mark, progress };
+        *fv = FloorView { matrix: Some(rest), off, at, k, table: -DUO_THICK, hole: (ui.cable.is_visible() && shown > 0.5).then_some(([hole[0] * place.duo_scale + duo_on_sheet.0, hole[1] * place.duo_scale + duo_on_sheet.1, hole[2] * place.duo_scale + duo_on_sheet.0, hole[3] * place.duo_scale + duo_on_sheet.1], depth)), sheet: Some(sheet), part_alpha, grid, word, cubes, letters, eye, cubes_at, note, tapped, texts, tiles, board_at, page_at, act_at, edit_boxes, duo_corner, waves, near_at, size: (ui.floor.width() as f32, ui.floor.height() as f32), eye_x, buttons_at, button_lift, button_in, hover_button, reach, grid_mid, lamp: lamp_at, lamp_r, lamp_k, lamp_mark, progress };
         if changed {
             ui.floor.queue_draw();
             ui.floor_gl.queue_render();
