@@ -10,6 +10,9 @@
 //!   progress 0.62
 //!   state work|done|error
 //!   id 00001             (the phone's item id, item/grid's to know)
+//!   line #ffffff         (the grid as item/grid's window draws it:
+//!   strength 1.0          its lines' colour by night, how strong,
+//!   width 2.0             how wide)
 //! Before it does: waiting for item/grid, the phone's serial.
 
 use fontdue::{Font, FontSettings};
@@ -28,6 +31,11 @@ pub struct Status {
     pub state: String,
     pub serial: String,
     pub id: String,
+    /// The grid's lines: colour, strength (1 plain), width (px on the
+    /// computer's table).
+    pub line: Option<u32>,
+    pub strength: f32,
+    pub width: f32,
 }
 
 impl Status {
@@ -49,6 +57,9 @@ impl Status {
                 "progress" => s.progress = v.parse::<f32>().ok().map(|p| p.clamp(0.0, 1.0)),
                 "state" => s.state = v,
                 "id" => s.id = v,
+                "line" => s.line = u32::from_str_radix(v.trim_start_matches('#'), 16).ok(),
+                "strength" => s.strength = v.parse().unwrap_or(0.0),
+                "width" => s.width = v.parse().unwrap_or(0.0),
                 _ => {}
             }
         }
@@ -59,7 +70,6 @@ impl Status {
 /// Colours, 0xRRGGBB: the table at night, its lines, the letters (dim,
 /// lit), the accents.
 const PAPER: u32 = 0x242526;
-const LINE: u32 = 0x303133;
 const DIM: u32 = 0x77797c;
 const LIT: u32 = 0xe4e6e8;
 const GREEN: u32 = 0x57e389;
@@ -87,12 +97,17 @@ impl Painter {
         let rows = h / sq;
         let ox = (w - sq * ACROSS) / 2;
         let oy = (h - sq * rows) / 2;
-        // The table and its grid.
+        // The table and its grid: the lines as item/grid's window has
+        // them (their colour on the dark table, how strong, how wide), else
+        // a faint white.
+        let strength = if s.strength > 0.0 { s.strength } else { 1.0 };
+        let line = blend(PAPER, s.line.unwrap_or(0xffffff), ((0.16 * strength).clamp(0.04, 0.5) * 255.0) as u32);
+        let thick = if s.width > 0.0 { (s.width * 0.8).round().clamp(1.0, 4.0) as usize } else { 1 };
         for y in 0..h {
             let row = &mut px[y * stride..y * stride + w];
-            let on_line = y >= oy && (y - oy) % sq == 0;
+            let on_line = y >= oy && (y - oy) % sq < thick;
             for (x, p) in row.iter_mut().enumerate() {
-                *p = if on_line || (x >= ox && (x - ox) % sq == 0) { LINE } else { PAPER };
+                *p = if on_line || (x >= ox && (x - ox) % sq < thick) { line } else { PAPER };
             }
         }
         let mut g = Grid { px, stride, sq, ox, oy, across: ACROSS, rows };
@@ -281,6 +296,8 @@ pub fn preview(dir: &str, font: &str) -> i32 {
     };
     let Some(mut p) = Painter::new(&bytes) else { return 1 };
     let steps = "userdata|system|check|ssh key|restart";
+    // The grid as item/grid's window keeps it here, if it does.
+    let grid = std::env::var_os("HOME").and_then(|h| std::fs::read_to_string(std::path::Path::new(&h).join(".config/itemgrid/recovery-grid")).ok()).unwrap_or_default();
     let cases = [
         ("waiting", Status::waiting("903855502467")),
         ("writing", Status::read(&format!("title writing the system\ndetail 3.4 of 5.4 gb\nsteps {steps}\nstep 1\nprogress 0.62\nstate work\nid 00001"), "903855502467")),
@@ -288,7 +305,9 @@ pub fn preview(dir: &str, font: &str) -> i32 {
         ("error", Status::read(&format!("title the image did not arrive whole\ndetail nothing else changed. run it again from item/grid\nsteps {steps}\nstep 2\nstate error"), "903855502467")),
     ];
     let (w, h) = (1350, 1800);
-    for (name, s) in cases {
+    for (name, mut s) in cases {
+        let g = Status::read(&grid, "");
+        (s.line, s.strength, s.width) = (g.line, g.strength, g.width);
         for which in 0..2 {
             let mut px = vec![0u32; w * h];
             p.panel(which, &s, &mut px, w, h, w);

@@ -324,19 +324,18 @@ fn hex_rgb(hex: &str) -> [f64; 3] {
 
 // ---- the dials: cubes of the word turned for a setting -------------------
 
-/// The word's cubes that are dials (i t e m / g r i d): g the colour (item's
-/// accent on the phone and the table's lines here), r the phone's
-/// wallpaper, d the lines' width. "/" turns night (its own code); the rest
-/// look for the phone.
+/// The word's cubes that are dials (i t e m / g r i d), for the table's
+/// grid - here and on the recovery's screen on the phone: g its colour, r
+/// its strength, d its lines' width. "/" turns night (its own code); the
+/// rest look for the phone.
 const DIAL_COLOUR: usize = 5;
-const DIAL_WALL: usize = 6;
+const DIAL_GRID: usize = 6;
 const DIAL_WIDTH: usize = 8;
 
-/// The colours the colour cube goes round: item's own accents (core's
-/// look::PALETTE) after "auto" (the phone's from its wallpaper, the lines
-/// here as the settings have them).
+/// The colours the colour cube goes round: item's accents (core's
+/// look::PALETTE) after "ink" (the lines as the settings have them).
 const ACCENTS: [(&str, Option<&str>); 8] = [
-    ("auto", None),
+    ("ink", None),
     ("coral", Some("#f08a7b")),
     ("yellow", Some("#e9df6a")),
     ("green", Some("#86d68f")),
@@ -346,8 +345,7 @@ const ACCENTS: [(&str, Option<&str>); 8] = [
     ("pink", Some("#f092bb")),
 ];
 
-/// The colour cube's choice, kept in ~/.config/itemgrid/accent (and
-/// whether the phone has yet to be told it: `accent-pending`).
+/// The colour cube's choice, kept in ~/.config/itemgrid/accent.
 fn accent_file() -> std::path::PathBuf {
     glib::user_config_dir().join("itemgrid/accent")
 }
@@ -367,33 +365,20 @@ fn accent_index() -> usize {
     i
 }
 
-/// The colour cube's choice kept, and marked for the phone (told now if
-/// it is here, else when it is next seen).
 fn keep_accent(i: usize) {
     ACCENT.store(i, std::sync::atomic::Ordering::Relaxed);
     let _ = std::fs::create_dir_all(accent_file().parent().unwrap_or(std::path::Path::new(".")));
     let _ = std::fs::write(accent_file(), format!("{}\n", ACCENTS[i].0));
-    let _ = std::fs::write(accent_pending(), "");
 }
 
-fn accent_pending() -> std::path::PathBuf {
-    accent_file().with_file_name("accent-pending")
-}
-
-/// A dial turned a step: the setting, what it says under the word, and
-/// the phone told (its colour, its wallpaper) if it is here.
+/// A dial turned a step: the grid's setting, said on the word's row, and
+/// kept for the recovery's screen.
 fn dial(ui: &Rc<Ui>, i: usize) {
-    let host = ui.state.borrow().host.clone();
     let caption = match i {
         DIAL_COLOUR => {
             let n = (accent_index() + 1) % ACCENTS.len();
             keep_accent(n);
-            tell_accent(ui);
-            match (n, host.is_some()) {
-                (0, _) => "colour auto".to_owned(),
-                (_, true) => format!("colour {}", ACCENTS[n].0),
-                (_, false) => format!("colour {} later", ACCENTS[n].0),
-            }
+            format!("colour {}", ACCENTS[n].0)
         }
         DIAL_WIDTH => {
             let w = (style().width + 1) % WIDTHS.len();
@@ -401,14 +386,13 @@ fn dial(ui: &Rc<Ui>, i: usize) {
             keep_width(w);
             format!("lines {}", WIDTHS[w])
         }
-        _ => match host {
-            None => "wall: no phone".to_owned(),
-            Some(host) => {
-                next_wall(ui, host);
-                "wall…".to_owned()
-            }
-        },
+        _ => {
+            let g = (GRID.load(std::sync::atomic::Ordering::Relaxed) + 1) % GRIDS.len();
+            set_grid(g);
+            format!("grid {}", GRIDS[g].0)
+        }
     };
+    keep_recovery_grid();
     trace(format_args!("dial {i}: {caption}"));
     ui.intro.borrow_mut().turn(i, caption);
     ui.floor.queue_draw();
@@ -416,57 +400,15 @@ fn dial(ui: &Rc<Ui>, i: usize) {
     show_fold(ui, ui.fold.get().0);
 }
 
-/// The colour cube's choice to the phone (item's accent), if it is here
-/// and has not had it yet.
-fn tell_accent(ui: &Rc<Ui>) {
-    let Some(host) = ui.state.borrow().host.clone() else { return };
-    if !accent_pending().exists() {
-        return;
-    }
-    let accent = ACCENTS[accent_index()].1.unwrap_or("auto").to_owned();
-    glib::spawn_future_local(async move {
-        let a = accent.clone();
-        let done = gio::spawn_blocking(move || itemgrid_core::look::set_accent(&host, &a)).await;
-        match done {
-            Ok(Ok(())) => {
-                let _ = std::fs::remove_file(accent_pending());
-                trace(format_args!("accent {accent} on the phone"));
-            }
-            Ok(Err(e)) => trace(format_args!("accent {accent} not on the phone: {e}")),
-            Err(_) => {}
-        }
-    });
-}
-
-/// The phone's next wallpaper (by name, round its set), on both panels;
-/// said under the word as "wallpaper N of M".
-fn next_wall(ui: &Rc<Ui>, host: String) {
-    let ui = ui.clone();
-    glib::spawn_future_local(async move {
-        let done = gio::spawn_blocking(move || -> Result<(usize, usize), String> {
-            let look = itemgrid_core::look::read(&host)?;
-            let mut names: Vec<String> = look.walls.iter().map(|w| w.name.clone()).collect();
-            names.sort();
-            names.dedup();
-            if names.is_empty() {
-                return Err("no wallpapers on the phone".into());
-            }
-            let at = names.iter().position(|n| *n == look.both).map_or(0, |i| (i + 1) % names.len());
-            itemgrid_core::look::set_wallpaper(&host, &names[at])?;
-            Ok((at + 1, names.len()))
-        })
-        .await
-        .unwrap_or_else(|_| Err("the work stopped".into()));
-        let caption = match done {
-            Ok((n, of)) => format!("wall {n} of {of}"),
-            Err(e) => {
-                trace(format_args!("wallpaper: {e}"));
-                "wall: not changed".to_owned()
-            }
-        };
-        ui.intro.borrow_mut().turn(DIAL_WALL, caption);
-        show_fold(&ui, ui.fold.get().0);
-    });
+/// The table's grid as the recovery's screen is to draw it (core's
+/// screen.rs reads it): the lines' colour as drawn by night, their
+/// strength, their width - kept in ~/.config/itemgrid/recovery-grid.
+fn keep_recovery_grid() {
+    let c = night_ink_rgb().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let text = format!("line #{:02x}{:02x}{:02x}\nstrength {}\nwidth {}\n", c[0], c[1], c[2], grid_k(), line_width());
+    let path = glib::user_config_dir().join("itemgrid/recovery-grid");
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(path, text);
 }
 
 /// The lines' colour by night: the chosen one lit - its hue kept, raised
@@ -2320,6 +2262,7 @@ fn build(app: &adw::Application) {
                         _ => return,
                     }
                     trace(format_args!("setting {key} turned"));
+                    keep_recovery_grid();
                     let _ = l;
                     refresh_settings(&ui);
                     return;
@@ -2411,7 +2354,7 @@ fn build(app: &adw::Application) {
                 }
                 // A dial (with the phone there or not): its setting turned
                 // round, nothing looked for.
-                let dial_at = cube_at(&fv, (x, y)).filter(|i| [DIAL_COLOUR, DIAL_WALL, DIAL_WIDTH].contains(i));
+                let dial_at = cube_at(&fv, (x, y)).filter(|i| [DIAL_COLOUR, DIAL_GRID, DIAL_WIDTH].contains(i));
                 drop(fv);
                 if let Some(i) = dial_at {
                     if let Some(b) = ui.board.borrow_mut().as_mut() {
@@ -2458,6 +2401,8 @@ fn build(app: &adw::Application) {
         page.add_controller(click);
     }
     *owner.borrow_mut() = Some(ui.clone());
+    // The grid as the recovery's screen is to draw it, as kept now.
+    keep_recovery_grid();
 
     storage.set_draw_func({
         let ui = Rc::downgrade(&ui);
@@ -7695,8 +7640,6 @@ fn fill(ui: &Rc<Ui>, s: &status::Status, link: &str) {
         }
     }
     sections::fill(&ui.sections, s, itemgrid_core::club::known(&s.serial).map(|d| d.number), link, developer_mode());
-    // A colour chosen while the phone was away: told now.
-    tell_accent(ui);
     {
         let mut f = ui.section_words.borrow_mut();
         f.insert("about", sections::about_rows(s, itemgrid_core::club::known(&s.serial).map(|d| d.number), link));

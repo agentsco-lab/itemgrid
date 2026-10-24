@@ -75,8 +75,29 @@ fn write(s: &Shown, title: &str, detail: &str, progress: Option<f64>, state: &st
     if let Some(d) = crate::club::known(&s.serial) {
         text.push_str(&format!("id {}\n", clean(&d.number)));
     }
+    // The table's grid as item/grid draws it (its window keeps it there):
+    // the screen's grid the same.
+    if let Some(grid) = dirs_grid() {
+        text.push_str(&grid);
+    }
     if let Some(p) = progress {
         text.push_str(&format!("progress {:.3}\n", p.clamp(0.0, 1.0)));
     }
     let _ = crate::full::adb_shell(&s.serial, &format!("printf '%s' '{text}' > /run/item-screen.new && mv /run/item-screen.new /run/item-screen"));
+}
+
+/// item/grid's window's grid for the recovery (~/.config/itemgrid/
+/// recovery-grid: line #rrggbb, strength, width), its known lines only.
+fn dirs_grid() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let text = std::fs::read_to_string(std::path::Path::new(&home).join(".config/itemgrid/recovery-grid")).ok()?;
+    let ok = |l: &&str| {
+        let (k, v) = l.split_once(' ').unwrap_or(("", ""));
+        match k {
+            "line" => v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit()),
+            "strength" | "width" => v.parse::<f32>().is_ok(),
+            _ => false,
+        }
+    };
+    Some(text.lines().filter(ok).map(|l| format!("{l}\n")).collect())
 }
