@@ -52,7 +52,8 @@ fn mounts() {
     std::env::set_var("HOME", "/tmp");
 }
 
-/// The UFS partitions linked by their names, as Android's ueventd does:
+/// The UFS partitions as nodes in /dev/block and linked by their names, as
+/// Android's ueventd does:
 /// waited for (the controller probes after init starts) until userdata is
 /// there, 20 s at most.
 fn by_name() {
@@ -88,9 +89,21 @@ fn link_partitions() -> usize {
         let Ok(uevent) = std::fs::read_to_string(e.path().join("uevent")) else { continue };
         let get = |k: &str| uevent.lines().find_map(|l| l.strip_prefix(k)).map(str::to_owned);
         let (Some(name), Some(dev)) = (get("PARTNAME="), get("DEVNAME=")) else { continue };
+        // The node where Android has it, /dev/block/sdXN (item/grid checks
+        // a partition resolves there before it writes), its name a link to
+        // it - as ueventd makes them.
+        let node = format!("/dev/block/{dev}");
+        if !Path::new(&node).exists() {
+            let (Some(major), Some(minor)) = (get("MAJOR=").and_then(|v| v.parse::<u32>().ok()), get("MINOR=").and_then(|v| v.parse::<u32>().ok())) else { continue };
+            let c = CString::new(node.as_str()).unwrap_or_default();
+            // SAFETY: mknod with a valid path for a block device.
+            if unsafe { libc::mknod(c.as_ptr(), libc::S_IFBLK | 0o600, libc::makedev(major, minor)) } != 0 {
+                continue;
+            }
+        }
         let link = format!("{BY_NAME}/{name}");
         if !Path::new(&link).exists() {
-            let _ = std::os::unix::fs::symlink(format!("/dev/{dev}"), &link);
+            let _ = std::os::unix::fs::symlink(&node, &link);
         }
         n += 1;
     }

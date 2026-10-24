@@ -309,6 +309,10 @@ impl Ctx {
 }
 
 fn open(ctx: Ctx, service: &str, input: Inbound, okay: Receiver<()>) {
+    // What the host asks, in the kernel's log (a line, cut short): what a
+    // job did there can be read afterwards.
+    let said: String = service.chars().take(120).map(|c| if c == '\n' { ' ' } else { c }).collect();
+    say!("asked: {said}");
     let (head, rest) = service.split_once(':').unwrap_or((service, ""));
     let mut words = head.split(',');
     let kind = words.next().unwrap_or_default();
