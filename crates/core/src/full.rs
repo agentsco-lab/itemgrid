@@ -320,7 +320,8 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
         // its exit waited for (written at its end).
         let start = std::time::Instant::now();
         loop {
-            let rc = adb_shell(serial, "cat /tmp/itemgrid-sink-rc 2>/dev/null")?;
+            // (true: no file yet is no error.)
+            let rc = adb_shell(serial, "cat /tmp/itemgrid-sink-rc 2>/dev/null; true")?;
             if !rc.trim().is_empty() {
                 let _ = adb_shell(serial, "rm -f /tmp/itemgrid-sink-rc");
                 if rc.trim() != "0" {

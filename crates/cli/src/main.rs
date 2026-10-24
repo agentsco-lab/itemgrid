@@ -51,6 +51,7 @@ fn main() {
         Some("confirm") => cmd_confirm(&args[1..]),
         Some("ramboot") => cmd_ramboot(&args[1..]),
         Some("recovery-exit") => cmd_recovery_exit(),
+        Some("android-finish") => cmd_android_finish(&args[1..]),
         Some("brake") => cmd_brake(),
         Some("stock") => cmd_stock(&args[1..]),
         Some("install") => cmd_install(&args[1..]),
@@ -154,6 +155,35 @@ fn cmd_update(args: &[String]) -> i32 {
     });
     match result {
         Ok(()) => 0,
+        Err(e) => {
+            eprintln!("itemgrid: {e}");
+            1
+        }
+    }
+}
+
+/// The return to Android finished from the recovery (it stopped after
+/// userdata was erased): the plan; with --yes, done.
+fn cmd_android_finish(args: &[String]) -> i32 {
+    let go = args.iter().any(|a| a == "--yes");
+    if let Some(a) = args.iter().find(|a| *a != "--yes") {
+        eprintln!("itemgrid android-finish [--yes]  ({a}: not an option)");
+        return 2;
+    }
+    let seen = itemgrid_core::detect();
+    if seen.mode != Mode::Recovery {
+        eprintln!("itemgrid: the phone is {}, not in the recovery", seen.mode.name());
+        return 1;
+    }
+    let serial = seen.via;
+    let start = std::time::Instant::now();
+    match itemgrid_core::android::finish_clean(&serial, go, &mut |w| said(&start, &w)) {
+        Ok(plan) => {
+            if !go {
+                println!("{plan}\n\nWith --yes, done.");
+            }
+            0
+        }
         Err(e) => {
             eprintln!("itemgrid: {e}");
             1
