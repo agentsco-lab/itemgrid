@@ -28,6 +28,7 @@ pub mod posture;
 pub mod programs;
 pub mod ramboot;
 pub mod restore;
+pub mod screen;
 pub mod screenshot;
 pub mod slots;
 pub mod status;

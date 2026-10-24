@@ -214,6 +214,7 @@ fn serve(from_host: &mut File, out: Sender<Packet>) -> ! {
                     max = (arg1 as usize).clamp(4096, MAX_PAYLOAD);
                     streams.clear();
                     say!("the host connected (payloads of {max})");
+                    let _ = std::fs::write(crate::screen::CONNECTED, "connected\n");
                     let _ = out.send(packet(A_CNXN, VERSION, MAX_PAYLOAD as u32, BANNER.as_bytes().to_vec()));
                 }
                 A_OPEN => {

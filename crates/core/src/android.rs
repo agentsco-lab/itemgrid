@@ -401,16 +401,24 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
     crate::flash::log(&serial, &format!("return to Android begun: {backed} - itemgrid"))?;
 
     // Into TWRP, where the way back is tried and userdata erased.
-    say("into TWRP".into());
+    say("into the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
+    crate::screen::begin(&serial, &["test write", "erase", "android"]);
     say("trying the way back (512 MB onto the phone, checked)".into());
+    crate::screen::step(0, "a test write", "512 mb, checked, nothing kept");
     if let Err(e) = try_the_way_back(&serial) {
+        crate::screen::error(&e);
         let _ = crate::ramboot::leave_recovery(host, &serial, say);
         return Err(e);
     }
     crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - itemgrid", build.fingerprint))?;
-    erase(&serial, say)?;
+    crate::screen::step(1, "erasing linux", "userdata zeroed whole, about 7 minutes");
+    if let Err(e) = erase(&serial, say) {
+        crate::screen::error(&e);
+        return Err(e);
+    }
     crate::flash::log(&serial, "metadata and userdata zeroed and read back - itemgrid")?;
+    crate::screen::done("android starts", "set it up on the phone");
 
     // The stock kernel from RAM, on its slot.
     say("into the bootloader".into());
@@ -604,6 +612,7 @@ pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, l
         let chunk = &buf[..filled];
         whole.update(chunk);
         total += filled as u64;
+        crate::screen::progress(&format!("writing the {label}"), total);
         if chunk.iter().any(|b| *b != 0) {
             let want = format!("{:x}", Sha256::digest(chunk));
             let seek = index * 512;
@@ -786,7 +795,7 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
     let _ = crate::ramboot::check_image(&twrp)?;
     crate::flash::log(&serial, &format!("clean return to Android begun ({}) - itemgrid", build.fingerprint))?;
 
-    say("into TWRP".into());
+    say("into the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - itemgrid", build.fingerprint))?;
     erase(&serial, say)?;

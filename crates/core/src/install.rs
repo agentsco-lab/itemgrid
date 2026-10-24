@@ -128,7 +128,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     }
     crate::flash::log(&serial, &format!("erase and install {} begun ({}) - itemgrid", release.name, mode.words()))?;
 
-    say("into TWRP".into());
+    say("into the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     if !crate::full::fast_tools(&serial) {
         let _ = crate::ramboot::leave_recovery(host, &serial, say);
@@ -163,23 +163,38 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
 /// computer's ssh key put into it (and what `quick` kept, put back), misc
 /// cleared.
 fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick: Option<&crate::backup::Backup>, say: crate::ramboot::Say) -> Result<(), String> {
+    // Its steps on the phone's screen (item/grid's own recovery).
+    crate::screen::begin(serial, &["userdata", "system", "check", "ssh key", "restart"]);
+    let r = put_on_userdata_steps(serial, release, size, key, quick, say);
+    match &r {
+        Ok(()) => crate::screen::done("item is on the phone", "it starts into the setup"),
+        Err(e) => crate::screen::error(e),
+    }
+    r
+}
+
+fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, quick: Option<&crate::backup::Backup>, say: crate::ramboot::Say) -> Result<(), String> {
     use crate::full::adb_shell;
     let serial = serial.to_owned();
     crate::flash::log(&serial, &format!("ERASING userdata for {} - itemgrid", release.name))?;
     say("making userdata anew (what it held goes)".into());
+    crate::screen::step(0, "making userdata anew", "what it held goes");
     let blk = crate::android::BLK;
     adb_shell(&serial, &format!("umount /tmp/ud 2>/dev/null; mke2fs -F -t ext4 -L userdata {blk}/userdata >/dev/null && mkdir -p /tmp/ud && mount -t ext4 {blk}/userdata /tmp/ud && echo ok"))?;
 
     say(format!("putting {} on the phone", release.name));
+    crate::screen::step(1, "writing the system", &release.name);
+    crate::screen::total(size);
     let (written, written_sha) = crate::android::put_file(&serial, "rootfs.img", &mut decompress(&release.compressed)?, "image", say)?;
     if written_sha != release.sha256 || written != size {
-        return Err("the image read here changed while it was sent - stopping in TWRP; run it again".into());
+        return Err("the image read here changed while it was sent - stopping in the recovery; run it again".into());
     }
     adb_shell(&serial, "chmod 644 /tmp/ud/rootfs.img")?;
     say("checking the whole image on the phone".into());
+    crate::screen::step(2, "checking the system", "every byte, sha256");
     let there = adb_shell(&serial, "sha256sum /tmp/ud/rootfs.img | cut -d' ' -f1")?;
     if there.trim() != release.sha256 {
-        return Err("the image on the phone differs from the release - stopping in TWRP; run it again".into());
+        return Err("the image on the phone differs from the release - stopping in the recovery; run it again".into());
     }
 
     if key.is_empty() {
@@ -187,6 +202,7 @@ fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick:
     } else {
         say("putting this computer's ssh key in".into());
     }
+    crate::screen::step(3, "the computer's key", "for item/grid over the cable");
     adb_shell(&serial, "mkdir -p /tmp/r && mount -o loop,rw /tmp/ud/rootfs.img /tmp/r && echo ok")?;
     let put_key = (|| -> Result<(), String> {
         if key.is_empty() {
@@ -436,7 +452,7 @@ pub fn from_stock_by_usb(serial: &str, release: &Release, key: &str, say: crate:
     crate::flash::log(serial, "back in fastboot after the RAM boot (the owner's forced restart) - itemgrid")?;
 
     // The boot chain from TWRP, both slots.
-    say("into TWRP".into());
+    say("into the recovery".into());
     crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
     let other = if slot == 'a' { 'b' } else { 'a' };
     for s in [slot, other] {
@@ -541,9 +557,10 @@ fn prepare_from_stock(serial: &str, release: &Release, say: crate::ramboot::Say)
 
 /// TWRP from RAM, and the image onto userdata from it (with `key`, if any).
 fn image_on_from_stock(serial: &str, release: &Release, p: &Prepared, key: &str, say: crate::ramboot::Say) -> Result<(), String> {
-    say("into TWRP".into());
+    say("into the recovery".into());
     crate::ramboot::boot_in_fastboot(crate::link::CABLE, serial, p.slot, &p.twrp, &p.twrp_img, crate::ramboot::Expect::Recovery, say)?;
-    if !crate::full::fast_tools(serial) {
+    // TWRP sends through nc; item/grid's own recovery takes the stream.
+    if !crate::full::ours(serial) && !crate::full::fast_tools(serial) {
         return Err("this TWRP lacks pigz or nc".into());
     }
     put_on_userdata(serial, release, p.size, key, None, say)

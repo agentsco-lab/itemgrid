@@ -19,6 +19,9 @@ pub const FFS: &str = "/dev/usb-ffs/adb";
 pub fn run() -> ! {
     mounts();
     say!("up ({})", env!("CARGO_PKG_VERSION"));
+    // The screen on its own thread: drawn as the status changes.
+    let serial = serial();
+    std::thread::spawn(move || crate::screen::run(serial));
     by_name();
     if let Err(e) = gadget() {
         say!("the USB gadget: {e}");

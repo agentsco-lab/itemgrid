@@ -12,8 +12,10 @@
 //! which the port's busybox has not.
 
 mod adb;
+mod drm;
 mod init;
 mod log;
+mod screen;
 mod tools;
 
 fn main() {
@@ -30,6 +32,8 @@ fn main() {
             // The daemon, as init's child (init reaps orphans; the daemon
             // waits for its own children).
             Some("adbd") => adb::run(),
+            // The screen's design as pictures, on a computer.
+            Some("preview") => std::process::exit(screen::preview(args.get(1).map_or(".", String::as_str), args.get(2).map_or(screen::FONT, String::as_str))),
             _ if std::process::id() == 1 => init::run(),
             _ => {
                 eprintln!("item-recovery: PID 1 of item/grid's recovery on the Duo; not to be run here");

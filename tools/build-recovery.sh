@@ -6,6 +6,7 @@
 #   /init         item-recovery (crates/recovery): init, the USB gadget, adbd
 #   /bin/busybox  the shell and its tools, from the port's own initramfs
 #   /bin/mke2fs   e2fsprogs' mke2fs with its libraries, from the release image
+#   the font      item/grid's (Open Sans Light, OFL) for the screen
 # Nothing is downloaded. Out: target/recovery/item-recovery.img, and a copy
 # in ~/.local/share/itemgrid/recovery/ where item/grid finds it.
 #
@@ -108,6 +109,10 @@ done
 cp "$E2"/mke2fs "$E2"/*.so* "$R/lib/e2fs/"
 chmod 755 "$R/lib/e2fs/mke2fs" "$R/lib/e2fs/ld-linux-aarch64.so.1"
 cp "$E2/mke2fs.conf" "$R/etc/mke2fs.conf"
+# The screen's letters: item/grid's own font (Open Sans Light, OFL).
+FONT=${FONT:-$HOME/.local/share/fonts/itemgrid/OpenSans-Light.ttf}
+[ -f "$FONT" ] || die "no font at $FONT (tools/fetch-fonts.sh)"
+install -Dm644 "$FONT" "$R/usr/share/item-recovery/font.ttf"
 cat > "$R/bin/mke2fs" <<'EOF'
 #!/bin/sh
 exec /lib/e2fs/ld-linux-aarch64.so.1 --library-path /lib/e2fs /lib/e2fs/mke2fs "$@"
