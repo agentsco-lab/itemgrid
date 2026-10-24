@@ -96,7 +96,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
         return Err(format!("the confirmation does not match ({} expected) - nothing is changed", crate::android::confirm_word(&serial)));
     }
     let key = public_key()?;
-    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let twrp = crate::full::recovery().ok_or("no recovery image (tools/build-recovery.sh, or a release with item-recovery.img)")?;
     crate::ramboot::check_image(&twrp)?;
     // The image checked here before anything: decompressed, its sha.
     say(format!("checking the image {} here", release.name));
@@ -477,7 +477,7 @@ struct Prepared {
 /// unlocked (the owner says so on the phone), its slot read.
 fn prepare_from_stock(serial: &str, release: &Release, say: crate::ramboot::Say) -> Result<Prepared, String> {
     use std::time::{Duration, Instant};
-    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let twrp = crate::full::recovery().ok_or("no recovery image (tools/build-recovery.sh, or a release with item-recovery.img)")?;
     let twrp_img = crate::ramboot::check_image(&twrp)?;
     let (boot_file, boot_sha) = release.boot.clone().ok_or("this release has no boot image for a phone coming from Android")?;
     let boot_img = crate::ramboot::check_image(&boot_file)?;

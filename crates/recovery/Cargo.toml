@@ -1,0 +1,12 @@
+[package]
+name = "item-recovery"
+edition.workspace = true
+version.workspace = true
+description = "On the Duo, booted from RAM: item/grid's recovery - init, the USB gadget and an adb daemon of its own, nothing else"
+
+[[bin]]
+name = "item-recovery"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"

@@ -226,7 +226,7 @@ pub fn plan(host: &str) -> Result<Plan, String> {
     if !device_data {
         stops.push("the device data (radio calibration, IMEI) is not backed up: Back Up Now first".into());
     }
-    if crate::full::twrp().is_none() {
+    if crate::full::recovery().is_none() {
         stops.push("no TWRP image: it is needed to erase and to come back".into());
     }
     Ok(Plan { builds, kernel, kernels_seen, battery: st.battery, full, full_fresh, device_data, losses, stops })
@@ -381,7 +381,7 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
     }
     let (kernel, build) = plan.kernel.clone().ok_or("no stock kernel")?;
     let stock = crate::ramboot::check_image(&kernel.path)?;
-    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let twrp = crate::full::recovery().ok_or("no recovery image (tools/build-recovery.sh, or a release with item-recovery.img)")?;
     let _ = crate::ramboot::check_image(&twrp)?;
 
     // A whole-system backup is used when a fresh one is there, and not
@@ -452,7 +452,7 @@ pub fn start(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), S
 pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say) -> Result<(), String> {
     let full = crate::backup::list(Some(serial)).into_iter().find(|b| b.manifest.kind == Kind::Full).ok_or("no whole-system backup of this phone")?;
     let slot = full.manifest.slot.trim_start_matches('_').chars().next().unwrap_or('a');
-    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let twrp = crate::full::recovery().ok_or("no recovery image (tools/build-recovery.sh, or a release with item-recovery.img)")?;
     let twrp_img = crate::ramboot::check_image(&twrp)?;
     say(format!("coming back from the backup of {}", full.manifest.created));
 
@@ -782,7 +782,7 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
     // The stock kernel checked as any image the phone is given.
     let boot = plan.chain.iter().find(|p| p.name == "boot").ok_or("no stock boot")?;
     crate::ramboot::check_image(&boot.file)?;
-    let twrp = crate::full::twrp().ok_or("no TWRP image")?;
+    let twrp = crate::full::recovery().ok_or("no recovery image (tools/build-recovery.sh, or a release with item-recovery.img)")?;
     let _ = crate::ramboot::check_image(&twrp)?;
     crate::flash::log(&serial, &format!("clean return to Android begun ({}) - itemgrid", build.fingerprint))?;
 

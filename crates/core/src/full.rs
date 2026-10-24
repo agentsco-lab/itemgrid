@@ -16,20 +16,34 @@ use crate::backup::{Backup, Item, Kind, Manifest};
 pub const REST: &str = "userdata-rest.tar.gz";
 pub(crate) const UD: &str = "/dev/block/platform/soc/1d84000.ufshc/by-name/userdata";
 
-/// TWRP's image: ITEMGRID_TWRP, or the port's out/twrp/, or item/grid's own
-/// ~/.local/share/itemgrid/twrp/.
-pub fn twrp() -> Option<PathBuf> {
-    let mut places: Vec<PathBuf> = std::env::var_os("ITEMGRID_TWRP").map(PathBuf::from).into_iter().collect();
+/// The recovery item/grid boots from RAM to put a system on the phone:
+/// its own (item-recovery.img: tools/build-recovery.sh, or a release's),
+/// else TWRP for the Duo (surfaceduo1-twrp.img), as before. Each looked
+/// for in ITEMGRID_RECOVERY / ITEMGRID_TWRP, this computer's item/grid
+/// data, the port's tree, and the release images' folders (the newest).
+pub fn recovery() -> Option<PathBuf> {
+    let releases = |file: &str| -> Vec<PathBuf> {
+        let mut rel: Vec<PathBuf> = crate::install::places().iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().flatten().map(|e| e.path().join(file)).collect();
+        rel.sort();
+        rel.reverse();
+        rel
+    };
+    let mut places: Vec<PathBuf> = std::env::var_os("ITEMGRID_RECOVERY").map(PathBuf::from).into_iter().collect();
+    places.push(crate::paths::data().join("recovery/item-recovery.img"));
+    places.extend(releases("item-recovery.img"));
+    places.extend(std::env::var_os("ITEMGRID_TWRP").map(PathBuf::from));
     if let Some(port) = crate::flash::port_tree() {
         places.push(port.join("out/twrp/surfaceduo1-twrp.img"));
     }
     places.push(crate::paths::data().join("twrp/surfaceduo1-twrp.img"));
-    // In a release image's folder (a phone from stock Android, with only
-    // the release downloaded): the newest that has one.
-    let mut rel: Vec<PathBuf> = crate::install::places().iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().flatten().map(|e| e.path().join("surfaceduo1-twrp.img")).collect();
-    rel.sort();
-    places.extend(rel.into_iter().rev());
+    places.extend(releases("surfaceduo1-twrp.img"));
     places.into_iter().find(|p| p.exists())
+}
+
+/// Whether the recovery on the phone `serial` is item/grid's own (it
+/// streams with exec-in; TWRP through nc and a forwarded port).
+pub(crate) fn ours(serial: &str) -> bool {
+    adb_shell(serial, "test -f /etc/item-recovery && echo ours").is_ok_and(|o| o.trim() == "ours")
 }
 
 pub(crate) fn adb_shell(serial: &str, cmd: &str) -> Result<String, String> {
@@ -174,7 +188,7 @@ fn stream_into(out: impl Read, path: &Path, gunzip: bool, say: &mut dyn FnMut(St
 pub fn take(host: &str, say: crate::ramboot::Say) -> Result<Backup, String> {
     crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
-    let twrp = twrp().ok_or("no TWRP image: put surfaceduo1-twrp.img in ~/.local/share/itemgrid/twrp/")?;
+    let twrp = recovery().ok_or("no recovery image: tools/build-recovery.sh, or a release with item-recovery.img")?;
     let f = crate::backup::facts(host)?;
     // The fingers known now, to see them back after a way back.
     let fingers = crate::phone::fingers(host);
@@ -283,6 +297,30 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     }
     let mut data = std::io::Cursor::new(head).chain(data);
     let data: &mut dyn Read = &mut data;
+    // item/grid's own recovery: straight into the sink (adb exec-in); its
+    // exit is not told that way, so the sink says it at the end.
+    if ours(serial) {
+        let mut child = Command::new(crate::programs::adb())
+            .args(["-s", serial, "exec-in", &format!("{sink}; echo $? > /tmp/itemgrid-sink-rc")])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("adb: {e}"))?;
+        let mut stdin = child.stdin.take().ok_or("no stdin")?;
+        let n = std::io::copy(data, &mut stdin).map_err(|e| format!("sending: {e}"));
+        drop(stdin);
+        let out = child.wait_with_output().map_err(|e| format!("adb: {e}"))?;
+        let n = n?;
+        if !out.status.success() {
+            return Err(format!("adb exec-in: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        let rc = adb_shell(serial, "cat /tmp/itemgrid-sink-rc; rm -f /tmp/itemgrid-sink-rc")?;
+        if rc.trim() != "0" {
+            return Err(format!("the receiving end said {}", rc.trim()));
+        }
+        return Ok(n);
+    }
     let port = 5598u16;
     let fwd = Command::new(crate::programs::adb()).args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
     if !fwd.status.success() {
