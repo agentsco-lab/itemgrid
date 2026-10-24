@@ -308,9 +308,165 @@ fn paper(light: f64) -> f64 {
     }
 }
 
-/// The lines' colour chosen (one of INKS), as drawn by day.
+/// The lines' colour chosen (one of INKS), as drawn by day - or the
+/// phone's accent, when the colour cube set one (dial()).
 fn ink_rgb() -> [f64; 3] {
+    if let Some(a) = ACCENTS.get(accent_index()).and_then(|a| a.1) {
+        return hex_rgb(a);
+    }
     INKS[style().ink.min(INKS.len() - 1)].1
+}
+
+fn hex_rgb(hex: &str) -> [f64; 3] {
+    let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
+    [(v >> 16 & 0xff) as f64 / 255.0, (v >> 8 & 0xff) as f64 / 255.0, (v & 0xff) as f64 / 255.0]
+}
+
+// ---- the dials: cubes of the word turned for a setting -------------------
+
+/// The word's cubes that are dials (i t e m / g r i d): g the colour (item's
+/// accent on the phone and the table's lines here), r the phone's
+/// wallpaper, d the lines' width. "/" turns night (its own code); the rest
+/// look for the phone.
+const DIAL_COLOUR: usize = 5;
+const DIAL_WALL: usize = 6;
+const DIAL_WIDTH: usize = 8;
+
+/// The colours the colour cube goes round: item's own accents (core's
+/// look::PALETTE) after "auto" (the phone's from its wallpaper, the lines
+/// here as the settings have them).
+const ACCENTS: [(&str, Option<&str>); 8] = [
+    ("auto", None),
+    ("coral", Some("#f08a7b")),
+    ("yellow", Some("#e9df6a")),
+    ("green", Some("#86d68f")),
+    ("teal", Some("#62cfc6")),
+    ("blue", Some("#7daaf7")),
+    ("violet", Some("#b798f0")),
+    ("pink", Some("#f092bb")),
+];
+
+/// The colour cube's choice, kept in ~/.config/itemgrid/accent (and
+/// whether the phone has yet to be told it: `accent-pending`).
+fn accent_file() -> std::path::PathBuf {
+    glib::user_config_dir().join("itemgrid/accent")
+}
+
+/// The choice as read once and as set since (usize::MAX: not read yet).
+static ACCENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+fn accent_index() -> usize {
+    use std::sync::atomic::Ordering::Relaxed;
+    let i = ACCENT.load(Relaxed);
+    if i != usize::MAX {
+        return i;
+    }
+    let name = std::fs::read_to_string(accent_file()).unwrap_or_default();
+    let i = ACCENTS.iter().position(|a| a.0 == name.trim()).unwrap_or(0);
+    ACCENT.store(i, Relaxed);
+    i
+}
+
+/// The colour cube's choice kept, and marked for the phone (told now if
+/// it is here, else when it is next seen).
+fn keep_accent(i: usize) {
+    ACCENT.store(i, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::create_dir_all(accent_file().parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(accent_file(), format!("{}\n", ACCENTS[i].0));
+    let _ = std::fs::write(accent_pending(), "");
+}
+
+fn accent_pending() -> std::path::PathBuf {
+    accent_file().with_file_name("accent-pending")
+}
+
+/// A dial turned a step: the setting, what it says under the word, and
+/// the phone told (its colour, its wallpaper) if it is here.
+fn dial(ui: &Rc<Ui>, i: usize) {
+    let host = ui.state.borrow().host.clone();
+    let caption = match i {
+        DIAL_COLOUR => {
+            let n = (accent_index() + 1) % ACCENTS.len();
+            keep_accent(n);
+            tell_accent(ui);
+            match (n, host.is_some()) {
+                (0, _) => "colour auto".to_owned(),
+                (_, true) => format!("colour {}", ACCENTS[n].0),
+                (_, false) => format!("colour {} later", ACCENTS[n].0),
+            }
+        }
+        DIAL_WIDTH => {
+            let w = (style().width + 1) % WIDTHS.len();
+            set_style(Style { width: w, ..style() });
+            keep_width(w);
+            format!("lines {}", WIDTHS[w])
+        }
+        _ => match host {
+            None => "wall: no phone".to_owned(),
+            Some(host) => {
+                next_wall(ui, host);
+                "wall…".to_owned()
+            }
+        },
+    };
+    trace(format_args!("dial {i}: {caption}"));
+    ui.intro.borrow_mut().turn(i, caption);
+    ui.floor.queue_draw();
+    ui.floor_gl.queue_render();
+    show_fold(ui, ui.fold.get().0);
+}
+
+/// The colour cube's choice to the phone (item's accent), if it is here
+/// and has not had it yet.
+fn tell_accent(ui: &Rc<Ui>) {
+    let Some(host) = ui.state.borrow().host.clone() else { return };
+    if !accent_pending().exists() {
+        return;
+    }
+    let accent = ACCENTS[accent_index()].1.unwrap_or("auto").to_owned();
+    glib::spawn_future_local(async move {
+        let a = accent.clone();
+        let done = gio::spawn_blocking(move || itemgrid_core::look::set_accent(&host, &a)).await;
+        match done {
+            Ok(Ok(())) => {
+                let _ = std::fs::remove_file(accent_pending());
+                trace(format_args!("accent {accent} on the phone"));
+            }
+            Ok(Err(e)) => trace(format_args!("accent {accent} not on the phone: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+/// The phone's next wallpaper (by name, round its set), on both panels;
+/// said under the word as "wallpaper N of M".
+fn next_wall(ui: &Rc<Ui>, host: String) {
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let done = gio::spawn_blocking(move || -> Result<(usize, usize), String> {
+            let look = itemgrid_core::look::read(&host)?;
+            let mut names: Vec<String> = look.walls.iter().map(|w| w.name.clone()).collect();
+            names.sort();
+            names.dedup();
+            if names.is_empty() {
+                return Err("no wallpapers on the phone".into());
+            }
+            let at = names.iter().position(|n| *n == look.both).map_or(0, |i| (i + 1) % names.len());
+            itemgrid_core::look::set_wallpaper(&host, &names[at])?;
+            Ok((at + 1, names.len()))
+        })
+        .await
+        .unwrap_or_else(|_| Err("the work stopped".into()));
+        let caption = match done {
+            Ok((n, of)) => format!("wall {n} of {of}"),
+            Err(e) => {
+                trace(format_args!("wallpaper: {e}"));
+                "wall: not changed".to_owned()
+            }
+        };
+        ui.intro.borrow_mut().turn(DIAL_WALL, caption);
+        show_fold(&ui, ui.fold.get().0);
+    });
 }
 
 /// The lines' colour by night: the chosen one lit - its hue kept, raised
@@ -2250,6 +2406,18 @@ fn build(app: &adw::Application) {
                     if ui.night_waves.borrow().len() < grid_gl::WAVES {
                         ui.night_waves.borrow_mut().push((crate::clock::now(), from, false));
                     }
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    return;
+                }
+                // A dial (with the phone there or not): its setting turned
+                // round, nothing looked for.
+                let dial_at = cube_at(&fv, (x, y)).filter(|i| [DIAL_COLOUR, DIAL_WALL, DIAL_WIDTH].contains(i));
+                drop(fv);
+                if let Some(i) = dial_at {
+                    if let Some(b) = ui.board.borrow_mut().as_mut() {
+                        b.close();
+                    }
+                    dial(&ui, i);
                     g.set_state(gtk::EventSequenceState::Claimed);
                     return;
                 }
@@ -7268,6 +7436,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         if let Some((text, strength)) = intro.note() {
             texts.push(TableText { at: (left, under), cell: cur, lines: text.lines().map(str::to_owned).collect(), grey: 0.45, bold: false, set: 1.0, strength });
         }
+        // A dial's caption on the word's own row, after it (a square
+        // between): what the cube turned to, for its while.
+        if let Some((text, strength)) = intro.caption() {
+            let (after, row) = on_squares(k, (cubes_at.0 + (WORD_HALF + 1.0) * cur, cubes_at.1 - 0.5 * cur));
+            texts.push(TableText { at: (after, row), cell: cur, lines: vec![text.to_owned()], grey: 0.45, bold: false, set: 1.0, strength });
+        }
         // The phone's line: open while wanted (no menu, no question), else
         // put away.
         let menu_open = ui.board.borrow().as_ref().is_some_and(|b| !b.closing());
@@ -7521,6 +7695,8 @@ fn fill(ui: &Rc<Ui>, s: &status::Status, link: &str) {
         }
     }
     sections::fill(&ui.sections, s, itemgrid_core::club::known(&s.serial).map(|d| d.number), link, developer_mode());
+    // A colour chosen while the phone was away: told now.
+    tell_accent(ui);
     {
         let mut f = ui.section_words.borrow_mut();
         f.insert("about", sections::about_rows(s, itemgrid_core::club::known(&s.serial).map(|d| d.number), link));

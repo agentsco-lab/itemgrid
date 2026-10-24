@@ -17,6 +17,9 @@
 
 use std::time::Instant;
 
+/// How long a cube's caption stays (seconds).
+const CAPTION_S: f32 = 2.5;
+
 pub const WORD: [&str; 9] = ["i", "t", "e", "m", "/", "g", "r", "i", "d"];
 
 /// The word's letters on cubes: item/ (grid lies in the table's squares,
@@ -62,6 +65,8 @@ pub struct Intro {
     pressed: Option<(usize, Instant)>,
     search: Option<(Instant, Option<Instant>)>,
     note: Option<(String, Instant)>,
+    /// What the last cube turned set, since when.
+    caption: Option<(String, Instant)>,
     /// A square of the table clicked (its middle, px) and when.
     tapped: Option<((f32, f32), Instant)>,
     /// The steps' ways in (the layout's).
@@ -81,7 +86,7 @@ impl Default for Intro {
         // ITEMGRID_INTRO=0: started at its end (the cubes up, the eye down).
         let skip = std::env::var("ITEMGRID_INTRO").is_ok_and(|v| v == "0");
         let start = skip.then(|| crate::clock::now() - std::time::Duration::from_secs_f32(30.0));
-        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, tapped: None, timing: TRANS }
+        Intro { start, last: None, sink: 0.0, sink_to: 0.0, ended: false, pressed: None, search: None, note: None, caption: None, tapped: None, timing: TRANS }
     }
 }
 
@@ -210,6 +215,22 @@ impl Intro {
             let hop = self.hop(i).max(0.0) * 0.5;
             (there, (stand * (1.0 + self.hop(i)) + if stand <= 0.0 { hop } else { 0.0 }).max(0.0))
         })
+    }
+
+    /// A cube turned for a setting (the dials, main.rs): it hops, and
+    /// `caption` shows under the word for a while - no looking for the
+    /// phone.
+    pub fn turn(&mut self, i: usize, caption: String) {
+        self.pressed = Some((i, crate::clock::now()));
+        self.caption = Some((caption, crate::clock::now()));
+    }
+
+    /// The caption of the last cube turned and its strength (it fades
+    /// out after CAPTION_S).
+    pub fn caption(&self) -> Option<(&str, f32)> {
+        let (text, at) = self.caption.as_ref()?;
+        let t = crate::clock::secs_since(*at);
+        (t < CAPTION_S).then(|| (text.as_str(), smooth(t / 0.25) * (1.0 - smooth((t - CAPTION_S + 0.5) / 0.5))))
     }
 
     /// The note (not found) taken away (a board goes where it was).
