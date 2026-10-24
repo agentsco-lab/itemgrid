@@ -823,9 +823,9 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
 }
 
 /// The clean return finished from the recovery, when it stopped after
-/// userdata was erased (the stock boot not yet written): the newest stock
-/// build's boot and vbmeta here (as clean_plan picks them) onto the slot
-/// the phone runs, read back; misc cleared; a restart into Android. The
+/// userdata was erased (the stock boot not yet written): the boot and
+/// vbmeta that last brought this phone back to Android onto the slot the
+/// phone runs, read back; misc cleared; a restart into Android. The
 /// phone `serial` must be in the recovery. Returns the plan's words when
 /// `go` is false.
 pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<String, String> {
@@ -839,13 +839,14 @@ pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<
     if zero.trim() != ZERO_MB {
         return Err("userdata is not erased: this finishes only a return that erased it".into());
     }
-    let stock = crate::paths::data().join("stock");
-    let mut builds: Vec<std::path::PathBuf> = std::fs::read_dir(&stock).map_err(|e| format!("{}: {e}", stock.display()))?.flatten().map(|e| e.path()).filter(|p| p.join("boot.img").exists()).collect();
-    builds.sort();
-    let dir = builds.pop().ok_or("no stock build here")?;
-    let mut chain = vec![crate::bootchain::Part::of("boot", &dir.join("boot.img"))?];
-    let vbmeta = [format!("vbmeta_{slot}-stock-backup.img"), "vbmeta.img".to_owned()].into_iter().map(|n| dir.join(n)).find(|f| crate::bootchain::vbmeta_flags(f) == Some(0)).ok_or("no stock vbmeta beside the stock boot")?;
-    chain.push(crate::bootchain::Part::of("vbmeta", &vbmeta)?);
+    // The boot and vbmeta that last brought this phone back to Android
+    // (its log: written before "stock Android again"), not any stock build
+    // here - a boot of another build than super's loops (2026-10-25).
+    let (boot, vbmeta) = last_stock_pair(serial).ok_or("no boot and vbmeta in this phone's log that brought it back to Android")?;
+    let chain = vec![crate::bootchain::Part::of("boot", &boot)?, crate::bootchain::Part::of("vbmeta", &vbmeta)?];
+    if crate::bootchain::vbmeta_flags(&vbmeta) != Some(0) {
+        return Err(format!("{}: not a stock vbmeta (verification off)", vbmeta.display()));
+    }
     crate::ramboot::check_image(&chain[0].file)?;
     let plan = format!(
         "Finish the return to Android\n\nPhone:   {serial}, in the recovery, userdata erased, runs slot {}\nWrites:  {}\nThen:    misc cleared, a restart into Android",
@@ -869,6 +870,18 @@ pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<
     std::thread::sleep(std::time::Duration::from_secs(2));
     adb(serial, "reboot").ok();
     Ok(plan)
+}
+
+/// From the phone's log: the boot_a and vbmeta_a files written last before
+/// "the phone is stock Android again" (that return worked), still here.
+fn last_stock_pair(serial: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let events = crate::flash::history(serial);
+    let done = events.iter().rposition(|e| e.contains("stock Android again"))?;
+    let file = |part: &str| {
+        events[..done].iter().rev().find_map(|e| e.strip_prefix(&format!("wrote {part}_a from ")).and_then(|r| r.split(" (").next()).map(std::path::PathBuf::from))
+    };
+    let (b, v) = (file("boot")?, file("vbmeta")?);
+    (b.exists() && v.exists()).then_some((b, v))
 }
 
 fn adb(serial: &str, cmd: &str) -> Result<String, String> {

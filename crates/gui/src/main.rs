@@ -3323,6 +3323,13 @@ fn show_now(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status
     if place != Place::Gone {
         ui.intro.borrow_mut().clear_note();
     }
+    // On Android (its own or started as a guest), the drawn Duo's back is
+    // Microsoft's, its logo, as the phone's is: the Droidian sticker only
+    // over Droidian (fill() puts it back when Linux is seen).
+    if matches!(place, Place::Android(_) | Place::Quiet(_)) && ui.scene3d.borrow().sticker {
+        ui.scene3d.borrow_mut().sticker = false;
+        ui.gl3d.queue_render();
+    }
     let Place::Linux(host) = &place else {
         // Seen by its serial (Android, bootloader, recovery): its number
         // asked for quietly too.

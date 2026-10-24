@@ -156,6 +156,13 @@ fn push_event(d: &mut serde_json::Value, event: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// This phone's history's events, oldest first (the last 50).
+pub fn history(serial: &str) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(state_path()) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+    v["devices"][serial]["history"].as_array().map(|a| a.iter().filter_map(|e| e["event"].as_str().map(str::to_owned)).collect()).unwrap_or_default()
+}
+
 /// An event in this phone's history.
 pub fn log(serial: &str, event: &str) -> Result<(), String> {
     edit(serial, |d| push_event(d, event))
