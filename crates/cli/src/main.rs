@@ -136,6 +136,12 @@ fn cmd_status() -> i32 {
 }
 
 fn cmd_update(args: &[String]) -> i32 {
+    // Only what is known: an unknown word (--help, a typo) must not start
+    // an update, which restarts the phone (it did once, 2026-10-24).
+    if let Some(a) = args.iter().find(|a| *a != "--no-build") {
+        eprintln!("itemgrid update [--no-build]: builds item from its tree here, installs it on the phone and restarts it\n  --no-build  the deb built last time\n  ({a}: not an option)");
+        return 2;
+    }
     let build = !args.iter().any(|a| a == "--no-build");
     let seen = itemgrid_core::detect();
     if seen.mode != Mode::Linux {
