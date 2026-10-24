@@ -24,6 +24,11 @@ pub fn twrp() -> Option<PathBuf> {
         places.push(port.join("out/twrp/surfaceduo1-twrp.img"));
     }
     places.push(crate::paths::data().join("twrp/surfaceduo1-twrp.img"));
+    // In a release image's folder (a phone from stock Android, with only
+    // the release downloaded): the newest that has one.
+    let mut rel: Vec<PathBuf> = crate::install::places().iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().flatten().map(|e| e.path().join("surfaceduo1-twrp.img")).collect();
+    rel.sort();
+    places.extend(rel.into_iter().rev());
     places.into_iter().find(|p| p.exists())
 }
 
