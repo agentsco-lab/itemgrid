@@ -123,6 +123,18 @@ pub fn share(host: &str) -> Result<(String, Shared), String> {
     Ok((net.ssid, shared))
 }
 
+/// The computer's time zone, set on the phone (a fresh one is on UTC): the
+/// zone's name only, checked against the phone's own list.
+pub fn share_zone(host: &str) -> Result<String, String> {
+    let zone = Command::new("timedatectl").args(["show", "-p", "Timezone", "--value"]).output().map_err(|e| e.to_string())?;
+    let zone = String::from_utf8_lossy(&zone.stdout).trim().to_owned();
+    if zone.is_empty() || !zone.chars().all(|c| c.is_ascii_alphanumeric() || "/_-+".contains(c)) {
+        return Err("the computer's time zone is not known".into());
+    }
+    crate::phone::run_checked(host, &format!("[ -f /usr/share/zoneinfo/{zone} ] && timedatectl set-timezone {zone}"))?;
+    Ok(zone)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

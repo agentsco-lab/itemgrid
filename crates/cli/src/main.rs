@@ -909,6 +909,10 @@ fn cmd_wifi() -> i32 {
                 itemgrid_core::wifi::Shared::Known => "the phone knew it already",
             };
             println!("{ssid}: {how}");
+            match itemgrid_core::wifi::share_zone(&host) {
+                Ok(zone) => println!("time zone: {zone}"),
+                Err(e) => eprintln!("itemgrid: time zone: {e}"),
+            }
             0
         }
         Err(e) => {

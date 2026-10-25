@@ -425,6 +425,11 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
         })),
         Err(e) => say(format!("no Wi-Fi given to the phone: {e}")),
     }
+    // And its time zone (a fresh phone is on UTC).
+    match crate::wifi::share_zone(host) {
+        Ok(zone) => say(format!("the computer's time zone given to the phone: {zone}")),
+        Err(e) => say(format!("no time zone given to the phone: {e}")),
+    }
     say("item is up: unlock with 1234, then choose your own PIN".into());
     Ok(())
 }
