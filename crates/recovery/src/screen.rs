@@ -13,7 +13,7 @@
 //!   line #ffffff         (the grid as item/grid's window draws it:
 //!   strength 1.0          its lines' colour by night, how strong,
 //!   width 2.0             how wide)
-//! Before it does: waiting for item/grid, the phone's serial.
+//! Before it does: ready for item/grid.
 
 use fontdue::{Font, FontSettings};
 
@@ -40,7 +40,7 @@ pub struct Status {
 
 impl Status {
     pub fn waiting(serial: &str) -> Status {
-        Status { title: "waiting for item/grid".into(), detail: "on the cable".into(), state: "wait".into(), serial: serial.into(), ..Default::default() }
+        Status { title: "ready".into(), detail: "for item/grid".into(), state: "wait".into(), serial: serial.into(), ..Default::default() }
     }
 
     /// The status as item/grid wrote it (`serial` kept).
@@ -163,9 +163,6 @@ impl Painter {
                 self.words(&mut g, 2, rows.saturating_sub(5), &format!("item id {}", s.id), LIT);
             }
             self.words(&mut g, 2, rows.saturating_sub(4), "duo 1", DIM);
-            if !s.serial.is_empty() {
-                self.words(&mut g, 2, rows.saturating_sub(3), &s.serial, DIM);
-            }
         }
         Self::vignette(px, w, h, stride);
     }
@@ -275,7 +272,13 @@ fn blend(under: u32, over: u32, a: u32) -> u32 {
 }
 
 /// Words wrapped to `wide` letters.
+/// Lines of `text` at most `wide` letters: "|" ends a line where item/grid
+/// wants it (a phrase kept whole), the rest broken between words.
 fn wrap(text: &str, wide: usize) -> Vec<String> {
+    text.split('|').flat_map(|part| wrap_words(part, wide)).collect()
+}
+
+fn wrap_words(text: &str, wide: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     for w in text.split_whitespace() {
@@ -302,14 +305,14 @@ pub fn preview(dir: &str, font: &str) -> i32 {
         return 1;
     };
     let Some(mut p) = Painter::new(&bytes) else { return 1 };
-    let steps = "userdata|system|check|ssh key|restart";
+    let steps = "clean|item 0.3.0|check|link|restart";
     // The grid as item/grid's window keeps it here, if it does.
     let grid = std::env::var_os("HOME").and_then(|h| std::fs::read_to_string(std::path::Path::new(&h).join(".config/itemgrid/recovery-grid")).ok()).unwrap_or_default();
     let cases = [
         ("waiting", Status::waiting("903855502467")),
-        ("writing", Status::read(&format!("title writing the system\ndetail 3.4 of 5.4 gb\nsteps {steps}\nstep 1\nprogress 0.62\nstate work\nid 00001"), "903855502467")),
-        ("done", Status::read(&format!("title item is on the phone\ndetail it restarts into the setup\nsteps {steps}\nstep 5\nstate done"), "903855502467")),
-        ("error", Status::read(&format!("title the image did not arrive whole\ndetail nothing else changed. run it again from item/grid\nsteps {steps}\nstep 2\nstate error"), "903855502467")),
+        ("writing", Status::read(&format!("title writing item\ndetail 3.4 of 5.4 gb\nsteps {steps}\nstep 1\nprogress 0.62\nstate work\nid 00001"), "903855502467")),
+        ("done", Status::read(&format!("title item is on\ndetail setup next\nsteps {steps}\nstep 5\nstate done\nid 00001"), "903855502467")),
+        ("error", Status::read(&format!("title stopped\ndetail the image came|incomplete|retry from|item/grid\nsteps {steps}\nstep 2\nstate error"), "903855502467")),
     ];
     let (w, h) = (1350, 1800);
     for (name, mut s) in cases {

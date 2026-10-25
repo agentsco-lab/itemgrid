@@ -56,12 +56,13 @@ pub fn done(title: &str, detail: &str) {
     }
 }
 
-/// The job stopped: what went wrong, and that nothing else is changed.
+/// The job stopped: what went wrong, short, and where to go on from. ("|"
+/// in a title or detail is a line's end on the screen.)
 pub fn error(what: &str) {
     let mut g = SHOWN.lock().unwrap();
     if let Some(s) = g.as_mut() {
-        let short: String = what.chars().take(60).collect();
-        write(s, &short, "run it again from item/grid", None, "error");
+        let short: String = what.replace('|', " ").chars().take(48).collect();
+        write(s, "stopped", &format!("{short}|retry from|item/grid"), None, "error");
     }
 }
 

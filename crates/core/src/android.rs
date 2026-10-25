@@ -403,22 +403,22 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
     // Into TWRP, where the way back is tried and userdata erased.
     say("into the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
-    crate::screen::begin(&serial, &["test write", "erase", "android"]);
+    crate::screen::begin(&serial, &["test", "erase", "android"]);
     say("trying the way back (512 MB onto the phone, checked)".into());
-    crate::screen::step(0, "a test write", "512 mb, checked, nothing kept");
+    crate::screen::step(0, "testing", "512 mb|nothing kept");
     if let Err(e) = try_the_way_back(&serial) {
         crate::screen::error(&e);
         let _ = crate::ramboot::leave_recovery(host, &serial, say);
         return Err(e);
     }
     crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - itemgrid", build.fingerprint))?;
-    crate::screen::step(1, "erasing linux", "userdata zeroed whole, about 7 minutes");
+    crate::screen::step(1, "erasing linux", "about 7 min");
     if let Err(e) = erase(&serial, say) {
         crate::screen::error(&e);
         return Err(e);
     }
     crate::flash::log(&serial, "metadata and userdata zeroed and read back - itemgrid")?;
-    crate::screen::done("android starts", "set it up on the phone");
+    crate::screen::done("android next", "set it up|on the phone");
 
     // The stock kernel from RAM, on its slot.
     say("into the bootloader".into());
@@ -612,7 +612,7 @@ pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, l
         let chunk = &buf[..filled];
         whole.update(chunk);
         total += filled as u64;
-        crate::screen::progress(&format!("writing the {label}"), total);
+        crate::screen::progress(&format!("writing {label}"), total);
         if chunk.iter().any(|b| *b != 0) {
             let want = format!("{:x}", Sha256::digest(chunk));
             let seek = index * 512;
@@ -798,13 +798,13 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
     say("into the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     // Its steps on the phone's screen (item/grid's own recovery).
-    crate::screen::begin(&serial, &["erase linux", "android boot", "restart"]);
+    crate::screen::begin(&serial, &["erase", "android", "restart"]);
     let r = (|| -> Result<(), String> {
         crate::flash::log(&serial, &format!("ERASING metadata and userdata for stock Android ({}) - itemgrid", build.fingerprint))?;
-        crate::screen::step(0, "erasing linux", "all of userdata, about 7 minutes");
+        crate::screen::step(0, "erasing linux", "about 7 min");
         erase(&serial, say)?;
         say(format!("the stock boot on slot {}", build.slot));
-        crate::screen::step(1, "android boot", &format!("boot and vbmeta on slot {}", build.slot));
+        crate::screen::step(1, "android boot", &format!("slot {}", build.slot));
         crate::bootchain::write(&serial, build.slot, &plan.chain, say)?;
         say("clearing misc".into());
         adb(&serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync")).map(|_| ())
@@ -815,7 +815,7 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
     }
     let _ = std::fs::remove_file(guest_path(&serial));
     crate::flash::log(&serial, "the phone is stock Android again, for good - itemgrid")?;
-    crate::screen::done("android starts", "its welcome screens open in a few minutes");
+    crate::screen::done("android next", "its welcome|in a few min");
     say("starting Android: it sets itself up (a few minutes), its welcome screens open".into());
     std::thread::sleep(std::time::Duration::from_secs(2));
     adb(&serial, "reboot").ok();
@@ -856,8 +856,8 @@ pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<
     if !go {
         return Ok(plan);
     }
-    crate::screen::begin(serial, &["erase linux", "android boot", "restart"]);
-    crate::screen::step(1, "android boot", &format!("boot and vbmeta on slot {slot}"));
+    crate::screen::begin(serial, &["erase", "android", "restart"]);
+    crate::screen::step(1, "android boot", &format!("slot {slot}"));
     let r = crate::bootchain::write(serial, slot, &chain, say).and_then(|_| adb(serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync")).map(|_| ()));
     if let Err(e) = r {
         crate::screen::error(&e);
@@ -865,7 +865,7 @@ pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<
     }
     let _ = std::fs::remove_file(guest_path(serial));
     crate::flash::log(serial, "the return to Android finished from the recovery - itemgrid")?;
-    crate::screen::done("android starts", "its welcome screens open in a few minutes");
+    crate::screen::done("android next", "its welcome|in a few min");
     say("starting Android: it sets itself up (a few minutes)".into());
     std::thread::sleep(std::time::Duration::from_secs(2));
     adb(serial, "reboot").ok();

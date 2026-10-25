@@ -164,10 +164,11 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
 /// cleared.
 fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick: Option<&crate::backup::Backup>, say: crate::ramboot::Say) -> Result<(), String> {
     // Its steps on the phone's screen (item/grid's own recovery).
-    crate::screen::begin(serial, &["userdata", "system", "check", "ssh key", "restart"]);
+    let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
+    crate::screen::begin(serial, &["clean", &format!("item {version}"), "check", "link", "restart"]);
     let r = put_on_userdata_steps(serial, release, size, key, quick, say);
     match &r {
-        Ok(()) => crate::screen::done("item is on the phone", "it starts into the setup"),
+        Ok(()) => crate::screen::done("item is on", "setup next"),
         Err(e) => crate::screen::error(e),
     }
     r
@@ -178,12 +179,12 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
     let serial = serial.to_owned();
     crate::flash::log(&serial, &format!("ERASING userdata for {} - itemgrid", release.name))?;
     say("making userdata anew (what it held goes)".into());
-    crate::screen::step(0, "making userdata anew", "what it held goes");
+    crate::screen::step(0, "cleaning", "old data goes");
     let blk = crate::android::BLK;
     adb_shell(&serial, &format!("umount /tmp/ud 2>/dev/null; mke2fs -F -t ext4 -L userdata {blk}/userdata >/dev/null && mkdir -p /tmp/ud && mount -t ext4 {blk}/userdata /tmp/ud && echo ok"))?;
 
     say(format!("putting {} on the phone", release.name));
-    crate::screen::step(1, "writing the system", &release.name);
+    crate::screen::step(1, "writing item", "");
     crate::screen::total(size);
     let (written, written_sha) = crate::android::put_file(&serial, "rootfs.img", &mut decompress(&release.compressed)?, "image", say)?;
     if written_sha != release.sha256 || written != size {
@@ -191,7 +192,7 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
     }
     adb_shell(&serial, "chmod 644 /tmp/ud/rootfs.img")?;
     say("checking the whole image on the phone".into());
-    crate::screen::step(2, "checking the system", "every byte, sha256");
+    crate::screen::step(2, "checking", "every byte");
     let there = adb_shell(&serial, "sha256sum /tmp/ud/rootfs.img | cut -d' ' -f1")?;
     if there.trim() != release.sha256 {
         return Err("the image on the phone differs from the release - stopping in the recovery; run it again".into());
@@ -202,7 +203,7 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
     } else {
         say("putting this computer's ssh key in".into());
     }
-    crate::screen::step(3, "the computer's key", "for item/grid over the cable");
+    crate::screen::step(3, "linking", "to item/grid");
     adb_shell(&serial, "mkdir -p /tmp/r && mount -o loop,rw /tmp/ud/rootfs.img /tmp/r && echo ok")?;
     let put_key = (|| -> Result<(), String> {
         if key.is_empty() {
