@@ -61,6 +61,7 @@ fn main() {
         Some("android") => cmd_android(&args[1..]),
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some("wifi") => cmd_wifi(),
+        Some("bootimg") => cmd_bootimg(&args[1..]),
         Some(other) => {
             eprintln!("itemgrid: '{other}' is not here yet");
             usage();
@@ -897,6 +898,63 @@ fn cmd_reboot() -> i32 {
     }
 }
 
+/// Boot images (bootimg.rs), in place of AOSP's mkbootimg and
+/// unpack_bootimg: `info FILE`, `unpack FILE DIR`, `repack FILE --out OUT
+/// [--ramdisk R] [--kernel K] [--dtb D] [--cmdline TEXT] [--drop WORD...]`
+/// (`--drop` takes out of the command line every word beginning so).
+fn cmd_bootimg(args: &[String]) -> i32 {
+    use itemgrid_core::bootimg::BootImage;
+    let read = |p: &str| std::fs::read(p).map_err(|e| format!("{p}: {e}")).and_then(|b| BootImage::parse(&b).map_err(|e| format!("{p}: {e}")));
+    let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let result: Result<(), String> = match args.first().map(String::as_str) {
+        Some("info") if args.len() == 2 => read(&args[1]).map(|i| {
+            println!("header version {}, page {}", i.header_version, i.page_size);
+            println!("os {}, patch level {}", i.os_version_text(), i.patch_level());
+            println!("kernel {} B at {:#x}, ramdisk {} B at {:#x}, second {} B, recovery dtbo {} B, dtb {} B at {:#x}", i.kernel.len(), i.kernel_addr, i.ramdisk.len(), i.ramdisk_addr, i.second.len(), i.recovery_dtbo.len(), i.dtb.len(), i.dtb_addr);
+            println!("cmdline {}", i.cmdline);
+        }),
+        Some("unpack") if args.len() == 3 => read(&args[1]).and_then(|i| {
+            let dir = std::path::Path::new(&args[2]);
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            for (name, part) in [("kernel", &i.kernel), ("ramdisk", &i.ramdisk), ("second", &i.second), ("recovery_dtbo", &i.recovery_dtbo), ("dtb", &i.dtb)] {
+                if !part.is_empty() {
+                    std::fs::write(dir.join(name), part).map_err(|e| format!("{name}: {e}"))?;
+                }
+            }
+            std::fs::write(dir.join("cmdline"), &i.cmdline).map_err(|e| e.to_string())?;
+            println!("{}", dir.display());
+            Ok(())
+        }),
+        Some("repack") if args.len() >= 2 => read(&args[1]).and_then(|mut i| {
+            let out = opt("--out").ok_or("--out OUT is needed")?;
+            for (flag, part) in [("--ramdisk", &mut i.ramdisk), ("--kernel", &mut i.kernel), ("--dtb", &mut i.dtb)] {
+                if let Some(p) = opt(flag) {
+                    *part = std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?;
+                }
+            }
+            if let Some(c) = opt("--cmdline") {
+                i.cmdline = c;
+            }
+            let drops: Vec<&String> = args.windows(2).filter(|w| w[0] == "--drop").map(|w| &w[1]).collect();
+            if !drops.is_empty() {
+                i.cmdline = i.cmdline.split_whitespace().filter(|w| !drops.iter().any(|d| w.starts_with(d.as_str()))).collect::<Vec<_>>().join(" ");
+            }
+            let bytes = i.to_bytes()?;
+            std::fs::write(&out, bytes).map_err(|e| format!("{out}: {e}"))?;
+            println!("{out}");
+            Ok(())
+        }),
+        _ => Err("bootimg info FILE | unpack FILE DIR | repack FILE --out OUT [--ramdisk R] [--kernel K] [--dtb D] [--cmdline TEXT] [--drop WORD...]".into()),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("itemgrid: {e}");
+            1
+        }
+    }
+}
+
 /// The computer's Wi-Fi given to the phone (wifi.rs): the password read
 /// here and written there, never shown.
 fn cmd_wifi() -> i32 {
@@ -980,6 +1038,7 @@ fn usage() {
     println!("               back --yes: Linux again, from the whole-system backup");
     println!("  restore      a slot's boot chain from a backup: [BACKUP] --slot a|b (shows the plan; --yes;");
     println!("               --rewrite writes the same bytes, to try the writing on the spare slot)");
+    println!("  bootimg      boot images: info FILE, unpack FILE DIR, repack FILE --out OUT [--ramdisk R ...]");
     println!("  wifi         the Wi-Fi this computer is on, given to the phone (its password never shown)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/itemgrid-shots/ by default; --hinge keeps its strip)");
 }

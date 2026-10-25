@@ -112,13 +112,8 @@ fn utc_of(date: &str) -> Option<i64> {
 /// A boot image's kernel version line and build time, if it has them.
 pub fn kernel_of(path: &Path) -> Option<Kernel> {
     use std::io::Read;
-    let b = std::fs::read(path).ok()?;
-    if b.get(..8)? != b"ANDROID!" {
-        return None;
-    }
-    let u = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
-    let (ksize, page) = (u(8), u(36));
-    let k = b.get(page..page + ksize)?;
+    let img = crate::bootimg::BootImage::parse(&std::fs::read(path).ok()?).ok()?;
+    let k = img.kernel.as_slice();
     let mut text = Vec::new();
     if k[..2] == [0x1f, 0x8b] {
         let _ = flate2::read::GzDecoder::new(k).take(64 << 20).read_to_end(&mut text);

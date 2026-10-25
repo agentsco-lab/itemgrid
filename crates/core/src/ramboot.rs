@@ -46,9 +46,6 @@ pub struct Image {
     pub os_version: String,
 }
 
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
 
 /// Checks a boot image on this computer (step 1).
 pub fn check_image(path: &Path) -> Result<Image, String> {
@@ -61,33 +58,27 @@ pub fn check_image(path: &Path) -> Result<Image, String> {
     if b.len() > 100 << 20 {
         return fail("larger than the boot partition");
     }
-    if &b[..8] != b"ANDROID!" {
-        return fail("no ANDROID! boot magic");
+    // Read as a whole (bootimg.rs): every part where the header says.
+    let img = crate::bootimg::BootImage::parse(&b).map_err(|e| format!("{}: {e}", path.display()))?;
+    if img.header_version != 2 {
+        return fail(&format!("header version {}, the Duo's ABL wants 2", img.header_version));
     }
-    if u32_at(&b, 40) != 2 {
-        return fail(&format!("header version {}, the Duo's ABL wants 2", u32_at(&b, 40)));
-    }
-    let (ksize, rsize, ssize, page) = (u32_at(&b, 8) as usize, u32_at(&b, 16) as usize, u32_at(&b, 24) as usize, u32_at(&b, 36) as usize);
-    let os = u32_at(&b, 44);
-    if os == 0 {
+    if img.os_version == 0 {
         return fail("no os version in the header: strict ABLs refuse it");
     }
-    let os_version = format!("{}.{}.{}", os >> 25, (os >> 18) & 0x7f, (os >> 11) & 0x7f);
-    let text = |range: std::ops::Range<usize>| String::from_utf8_lossy(&b[range]).trim_end_matches('\0').to_owned();
-    let cmdline = text(64..576) + &text(608..1632);
-    let hardware = cmdline.split_whitespace().find_map(|w| w.strip_prefix("androidboot.hardware=")).unwrap_or_default().to_owned();
+    let os_version = img.os_version_text();
+    let hardware = img.cmdline_value("androidboot.hardware").unwrap_or_default().to_owned();
     if hardware != "surfaceduo" {
         return fail(&format!("androidboot.hardware='{hardware}', not the Duo 1"));
     }
-    if ksize == 0 || page == 0 {
+    let kernel = &img.kernel;
+    if kernel.len() < 64 {
         return fail("no kernel");
     }
-    let align = |n: usize| n.div_ceil(page) * page;
-    let kernel = b.get(page..page + ksize).ok_or("the kernel runs past the image's end")?;
     // The Image's magic, after gzip if it is packed.
     let mut head = vec![0u8; 64];
     let head_ok = if kernel[..2] == [0x1f, 0x8b] {
-        flate2::read::GzDecoder::new(kernel).read_exact(&mut head).is_ok()
+        flate2::read::GzDecoder::new(kernel.as_slice()).read_exact(&mut head).is_ok()
     } else {
         head.copy_from_slice(&kernel[..64]);
         true
@@ -95,13 +86,10 @@ pub fn check_image(path: &Path) -> Result<Image, String> {
     if !head_ok || &head[56..60] != b"ARM\x64" {
         return fail("the kernel has no ARM64 Image magic");
     }
-    let dtbo_size = u32_at(&b, 1632) as usize;
-    let dtb_size = u32_at(&b, 1648) as usize;
-    if dtb_size == 0 {
+    if img.dtb.is_empty() {
         return fail("no DTB embedded: a v2 image without one does not boot on the Duo");
     }
-    let dtb_at = page + align(ksize) + align(rsize) + align(ssize) + align(dtbo_size);
-    if b.get(dtb_at..dtb_at + 4) != Some(&[0xd0, 0x0d, 0xfe, 0xed][..]) {
+    if img.dtb.get(..4) != Some(&[0xd0, 0x0d, 0xfe, 0xed][..]) {
         return fail("the embedded DTB has no FDT magic");
     }
     Ok(Image { sha256: format!("{:x}", Sha256::digest(&b)), size: b.len() as u64, hardware, os_version })

@@ -36,7 +36,7 @@ extern "C" fn on_signal(sig: libc::c_int) {
 pub fn run() -> ! {
     for sig in [libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2] {
         // SAFETY: a plain C handler for a signal PID 1 is sent.
-        unsafe { libc::signal(sig, on_signal as libc::sighandler_t) };
+        unsafe { libc::signal(sig, on_signal as *const () as libc::sighandler_t) };
     }
     mounts();
     say!("up ({})", env!("CARGO_PKG_VERSION"));

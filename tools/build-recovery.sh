@@ -19,16 +19,18 @@ TREE=$(pwd)
 PORT=${1:-$HOME/Desktop/projects/surfaceduo/surfaceduo-droidian}
 BOOT_IMG=${BOOT_IMG:-$PORT/out/boot-duo1-droidian-perf-127-lid.img}
 ROOTFS_ZST=${ROOTFS_ZST:-$(ls -t "$PORT"/out/release/*/rootfs.img.zst 2>/dev/null | head -1)}
-MKBOOTIMG=$PORT/tools/mkbootimg
 W=$TREE/target/recovery
 die() { echo "build-recovery: $*" >&2; exit 1; }
 [ -f "$BOOT_IMG" ] || die "no boot image at $BOOT_IMG"
 [ -f "$ROOTFS_ZST" ] || die "no release rootfs.img.zst (ROOTFS_ZST=)"
-[ -f "$MKBOOTIMG/mkbootimg.py" ] || die "no mkbootimg in $MKBOOTIMG"
 for t in debugfs zstd cpio gzip readelf python3; do
     command -v $t >/dev/null || die "$t is wanted here"
 done
 mkdir -p "$W"
+
+echo "== itemgrid here, for the boot images (its bootimg: in place of AOSP's mkbootimg)"
+cargo build --release -p itemgrid
+IG=$TREE/target/release/itemgrid
 
 echo "== item-recovery, static for the phone"
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target aarch64-unknown-linux-gnu -p item-recovery
@@ -37,7 +39,7 @@ aarch64-linux-gnu-strip -o "$W/item-recovery" "$BIN"
 
 echo "== the port's boot image unpacked"
 rm -rf "$W/boot" && mkdir -p "$W/boot"
-python3 -I "$MKBOOTIMG/unpack_bootimg.py" --boot_img "$BOOT_IMG" --out "$W/boot" --format=mkbootimg > "$W/boot/args"
+"$IG" bootimg unpack "$BOOT_IMG" "$W/boot" >/dev/null
 mkdir -p "$W/boot/rd"
 (cd "$W/boot/rd" && zcat ../ramdisk | cpio -idm --quiet --no-absolute-filenames 2>/dev/null)
 [ -x "$W/boot/rd/bin/busybox" ] || die "no busybox in the port's initramfs"
@@ -128,19 +130,7 @@ printf 'item-recovery %s %s\n' "$VERSION" "$(git rev-parse --short HEAD 2>/dev/n
 echo "== the boot image"
 # The port's header, kernel, device tree and command line, the ramdisk
 # ours; Droidian's own words left out of the command line.
-# (mkbootimg imports its own gki module from beside it: not -I.)
-ARGS=$(cat "$W/boot/args")
-CMDLINE=$(python3 -I -c 'import shlex,sys
-a=shlex.split(sys.argv[1]); c=a[a.index("--cmdline")+1]
-print(" ".join(w for w in c.split() if not w.startswith(("datapart=","droidian."))))' "$ARGS")
-python3 -I - "$ARGS" "$W/ramdisk.gz" "$CMDLINE" "$W/item-recovery.img" "$MKBOOTIMG/mkbootimg.py" <<'PY'
-import shlex, subprocess, sys
-args, ramdisk, cmdline, out, mk = sys.argv[1:6]
-a = shlex.split(args)
-a[a.index("--ramdisk") + 1] = ramdisk
-a[a.index("--cmdline") + 1] = cmdline
-subprocess.run(["python3", "-s", "-E", mk] + a + ["--output", out], check=True)
-PY
+"$IG" bootimg repack "$BOOT_IMG" --ramdisk "$W/ramdisk.gz" --drop datapart= --drop droidian. --out "$W/item-recovery.img" >/dev/null
 mkdir -p "$HOME/.local/share/itemgrid/recovery"
 cp "$W/item-recovery.img" "$HOME/.local/share/itemgrid/recovery/item-recovery.img"
 echo "item-recovery.img: $(($(stat -c %s "$W/item-recovery.img") >> 20)) MB ($(($(stat -c %s "$W/ramdisk.gz") >> 10)) KB of initramfs), in ~/.local/share/itemgrid/recovery/"
