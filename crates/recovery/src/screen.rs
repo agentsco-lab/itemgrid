@@ -173,6 +173,8 @@ impl Painter {
     /// The panel's edges darkened as item darkens them over its pictures
     /// (vignette.frag, its default: strength 0.55, reach 0.5, soft 0.6).
     fn vignette(px: &mut [u32], w: usize, h: usize, stride: usize) {
+        // Thresholds in (0, 1), a 4x4 Bayer matrix.
+        const BAYER: [f32; 16] = [0.5 / 16.0, 8.5 / 16.0, 2.5 / 16.0, 10.5 / 16.0, 12.5 / 16.0, 4.5 / 16.0, 14.5 / 16.0, 6.5 / 16.0, 3.5 / 16.0, 11.5 / 16.0, 1.5 / 16.0, 9.5 / 16.0, 15.5 / 16.0, 7.5 / 16.0, 13.5 / 16.0, 5.5 / 16.0];
         const STRENGTH: f32 = 0.55;
         let start = 1.3 + (0.12 - 1.3) * 0.5;
         let width = 0.1 + (1.15 - 0.1) * 0.6;
@@ -188,10 +190,15 @@ impl Painter {
                 if av < 0.004 {
                     continue;
                 }
-                let k = ((1.0 - av) * 256.0) as u32;
+                // Dithered (a 4x4 ordered threshold in place of rounding):
+                // the paper darkened in 8 bits a channel falls into wide
+                // steps otherwise. Black stays black.
+                let k = 1.0 - av;
+                let t = BAYER[(y & 3) * 4 + (x & 3)];
                 let p = &mut px[y * stride + x];
                 let c = *p;
-                *p = (((c >> 16 & 0xff) * k >> 8) << 16) | (((c >> 8 & 0xff) * k >> 8) << 8) | ((c & 0xff) * k >> 8);
+                let ch = |v: u32| ((v & 0xff) as f32 * k + t).floor().clamp(0.0, 255.0) as u32;
+                *p = (ch(c >> 16) << 16) | (ch(c >> 8) << 8) | ch(c);
             }
         }
     }
