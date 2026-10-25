@@ -135,9 +135,56 @@ pub fn share_zone(host: &str) -> Result<String, String> {
     Ok(zone)
 }
 
+/// A zone's main place and where it is, from zone1970.tab (its
+/// coordinates as ±DDMM[SS]±DDDMM[SS]): its name, latitude and longitude
+/// in degrees.
+fn zone_place(tab: &str, zone: &str) -> Option<(String, f64, f64)> {
+    let line = tab.lines().filter(|l| !l.starts_with('#')).find(|l| l.split('\t').nth(2) == Some(zone))?;
+    let coords = line.split('\t').nth(1)?;
+    let split = coords[1..].find(['+', '-'])? + 1;
+    let deg = |s: &str, d: usize| -> Option<f64> {
+        let sign = if s.starts_with('-') { -1.0 } else { 1.0 };
+        let n = &s[1..];
+        let whole: f64 = n.get(..d)?.parse().ok()?;
+        let min: f64 = n.get(d..d + 2)?.parse().ok()?;
+        let sec: f64 = n.get(d + 2..d + 4).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        Some(sign * (whole + min / 60.0 + sec / 3600.0))
+    };
+    let lat = deg(&coords[..split], 2)?;
+    let lon = deg(&coords[split..], 3)?;
+    let name = zone.rsplit('/').next()?.replace('_', " ");
+    Some((name, lat, lon))
+}
+
+/// The weather's place on the phone (GNOME Weather's first city, which
+/// item's weather reads), the zone's main city, unless it has one: a fresh
+/// phone has none, and no weather.
+pub fn share_weather_place(host: &str, zone: &str) -> Result<Option<String>, String> {
+    let tab = std::fs::read_to_string("/usr/share/zoneinfo/zone1970.tab").map_err(|e| format!("zone1970.tab: {e}"))?;
+    let (name, lat, lon) = zone_place(&tab, zone).ok_or("the zone has no place")?;
+    if !name.chars().all(|c| c.is_alphanumeric() || " -".contains(c)) {
+        return Err("the place's name is not plain".into());
+    }
+    let value = format!("[<(uint32 2, <('{name}', '', true, [({:.6}, {:.6})], @a(dd) [])>)>]", lat.to_radians(), lon.to_radians());
+    let script = format!("[ \"$(gsettings get org.gnome.Weather locations)\" = '@av []' ] || {{ echo kept; exit 0; }}\ngsettings set org.gnome.Weather locations \"{value}\" && echo set");
+    let said = crate::phone::run_checked(host, &crate::phone::as_owner(&script))?;
+    Ok(said.contains("set").then_some(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_places() {
+        let tab = "# comment\nUA\t+5026+03031\tEurope/Kyiv\tmost of Ukraine\nUS\t+404251-0740023\tAmerica/New_York\tEastern\n";
+        let (n, lat, lon) = zone_place(tab, "Europe/Kyiv").unwrap();
+        assert_eq!(n, "Kyiv");
+        assert!((lat - 50.4333).abs() < 0.001 && (lon - 30.5167).abs() < 0.001);
+        let (n, lat, lon) = zone_place(tab, "America/New_York").unwrap();
+        assert_eq!(n, "New York");
+        assert!((lat - 40.7142).abs() < 0.001 && (lon + 74.0064).abs() < 0.001);
+    }
 
     #[test]
     fn keyfile_escapes() {

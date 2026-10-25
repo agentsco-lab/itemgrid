@@ -428,7 +428,12 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     }
     // And its time zone (a fresh phone is on UTC).
     match crate::wifi::share_zone(host) {
-        Ok(zone) => say(format!("the computer's time zone given to the phone: {zone}")),
+        Ok(zone) => {
+            say(format!("the computer's time zone given to the phone: {zone}"));
+            if let Ok(Some(place)) = crate::wifi::share_weather_place(host, &zone) {
+                say(format!("the weather's place: {place}"));
+            }
+        }
         Err(e) => say(format!("no time zone given to the phone: {e}")),
     }
     say("item is up: unlock with 1234, then choose your own PIN".into());

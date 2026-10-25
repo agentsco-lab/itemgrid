@@ -910,7 +910,14 @@ fn cmd_wifi() -> i32 {
             };
             println!("{ssid}: {how}");
             match itemgrid_core::wifi::share_zone(&host) {
-                Ok(zone) => println!("time zone: {zone}"),
+                Ok(zone) => {
+                    println!("time zone: {zone}");
+                    match itemgrid_core::wifi::share_weather_place(&host, &zone) {
+                        Ok(Some(place)) => println!("weather: {place}"),
+                        Ok(None) => println!("weather: the phone has its own place"),
+                        Err(e) => eprintln!("itemgrid: weather: {e}"),
+                    }
+                }
                 Err(e) => eprintln!("itemgrid: time zone: {e}"),
             }
             0
