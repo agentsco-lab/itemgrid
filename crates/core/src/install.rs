@@ -415,6 +415,16 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     crate::ramboot::arm_brake_linux(host)?;
     crate::phone::reboot(host, &mut |b| say(b.words().to_owned()))?;
     crate::flash::log(serial, &format!("{} installed from stock, started from slot {slot} - itemgrid", release.name))?;
+    // The computer's Wi-Fi given to it (wifi.rs): its setup finds the
+    // network joined. Not having it is no failure of the install.
+    match crate::wifi::share(host) {
+        Ok((ssid, how)) => say(format!("the computer's Wi-Fi given to the phone: {ssid} ({})", match how {
+            crate::wifi::Shared::Joined => "joined",
+            crate::wifi::Shared::Kept => "kept, joined when in reach",
+            crate::wifi::Shared::Known => "it knew it",
+        })),
+        Err(e) => say(format!("no Wi-Fi given to the phone: {e}")),
+    }
     say("item is up: unlock with 1234, then choose your own PIN".into());
     Ok(())
 }

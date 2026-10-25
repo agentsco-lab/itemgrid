@@ -60,6 +60,7 @@ fn main() {
         Some("restore") => cmd_restore(&args[1..]),
         Some("android") => cmd_android(&args[1..]),
         Some("screenshot") => cmd_screenshot(&args[1..]),
+        Some("wifi") => cmd_wifi(),
         Some(other) => {
             eprintln!("itemgrid: '{other}' is not here yet");
             usage();
@@ -896,6 +897,27 @@ fn cmd_reboot() -> i32 {
     }
 }
 
+/// The computer's Wi-Fi given to the phone (wifi.rs): the password read
+/// here and written there, never shown.
+fn cmd_wifi() -> i32 {
+    let Some(host) = linux() else { return 1 };
+    match itemgrid_core::wifi::share(&host) {
+        Ok((ssid, how)) => {
+            let how = match how {
+                itemgrid_core::wifi::Shared::Joined => "joined",
+                itemgrid_core::wifi::Shared::Kept => "kept: joined when in reach",
+                itemgrid_core::wifi::Shared::Known => "the phone knew it already",
+            };
+            println!("{ssid}: {how}");
+            0
+        }
+        Err(e) => {
+            eprintln!("itemgrid: {e}");
+            1
+        }
+    }
+}
+
 fn cmd_screenshot(args: &[String]) -> i32 {
     let hinge = args.iter().any(|a| a == "--hinge");
     let path = args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| {
@@ -947,6 +969,7 @@ fn usage() {
     println!("               back --yes: Linux again, from the whole-system backup");
     println!("  restore      a slot's boot chain from a backup: [BACKUP] --slot a|b (shows the plan; --yes;");
     println!("               --rewrite writes the same bytes, to try the writing on the spare slot)");
+    println!("  wifi         the Wi-Fi this computer is on, given to the phone (its password never shown)");
     println!("  screenshot   both panels as one PNG ([FILE], ~/itemgrid-shots/ by default; --hinge keeps its strip)");
 }
 
