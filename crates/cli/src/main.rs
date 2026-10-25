@@ -906,12 +906,21 @@ fn cmd_reboot() -> i32 {
 fn cmd_adb(args: &[String]) -> i32 {
     use itemgrid_core::adbusb::{devices, Conn};
     use std::io::Write;
-    let Some(serial) = devices().into_iter().next() else {
-        eprintln!("itemgrid: no phone in item-recovery on USB");
+    // `--android`: the phone's stock Android (AUTH with this computer's
+    // adb key), not item-recovery.
+    let to_android = args.first().is_some_and(|a| a == "--android");
+    let args = if to_android { &args[1..] } else { args };
+    let serial = if to_android {
+        itemgrid_core::adbusb::all_devices().into_iter().find(|(_, ours)| !ours).map(|(s, _)| s)
+    } else {
+        devices().into_iter().next()
+    };
+    let Some(serial) = serial else {
+        eprintln!("itemgrid: no phone {} on USB", if to_android { "in Android with adb" } else { "in item-recovery" });
         return 1;
     };
     let r: Result<i32, String> = (|| {
-        let mut c = Conn::open(&serial)?;
+        let mut c = if to_android { Conn::open_android(&serial, std::time::Duration::from_secs(60))? } else { Conn::open(&serial)? };
         match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
             ["shell", cmd] => {
                 let (out, err, code) = c.shell(cmd, std::time::Duration::from_secs(3600))?;

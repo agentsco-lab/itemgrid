@@ -177,6 +177,12 @@ fn learn_now_and_then() {
 fn lines(tool: &str, args: &[&str]) -> Vec<String> {
     // adb's first call starts its server, which keeps the output's pipe
     // open: the server started on its own first, its output nowhere.
+    // item/grid's own adb where it answers (adbusb.rs).
+    if tool == "adb" {
+        if let Some(r) = crate::adbusb::run(args, std::time::Duration::from_secs(5)) {
+            return r.map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*')).map(str::to_owned).collect()).unwrap_or_default();
+        }
+    }
     if tool == "adb" {
         let mut c = Command::new(crate::programs::adb());
         c.arg("start-server");

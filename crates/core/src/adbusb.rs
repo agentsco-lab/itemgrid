@@ -5,6 +5,12 @@
 //! per stream each way. Stock Android's adbd (RSA keys, the user's tap) and
 //! TWRP stay with platform-tools.
 //!
+//! Stock Android's adbd asks for AUTH: its token is signed with the key
+//! platform-tools' adb made on this computer (~/.android/adbkey) - a phone
+//! that trusted adb trusts item/grid the same - and, unknown, the public key
+//! (adbkey.pub as it is) is offered for the owner's tap on the phone. The
+//! key is read into memory to sign, never written or shown.
+//!
 //! item-recovery is known by its USB product string, without a connection;
 //! adb's server, if it holds the interface (item/grid asks it about other
 //! phones), is stopped so the interface can be had.
@@ -41,8 +47,48 @@ pub fn platform() -> bool {
     std::env::var("ITEMGRID_ADB").is_ok_and(|v| v == "platform")
 }
 
+/// Whether item/grid's own adb speaks to stock Android too
+/// (`ITEMGRID_ADB=own`): until it has been tried on the phone's Android,
+/// platform-tools' answers there by default.
+pub fn android() -> bool {
+    std::env::var("ITEMGRID_ADB").is_ok_and(|v| v == "own")
+}
+
+const AUTH_TOKEN: u32 = 1;
+const AUTH_SIGNATURE: u32 = 2;
+const AUTH_RSAPUBLICKEY: u32 = 3;
+
+fn adb_key_dir() -> std::path::PathBuf {
+    std::env::var_os("ANDROID_USER_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| crate::paths::home().join(".android"))
+}
+
+/// adb's token signed with this computer's adb key: PKCS#1 v1.5, the token
+/// taken as a SHA-1 digest (adb's RSA_sign(NID_sha1, token)).
+fn sign_token(token: &[u8]) -> Result<Vec<u8>, String> {
+    use rsa::pkcs8::DecodePrivateKey;
+    let pem = std::fs::read_to_string(adb_key_dir().join("adbkey")).map_err(|e| format!("~/.android/adbkey: {e} (run platform-tools' adb once to make it)"))?;
+    let key = rsa::RsaPrivateKey::from_pkcs8_pem(&pem).map_err(|e| format!("~/.android/adbkey: {e}"))?;
+    key.sign(rsa::Pkcs1v15Sign::new::<sha1::Sha1>(), token).map_err(|e| format!("signing: {e}"))
+}
+
+/// This computer's adb public key as adb offers it ("BASE64 user@host").
+fn public_key() -> Result<String, String> {
+    std::fs::read_to_string(adb_key_dir().join("adbkey.pub")).map(|s| s.trim().to_owned()).map_err(|e| format!("~/.android/adbkey.pub: {e}"))
+}
+
+fn has_adb(d: &nusb::DeviceInfo) -> bool {
+    d.interfaces().any(|i| (i.class(), i.subclass(), i.protocol()) == CLASS)
+}
+
 fn is_ours(d: &nusb::DeviceInfo) -> bool {
-    d.product_string().is_some_and(|p| p.contains(PRODUCT)) && d.interfaces().any(|i| (i.class(), i.subclass(), i.protocol()) == CLASS)
+    d.product_string().is_some_and(|p| p.contains(PRODUCT)) && has_adb(d)
+}
+
+/// The phones on USB with an adb interface: their serial, and whether it
+/// is item-recovery.
+pub fn all_devices() -> Vec<(String, bool)> {
+    let Ok(list) = nusb::list_devices().wait() else { return Vec::new() };
+    list.filter(has_adb).map(|d| (d.serial_number().unwrap_or("").to_owned(), is_ours(&d))).collect()
 }
 
 /// The serials of the phones in item-recovery on USB.
@@ -152,8 +198,23 @@ impl Conn {
     }
 
     fn open_inner(serial: &str, answer_within: Duration) -> Result<Conn, Opened> {
+        Conn::open_any(serial, answer_within, true)
+    }
+
+    /// Connected to `serial`'s stock Android: AUTH with this computer's adb
+    /// key; unknown to the phone, the key offered and the owner's tap
+    /// awaited (`tap_within`).
+    pub fn open_android(serial: &str, tap_within: Duration) -> Result<Conn, String> {
+        match Conn::open_any(serial, tap_within, false) {
+            Ok(c) => Ok(c),
+            Err(Opened::Err(e)) => Err(e),
+            Err(Opened::Silent(_)) => Err(format!("{serial}: Android's adb did not answer (the key not allowed on the phone in time?)")),
+        }
+    }
+
+    fn open_any(serial: &str, answer_within: Duration, recovery: bool) -> Result<Conn, Opened> {
         let find = || -> Result<nusb::DeviceInfo, String> {
-            nusb::list_devices().wait().map_err(|e| format!("USB: {e}"))?.find(|d| is_ours(d) && d.serial_number() == Some(serial)).ok_or_else(|| format!("{serial}: not in item-recovery on USB"))
+            nusb::list_devices().wait().map_err(|e| format!("USB: {e}"))?.find(|d| (if recovery { is_ours(d) } else { has_adb(d) && !is_ours(d) }) && d.serial_number() == Some(serial)).ok_or_else(|| format!("{serial}: not on USB with adb"))
         };
         let info = find()?;
         let number = info.interfaces().find(|i| (i.class(), i.subclass(), i.protocol()) == CLASS).map(|i| i.interface_number()).ok_or("no adb interface")?;
@@ -194,6 +255,7 @@ impl Conn {
         c.drain();
         c.send(A_CNXN, VERSION, MAX_PAYLOAD as u32, b"host::\0")?;
         let until = Instant::now() + answer_within;
+        let mut signed = false;
         loop {
             let m = match c.recv(until.saturating_duration_since(Instant::now())) {
                 Ok(m) => m,
@@ -205,13 +267,26 @@ impl Conn {
             };
             match m.cmd {
                 A_CNXN => {
-                    if !String::from_utf8_lossy(&m.data).starts_with("recovery::") {
+                    let banner = String::from_utf8_lossy(&m.data).into_owned();
+                    if recovery && !banner.starts_with("recovery::") {
                         return Err("the phone's adb is not item-recovery's".into());
                     }
                     c.max = (m.arg1 as usize).clamp(4096, MAX_PAYLOAD);
                     return Ok(c);
                 }
-                A_AUTH => return Err("the phone's adb asks for a key: not item-recovery".into()),
+                A_AUTH if recovery => return Err("the phone's adb asks for a key: not item-recovery".into()),
+                // The token signed first; refused (the key unknown to the
+                // phone), the public key offered, and the tap awaited.
+                A_AUTH if m.arg0 == AUTH_TOKEN && !signed => {
+                    signed = true;
+                    let sig = sign_token(&m.data)?;
+                    c.send(A_AUTH, AUTH_SIGNATURE, 0, &sig)?;
+                }
+                A_AUTH if m.arg0 == AUTH_TOKEN => {
+                    let mut key = public_key()?.into_bytes();
+                    key.push(0);
+                    c.send(A_AUTH, AUTH_RSAPUBLICKEY, 0, &key)?;
+                }
                 _ => {}
             }
         }
@@ -459,6 +534,30 @@ pub fn run(args: &[&str], limit: Duration) -> Option<Result<String, String>> {
     if platform() {
         return None;
     }
+    // Stock Android too, when asked (ITEMGRID_ADB=own).
+    if android() {
+        match args {
+            ["devices"] => {
+                let all = all_devices();
+                return Some(Ok(format!("List of devices attached\n{}\n", all.iter().map(|(s, ours)| format!("{s}\t{}", if *ours { "recovery" } else { "device" })).collect::<Vec<_>>().join("\n"))));
+            }
+            ["-s", serial, rest @ ..] if all_devices().iter().any(|(s, ours)| s == serial && !ours) => {
+                return Some((|| {
+                    let mut c = Conn::open_android(serial, Duration::from_secs(60))?;
+                    match rest {
+                        ["shell", cmd @ ..] => {
+                            let (out, err, _) = c.shell(&cmd.join(" "), limit)?;
+                            Ok(format!("{}{}", String::from_utf8_lossy(&out), String::from_utf8_lossy(&err)))
+                        }
+                        ["reboot"] => c.reboot("").map(|_| String::new()),
+                        ["reboot", to] => c.reboot(to).map(|_| String::new()),
+                        other => Err(format!("adb {}: not a command item/grid speaks to Android", other.join(" "))),
+                    }
+                })());
+            }
+            _ => {}
+        }
+    }
     match args {
         ["devices"] => {
             let ours = devices();
@@ -477,5 +576,68 @@ pub fn run(args: &[&str], limit: Duration) -> Option<Result<String, String>> {
             }
         })()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// adb's public key format (adbkey.pub: base64 of RSAPublicKey - the
+    /// words, n0inv, the modulus and R^2 as little-endian words, the
+    /// exponent - then " user@host") read back into a key.
+    fn android_public_key(text: &str) -> rsa::RsaPublicKey {
+        use rsa::traits::PublicKeyParts;
+        let b64 = text.split_whitespace().next().unwrap();
+        let raw = base64_decode(b64);
+        let word = |i: usize| u32::from_le_bytes(raw[i * 4..i * 4 + 4].try_into().unwrap());
+        let words = word(0) as usize;
+        // The modulus: words 2..2+n, least significant first.
+        let mut be = Vec::with_capacity(words * 4);
+        for i in (0..words).rev() {
+            be.extend_from_slice(&word(2 + i).to_be_bytes());
+        }
+        let e = word(2 + 2 * words);
+        let k = rsa::RsaPublicKey::new(rsa::BigUint::from_bytes_be(&be), rsa::BigUint::from(e)).unwrap();
+        assert_eq!(k.size(), words * 4);
+        k
+    }
+
+    fn base64_decode(s: &str) -> Vec<u8> {
+        let v = |c: u8| match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            _ => 63,
+        };
+        let bytes: Vec<u8> = s.bytes().filter(|c| *c != b'=').collect();
+        let mut out = Vec::new();
+        for chunk in bytes.chunks(4) {
+            let n = chunk.iter().enumerate().fold(0u32, |acc, (i, c)| acc | (v(*c) as u32) << (18 - 6 * i));
+            out.push((n >> 16) as u8);
+            if chunk.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if chunk.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        out
+    }
+
+    /// The token signed with this computer's adb key verifies against the
+    /// public key the phone was given (adbkey.pub): what adbd checks.
+    #[test]
+    fn signature_verifies_against_adbkey_pub() {
+        let Ok(pubtext) = public_key() else { return };
+        let key = android_public_key(&pubtext);
+        let token: Vec<u8> = (0..20u8).map(|i| i.wrapping_mul(37).wrapping_add(11)).collect();
+        let sig = sign_token(&token).unwrap();
+        key.verify(rsa::Pkcs1v15Sign::new::<sha1::Sha1>(), &token, &sig).expect("the signature does not verify");
+        // A different token does not.
+        let mut other = token.clone();
+        other[0] ^= 1;
+        assert!(key.verify(rsa::Pkcs1v15Sign::new::<sha1::Sha1>(), &other, &sig).is_err());
     }
 }
