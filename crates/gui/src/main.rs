@@ -7079,6 +7079,11 @@ fn show_fold_now(ui: &Ui, angle: f64) {
         let cubes: [(f32, f32); intro::WORD.len()] = std::array::from_fn(|i| (cubes[i].0, (cubes[i].1 * (1.0 - flat) * place.height[2]).max(0.0)));
         // Each part as the step has it: shown, how strong.
         let part_alpha: [f32; 6] = std::array::from_fn(|k| (place.show[k] * place.bright[k]).clamp(0.0, 2.0));
+        // The lamp shines up under the phone: where the phone is not drawn
+        // (a page in its place, the start before it comes) its light goes
+        // with it (the owner, 2026-10-25). At the pointer it is the
+        // pointer's, not the phone's.
+        let lamp_k = if lp.mode == lamp::POINTER { lamp_k } else { lamp_k * (intro.duo() * place.show[1]).clamp(0.0, 1.0) };
         // Each button coming in on the table as the word's cubes go down,
         // one after the other; they lie there, squares as the word's.
         let button_in: [f32; BUTTONS] = std::array::from_fn(|i| intro.button(i) * (1.0 - ui.saver_mix.get()));
