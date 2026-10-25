@@ -5605,11 +5605,26 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
         }
         "do:install" => {
             let Some(serial) = stock_android(ui) else { return };
-            let ask = match itemgrid_core::install::releases().into_iter().filter(|r| r.boot.is_some() && r.vbmeta.is_some()).next_back() {
+            let all = itemgrid_core::install::releases();
+            let newest = all.last().map(|r| r.name.clone());
+            let ask = match all.into_iter().filter(|r| r.boot.is_some() && r.vbmeta.is_some()).next_back() {
                 None => Ask::new("install item", wrapped("no release with a boot image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
-                    let mut ask = Ask::new("install item", vec!["erases android".into(), format!("puts item {version}"), "15 min · cable in".into()]);
+                    // Which image: its day (item-duo1-YYYYMMDD-...) - an
+                    // older one, taken when the newest had no boot image,
+                    // said so (2026-10-25: a day-old image went on unseen).
+                    let day = release.name.split('-').find(|p| p.len() == 8 && p.chars().all(|c| c.is_ascii_digit())).map(|d| {
+                        const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+                        let m = d[4..6].parse::<usize>().unwrap_or(1).clamp(1, 12);
+                        format!("{} {}", d[6..8].trim_start_matches('0'), MONTHS[m - 1])
+                    });
+                    let mut lines = vec!["erases android".to_owned(), format!("puts item {version}{}", day.map(|d| format!(" · {d}")).unwrap_or_default())];
+                    if newest.as_deref() != Some(release.name.as_str()) {
+                        lines.push("newest has no boot image".into());
+                    }
+                    lines.push("15 min · cable in".into());
+                    let mut ask = Ask::new("install item", lines);
                     ask.verb = "install";
                     ask.go = Some(Rc::new(move |ui, _, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));
                     ask
