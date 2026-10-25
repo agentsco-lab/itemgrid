@@ -25,38 +25,9 @@ pub struct Slot {
     pub kernel: String,
 }
 
-const SCRIPT: &str = r#"exec python3 - <<'PY'
-import os, struct, hashlib, zlib, sys
-for slot in "ab":
-    dev = f"/dev/disk/by-partlabel/boot_{slot}"
-    part = os.path.realpath(dev)
-    name = os.path.basename(part)
-    disk = "/dev/" + name.rstrip("0123456789")
-    num = int(name[len(os.path.basename(disk)):])
-    ss = int(open(f"/sys/block/{os.path.basename(disk)}/queue/logical_block_size").read())
-    with open(disk, "rb") as d:
-        d.seek(ss)
-        hdr = d.read(92)
-        lba, count, size = struct.unpack_from("<QII", hdr, 72)
-        d.seek(lba * ss + (num - 1) * size)
-        attr = struct.unpack_from("<Q", d.read(size), 48)[0]
-    data = open(dev, "rb").read()
-    sha = hashlib.sha256(data).hexdigest()
-    kernel = ""
-    if data[:8] == b"ANDROID!":
-        ksize, page = struct.unpack_from("<I", data, 8)[0], struct.unpack_from("<I", data, 36)[0]
-        k = data[page:page + ksize]
-        if k[:2] == b"\x1f\x8b":
-            try:
-                k = zlib.decompressobj(31).decompress(k)
-            except Exception:
-                pass
-        i = k.find(b"Linux version ")
-        if i >= 0:
-            kernel = k[i + 14:k.find(b" ", i + 14)].decode(errors="replace")
-    print(f"slot={slot} attr={attr} sha={sha} kernel={kernel}")
-PY
-"#;
+/// Read on the phone with its own tools (od, sha256sum, dd reading, zcat):
+/// no python3 there (it was a Python script until 2026-10-26).
+const SCRIPT: &str = include_str!("slots.sh");
 
 /// Reads both slots on the phone at `host`.
 pub fn read(host: &str) -> Result<[Slot; 2], String> {

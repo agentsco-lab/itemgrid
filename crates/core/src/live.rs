@@ -1,13 +1,17 @@
 //! The phone's screen live, from item's mirror (item-compositor's
 //! mirror.rs): frames as they are drawn, a quarter of the size, read through
-//! ssh as the owner - the mirror's socket is theirs. On the phone a few
-//! lines of python carry the socket to ssh (it has no socat or nc).
+//! ssh as the owner - the mirror's socket is theirs. On the phone item's
+//! item-mirror-relay carries the socket to ssh (it has no socat or nc).
 
 use std::io::Read;
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 
-const RELAY: &str = r#"exec python3 -u -c "
+/// item's own relay (item-mirror-relay, item after 0.3.0); a phone with an
+/// older item, the few lines of Python it had.
+const RELAY: &str = r#"M=/usr/libexec/item/item-mirror-relay
+[ -x "$M" ] && exec "$M"
+exec python3 -u -c "
 import os, socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.connect(os.environ['XDG_RUNTIME_DIR'] + '/item-mirror.sock')

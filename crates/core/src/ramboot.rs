@@ -226,9 +226,11 @@ pub fn arm_brake_linux(host: &str) -> Result<(), String> {
 }
 
 /// The phone into the bootloader from Linux: the reboot syscall with
-/// "bootloader", as Android asks it (SAFETY.md).
+/// "bootloader", as Android asks it (SAFETY.md) - at once, the services
+/// not stopped first. systemctl's -ff makes that very call itself, after
+/// the sync (it was Python's ctypes until 2026-10-26: no python3 needed).
 fn to_bootloader(host: &str) {
-    let script = "python3 -c 'import ctypes; l=ctypes.CDLL(\"libc.so.6\"); l.sync(); l.syscall(142, 0xfee1dead, 672274793, 0xA1B2C3D4, b\"bootloader\")'\n";
+    let script = "sync; systemctl reboot -ff --reboot-argument=bootloader\n";
     crate::phone::close_shared(host);
     let _ = crate::phone::run_vetted(host, script);
 }
