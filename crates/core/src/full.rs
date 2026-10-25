@@ -43,10 +43,20 @@ pub fn recovery() -> Option<PathBuf> {
 /// Whether the recovery on the phone `serial` is item/grid's own (it
 /// streams with exec-in; TWRP through nc and a forwarded port).
 pub(crate) fn ours(serial: &str) -> bool {
-    adb_shell(serial, "test -f /etc/item-recovery && echo ours").is_ok_and(|o| o.trim() == "ours")
+    crate::adbusb::present(serial) || (crate::adbusb::platform() && adb_shell(serial, "test -f /etc/item-recovery && echo ours").is_ok_and(|o| o.trim() == "ours"))
 }
 
 pub(crate) fn adb_shell(serial: &str, cmd: &str) -> Result<String, String> {
+    // item-recovery: item/grid's own adb (adbusb.rs), the exit code its
+    // shell's (v2).
+    if crate::adbusb::present(serial) {
+        let (out, err, code) = crate::adbusb::Conn::open(serial)?.shell(cmd, std::time::Duration::from_secs(3600))?;
+        let text = String::from_utf8_lossy(&out).into_owned();
+        if code != 0 {
+            return Err(format!("in the recovery, '{cmd}': {}{}", text.trim(), String::from_utf8_lossy(&err).trim()));
+        }
+        return Ok(text);
+    }
     let out = Command::new(crate::programs::adb()).args(["-s", serial, "shell", cmd]).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() {
@@ -100,6 +110,28 @@ fn adb_stream_fast(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut
 /// A command's output in TWRP streamed into `path`, through adb's terminal
 /// (the fallback when TWRP lacks pigz or nc; single-threaded gzip).
 fn adb_stream(serial: &str, cmd: &str, path: &Path, gunzip: bool, say: &mut dyn FnMut(String)) -> Result<Streamed, String> {
+    if crate::adbusb::present(serial) {
+        // item-recovery: its exec stream read on a thread into a pipe.
+        let (mut reader, mut writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let (serial, cmd) = (serial.to_owned(), cmd.to_owned());
+        let feeder = std::thread::spawn(move || -> Result<(), String> {
+            use std::io::Write;
+            let mut c = crate::adbusb::Conn::open(&serial)?;
+            let mut failed = None;
+            c.exec_out(&cmd, std::time::Duration::from_secs(4 * 3600), &mut |d| {
+                if failed.is_none() {
+                    if let Err(e) = writer.write_all(d) {
+                        failed = Some(e.to_string());
+                    }
+                }
+            })?;
+            failed.map_or(Ok(()), Err)
+        });
+        let result = stream_into(&mut reader, path, gunzip, say);
+        drop(reader);
+        let fed = feeder.join().map_err(|_| "the stream's thread panicked".to_owned())?;
+        return result.and_then(|r| fed.map(|_| r));
+    }
     let mut child = Command::new(crate::programs::adb()).args(["-s", serial, "exec-out", cmd]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("adb: {e}"))?;
     let out = child.stdout.take().expect("piped");
     let result = stream_into(out, path, gunzip, say);
@@ -283,6 +315,11 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     const SMALL: usize = 4 << 20;
     let mut head = Vec::new();
     data.take(SMALL as u64 + 1).read_to_end(&mut head).map_err(|e| format!("reading: {e}"))?;
+    if head.len() <= SMALL && crate::adbusb::present(serial) {
+        crate::adbusb::Conn::open(serial)?.push(&head, "/tmp/itemgrid-send", 0o600)?;
+        adb_shell(serial, &format!("cat /tmp/itemgrid-send | {sink}; rc=$?; rm -f /tmp/itemgrid-send; exit $rc"))?;
+        return Ok(head.len() as u64);
+    }
     if head.len() <= SMALL {
         let tmp = std::env::temp_dir().join(format!("itemgrid-send-{}", std::process::id()));
         std::fs::write(&tmp, &head).map_err(|e| e.to_string())?;
@@ -301,6 +338,10 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     // exit is not told that way, so the sink says it at the end.
     if ours(serial) {
         let _ = adb_shell(serial, "rm -f /tmp/itemgrid-sink-rc");
+        if crate::adbusb::present(serial) {
+            let n = crate::adbusb::Conn::open(serial)?.exec_in(&format!("{sink}; echo $? > /tmp/itemgrid-sink-rc"), data)?;
+            return wait_sink_rc(serial, n);
+        }
         let mut child = Command::new(crate::programs::adb())
             .args(["-s", serial, "exec-in", &format!("{sink}; echo $? > /tmp/itemgrid-sink-rc")])
             .stdin(Stdio::piped())
@@ -316,24 +357,7 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
         if !out.status.success() {
             return Err(format!("adb exec-in: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
-        // adb returns as its stream closes, the sink may still be at work:
-        // its exit waited for (written at its end).
-        let start = std::time::Instant::now();
-        loop {
-            // (true: no file yet is no error.)
-            let rc = adb_shell(serial, "cat /tmp/itemgrid-sink-rc 2>/dev/null; true")?;
-            if !rc.trim().is_empty() {
-                let _ = adb_shell(serial, "rm -f /tmp/itemgrid-sink-rc");
-                if rc.trim() != "0" {
-                    return Err(format!("the receiving end said {}", rc.trim()));
-                }
-                return Ok(n);
-            }
-            if start.elapsed() > std::time::Duration::from_secs(600) {
-                return Err("the receiving end did not finish in 10 minutes".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
+        return wait_sink_rc(serial, n);
     }
     let port = 5598u16;
     let fwd = Command::new(crate::programs::adb()).args(["-s", serial, "forward", &format!("tcp:{port}"), &format!("tcp:{port}")]).output().map_err(|e| format!("adb forward: {e}"))?;
@@ -374,8 +398,32 @@ pub(crate) fn adb_send(serial: &str, sink: &str, data: &mut dyn Read) -> Result<
     result
 }
 
+/// The stream closes before the sink is done: its exit waited for (it
+/// writes it at its end); `n` the bytes sent, if it said 0.
+fn wait_sink_rc(serial: &str, n: u64) -> Result<u64, String> {
+    let start = std::time::Instant::now();
+    loop {
+        // (true: no file yet is no error.)
+        let rc = adb_shell(serial, "cat /tmp/itemgrid-sink-rc 2>/dev/null; true")?;
+        if !rc.trim().is_empty() {
+            let _ = adb_shell(serial, "rm -f /tmp/itemgrid-sink-rc");
+            if rc.trim() != "0" {
+                return Err(format!("the receiving end said {}", rc.trim()));
+            }
+            return Ok(n);
+        }
+        if start.elapsed() > std::time::Duration::from_secs(600) {
+            return Err("the receiving end did not finish in 10 minutes".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// Bytes put at `to` in TWRP as a file, by adb push.
 pub(crate) fn push_file(serial: &str, data: &[u8], to: &str) -> Result<(), String> {
+    if crate::adbusb::present(serial) {
+        return crate::adbusb::Conn::open(serial)?.push(data, to, 0o644);
+    }
     let tmp = std::env::temp_dir().join(format!("itemgrid-push-{}-{}", std::process::id(), data.len()));
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     let out = Command::new(crate::programs::adb()).args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"));

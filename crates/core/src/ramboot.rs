@@ -266,6 +266,10 @@ impl Expect {
 }
 
 fn adb(args: &[&str], limit: Duration) -> Result<String, String> {
+    // item-recovery: item/grid's own adb (adbusb.rs).
+    if let Some(r) = crate::adbusb::run(args, limit) {
+        return r;
+    }
     let mut child = Command::new(crate::programs::adb()).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("adb: {e}"))?;
     let start = Instant::now();
     loop {

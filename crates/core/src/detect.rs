@@ -80,6 +80,11 @@ pub fn detect() -> Seen {
         };
         return Seen { mode, via: serial };
     }
+    // item-recovery, known by its USB name - adb's server never started
+    // for it (it would take the interface item/grid's own adb needs).
+    if let Some(serial) = crate::adbusb::devices().into_iter().next() {
+        return Seen { mode: Mode::Recovery, via: serial };
+    }
     for line in lines("adb", &["devices"]).into_iter().skip_while(|l| l.starts_with("List of devices")) {
         let mut parts = line.split_whitespace();
         let (Some(serial), Some(state)) = (parts.next(), parts.next()) else { continue };

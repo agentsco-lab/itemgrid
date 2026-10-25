@@ -63,6 +63,7 @@ fn main() {
         Some("wifi") => cmd_wifi(),
         Some("bootimg") => cmd_bootimg(&args[1..]),
         Some("fastboot") => cmd_fastboot(&args[1..]),
+        Some("adb") => cmd_adb(&args[1..]),
         Some(other) => {
             eprintln!("itemgrid: '{other}' is not here yet");
             usage();
@@ -892,6 +893,56 @@ fn cmd_reboot() -> i32 {
     let start = std::time::Instant::now();
     match itemgrid_core::phone::reboot(&host, &mut |b| said(&start, b.words())) {
         Ok(()) => 0,
+        Err(e) => {
+            eprintln!("itemgrid: {e}");
+            1
+        }
+    }
+}
+
+/// adb to item-recovery by item/grid itself (adbusb.rs), for trying it:
+/// `shell CMD`, `push LOCAL REMOTE`, `exec-in CMD` (stdin into it),
+/// `exec-out CMD` (its output to stdout).
+fn cmd_adb(args: &[String]) -> i32 {
+    use itemgrid_core::adbusb::{devices, Conn};
+    use std::io::Write;
+    let Some(serial) = devices().into_iter().next() else {
+        eprintln!("itemgrid: no phone in item-recovery on USB");
+        return 1;
+    };
+    let r: Result<i32, String> = (|| {
+        let mut c = Conn::open(&serial)?;
+        match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+            ["shell", cmd] => {
+                let (out, err, code) = c.shell(cmd, std::time::Duration::from_secs(3600))?;
+                let _ = std::io::stdout().write_all(&out);
+                let _ = std::io::stderr().write_all(&err);
+                Ok(code)
+            }
+            ["push", local, remote] => {
+                let data = std::fs::read(local).map_err(|e| format!("{local}: {e}"))?;
+                c.push(&data, remote, 0o644)?;
+                Ok(0)
+            }
+            ["exec-in", cmd] => {
+                let start = std::time::Instant::now();
+                let n = c.exec_in(cmd, &mut std::io::stdin().lock())?;
+                let s = start.elapsed().as_secs_f64();
+                eprintln!("{n} bytes in {s:.1} s ({:.1} MB/s)", n as f64 / s / 1e6);
+                Ok(0)
+            }
+            ["exec-out", cmd] => {
+                let mut out = std::io::stdout().lock();
+                c.exec_out(cmd, std::time::Duration::from_secs(3600), &mut |d| {
+                    let _ = out.write_all(d);
+                })?;
+                Ok(0)
+            }
+            _ => Err("adb shell CMD | push LOCAL REMOTE | exec-in CMD | exec-out CMD".into()),
+        }
+    })();
+    match r {
+        Ok(code) => code,
         Err(e) => {
             eprintln!("itemgrid: {e}");
             1
