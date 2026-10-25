@@ -30,8 +30,24 @@ fn nmcli(args: &[&str]) -> Option<String> {
 }
 
 /// The Wi-Fi network this computer is on now, with its password (nmcli
-/// gives the user's own connections' secrets to the user).
+/// gives the user's own connections' secrets to the user). Asked a few
+/// times: at the end of an install, the computer busy with the image, the
+/// password once did not come (2026-10-25).
 pub fn computer() -> Result<Network, String> {
+    let mut last = String::new();
+    for i in 0..4 {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        match computer_once() {
+            Ok(n) => return Ok(n),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+fn computer_once() -> Result<Network, String> {
     let active = nmcli(&["-t", "-f", "NAME,TYPE", "connection", "show", "--active"]).ok_or("nmcli: no NetworkManager on this computer")?;
     let name = active
         .lines()
@@ -113,7 +129,12 @@ pub enum Shared {
 
 /// The computer's network written on the phone at `host` (root's ssh).
 pub fn share(host: &str) -> Result<(String, Shared), String> {
-    let net = computer()?;
+    share_net(host, computer()?)
+}
+
+/// `net` (taken from the computer earlier: at an install's start, while
+/// the computer is free) written on the phone.
+pub fn share_net(host: &str, net: Network) -> Result<(String, Shared), String> {
     let said = crate::phone::run_checked(host, &script(&net)).map_err(|_| "the phone did not take the network".to_owned())?;
     let shared = match said.lines().last().unwrap_or("") {
         "joined" => Shared::Joined,

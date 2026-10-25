@@ -396,6 +396,10 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
         return Err(format!("the confirmation does not match ({} expected) - nothing is changed", crate::android::confirm_word(serial)));
     }
     let key = public_key()?;
+    // The computer's Wi-Fi taken now, while the computer is free (asked at
+    // the end, with the image just written, it once did not come): kept in
+    // memory only, given to the phone at the end.
+    let wifi = crate::wifi::computer();
     let p = prepare_from_stock(serial, release, say)?;
     image_on_from_stock(serial, release, &p, &key, say)?;
     let Prepared { slot, boot_file, boot_img, boot, vbmeta, .. } = p;
@@ -418,7 +422,7 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     crate::flash::log(serial, &format!("{} installed from stock, started from slot {slot} - itemgrid", release.name))?;
     // The computer's Wi-Fi given to it (wifi.rs): its setup finds the
     // network joined. Not having it is no failure of the install.
-    match crate::wifi::share(host) {
+    match wifi.and_then(|net| crate::wifi::share_net(host, net)) {
         Ok((ssid, how)) => say(format!("the computer's Wi-Fi given to the phone: {ssid} ({})", match how {
             crate::wifi::Shared::Joined => "joined",
             crate::wifi::Shared::Kept => "kept, joined when in reach",
