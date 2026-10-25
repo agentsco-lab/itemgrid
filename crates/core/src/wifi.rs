@@ -166,9 +166,19 @@ pub fn share_weather_place(host: &str, zone: &str) -> Result<Option<String>, Str
         return Err("the place's name is not plain".into());
     }
     let value = format!("[<(uint32 2, <('{name}', '', true, [({:.6}, {:.6})], @a(dd) [])>)>]", lat.to_radians(), lon.to_radians());
-    let script = format!("[ \"$(gsettings get org.gnome.Weather locations)\" = '@av []' ] || {{ echo kept; exit 0; }}\ngsettings set org.gnome.Weather locations \"{value}\" && echo set");
+    // Right after the install's restart the user's session bus may not be
+    // up yet, and gsettings then keeps the value in memory and loses it
+    // (2026-10-25): its socket waited for, dconf asked for by name (an
+    // error, not memory, without it), and the value read back.
+    let script = format!(
+        "for i in $(seq 60); do [ -S \"$XDG_RUNTIME_DIR/bus\" ] && break; sleep 0.5; done\nexport GSETTINGS_BACKEND=dconf\n[ \"$(gsettings get org.gnome.Weather locations)\" = '@av []' ] || {{ echo kept; exit 0; }}\ngsettings set org.gnome.Weather locations \"{value}\"\n[ \"$(gsettings get org.gnome.Weather locations)\" != '@av []' ] && echo set || echo lost"
+    );
     let said = crate::phone::run_checked(host, &crate::phone::as_owner(&script))?;
-    Ok(said.contains("set").then_some(name))
+    match said.lines().last().unwrap_or("") {
+        "set" => Ok(Some(name)),
+        "kept" => Ok(None),
+        _ => Err("the phone did not keep the weather's place".into()),
+    }
 }
 
 #[cfg(test)]

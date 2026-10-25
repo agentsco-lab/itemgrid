@@ -430,8 +430,10 @@ pub fn from_stock(serial: &str, release: &Release, confirm: &str, say: crate::ra
     match crate::wifi::share_zone(host) {
         Ok(zone) => {
             say(format!("the computer's time zone given to the phone: {zone}"));
-            if let Ok(Some(place)) = crate::wifi::share_weather_place(host, &zone) {
-                say(format!("the weather's place: {place}"));
+            match crate::wifi::share_weather_place(host, &zone) {
+                Ok(Some(place)) => say(format!("the weather's place: {place}")),
+                Ok(None) => {}
+                Err(e) => say(format!("no weather place given to the phone: {e}")),
             }
         }
         Err(e) => say(format!("no time zone given to the phone: {e}")),
