@@ -115,17 +115,20 @@ impl Conn {
     pub fn open(serial: &str) -> Result<Conn, String> {
         match Conn::open_once(serial, Duration::from_secs(3)) {
             Ok(c) => Ok(c),
-            Err(Stuck::Other(e)) => Err(e),
-            Err(Stuck::Silent(device)) => {
-                let _ = device.reset().wait();
-                drop(device);
+            // (The daemon itself starts again when a write to a host that
+            // went hangs: the device leaves USB for a moment.)
+            Err(Stuck::Other(e)) if !e.contains("disconnected") => Err(e),
+            Err(stuck) => {
+                if let Stuck::Silent(device) = stuck {
+                    let _ = device.reset().wait();
+                }
                 let until = Instant::now() + Duration::from_secs(20);
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
                     if present(serial) {
                         match Conn::open_once(serial, Duration::from_secs(10)) {
                             Ok(c) => return Ok(c),
-                            Err(Stuck::Other(e)) if Instant::now() < until && e.contains("busy") => continue,
+                            Err(Stuck::Other(e)) if Instant::now() < until && (e.contains("busy") || e.contains("disconnected") || e.contains("not in item-recovery")) => continue,
                             Err(Stuck::Other(e)) => return Err(e),
                             Err(Stuck::Silent(_)) => return Err("item-recovery's adb does not answer, even after a USB reset".into()),
                         }
@@ -186,12 +189,15 @@ impl Conn {
         // messages must not land in a new stream of the same number).
         let first_id = (std::process::id().wrapping_mul(7919) ^ (Instant::now().elapsed().subsec_nanos() as u32)).wrapping_add(crate::adbusb::next_base()) | 1;
         let mut c = Conn { _iface: iface, ep_in, ep_out, max_packet, max: MAX_PAYLOAD, pending: Vec::new(), next_id: first_id };
+        // What a host that went left in the pipe (a payload half read),
+        // read and dropped first: else it reads as a broken header.
+        c.drain();
         c.send(A_CNXN, VERSION, MAX_PAYLOAD as u32, b"host::\0")?;
         let until = Instant::now() + answer_within;
         loop {
             let m = match c.recv(until.saturating_duration_since(Instant::now())) {
                 Ok(m) => m,
-                Err(e) if e.contains("in time") || e.contains("USB:") => {
+                Err(e) if e.contains("in time") || e.contains("USB:") || e.contains("broken") => {
                     drop(c);
                     return Err(Opened::Silent(device));
                 }
@@ -256,6 +262,18 @@ impl Conn {
         }
         let data = if len > 0 { self.read_exact_len(len, until)? } else { Vec::new() };
         Ok(Message { cmd: le(&h, 0), arg0: le(&h, 4), arg1: le(&h, 8), data })
+    }
+
+    /// Whatever waits in the IN endpoint, dropped (each read given 100 ms).
+    fn drain(&mut self) {
+        for _ in 0..64 {
+            let len = MAX_PAYLOAD.div_ceil(self.max_packet) * self.max_packet;
+            let c = self.ep_in.transfer_blocking(self.ep_in.allocate(len), Duration::from_millis(100));
+            if c.status.is_err() || c.actual_len == 0 {
+                break;
+            }
+        }
+        self.pending.clear();
     }
 
     /// Exactly `n` bytes from the IN endpoint (what was read beyond, kept).

@@ -41,6 +41,13 @@ const QUEUED_ACKED: usize = 64 << 20;
 const READ: usize = MAX_PAYLOAD + 4096;
 const BANNER: &str = "recovery::ro.product.name=surfaceduo;ro.product.model=Surface Duo;ro.product.device=duo;features=shell_v2,cmd";
 
+/// When the write to the host now under way began (ms), 0: none.
+static WRITING_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(1).max(1)
+}
+
 /// shell v2's packet ids.
 const STDIN: u8 = 0;
 const STDOUT: u8 = 1;
@@ -163,7 +170,10 @@ pub fn run() -> ! {
     std::thread::spawn(move || {
         for p in out_rx {
             let h = header(&p);
-            if to_host.write_all(&h).and_then(|_| if p.data.is_empty() { Ok(()) } else { to_host.write_all(&p.data) }).is_err() {
+            WRITING_SINCE.store(now_ms(), Ordering::Relaxed);
+            let r = to_host.write_all(&h).and_then(|_| if p.data.is_empty() { Ok(()) } else { to_host.write_all(&p.data) });
+            WRITING_SINCE.store(0, Ordering::Relaxed);
+            if r.is_err() {
                 say!("the host went (writing)");
                 std::process::exit(1);
             }
@@ -211,6 +221,14 @@ fn serve(from_host: &mut File, out: Sender<Packet>) -> ! {
             pending.drain(..24 + len);
             match cmd {
                 A_CNXN => {
+                    // A host connecting while a write to the last one hangs
+                    // (it went mid-stream and reads no more): started anew,
+                    // the gadget bound again, the write gone.
+                    let since = WRITING_SINCE.load(Ordering::Relaxed);
+                    if since != 0 && now_ms().saturating_sub(since) > 1000 {
+                        say!("a new host while a write to the last one hangs: starting again");
+                        std::process::exit(1);
+                    }
                     max = (arg1 as usize).clamp(4096, MAX_PAYLOAD);
                     streams.clear();
                     say!("the host connected (payloads of {max})");
@@ -397,7 +415,7 @@ fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Inbound, okay: Receiver<()>) {
     let (tx, rx) = channel::<(u8, Vec<u8>)>();
     let pump = |mut r: Box<dyn Read + Send>, id: u8, tx: Sender<(u8, Vec<u8>)>| {
         std::thread::spawn(move || {
-            let mut buf = vec![0u8; 64 * 1024];
+            let mut buf = vec![0u8; 256 * 1024];
             while let Ok(n) = r.read(&mut buf) {
                 if n == 0 || tx.send((id, buf[..n].to_vec())).is_err() {
                     break;
@@ -413,7 +431,21 @@ fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Inbound, okay: Receiver<()>) {
     }
     drop(tx);
     let mut open = true;
-    for (id, data) in rx {
+    // What came while the last write waited for its OKAY, gathered into
+    // one payload of a stream's (64 KB pieces one by one, each waiting for
+    // its OKAY, gave 7 MB/s out).
+    let mut held: Option<(u8, Vec<u8>)> = None;
+    while let Some((id, mut data)) = held.take().or_else(|| rx.recv().ok()) {
+        while data.len() < ctx.max {
+            match rx.try_recv() {
+                Ok((i, more)) if i == id => data.extend_from_slice(&more),
+                Ok(other) => {
+                    held = Some(other);
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
         let frame = if mode == Mode::V2 { framed(id, &data) } else { data };
         if !ctx.write(&okay, &frame) {
             open = false;
