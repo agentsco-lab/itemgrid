@@ -69,7 +69,8 @@ pub fn detect() -> Seen {
     if !ignored && crate::phone::pings(cable) && crate::phone::wake(cable) {
         return Seen { mode: Mode::Linux, via: cable.to_owned() };
     }
-    if let Some(line) = lines("fastboot", &["devices"]).into_iter().next() {
+    let in_fastboot = if crate::fb::platform() { lines("fastboot", &["devices"]) } else { crate::fb::devices().into_iter().map(|s| format!("{s}\t fastboot")).collect() };
+    if let Some(line) = in_fastboot.into_iter().next() {
         let serial = line.split_whitespace().next().unwrap_or_default().to_owned();
         // A Duo 1 says "surfaceduo"; anything else is another phone.
         let mode = match product(&serial, Mode::Fastboot) {
@@ -134,10 +135,14 @@ fn product(serial: &str, mode: Mode) -> Option<String> {
     }
     let said = if mode == Mode::Fastboot {
         // (fastboot answers getvar on stderr.)
-        let mut c = Command::new(crate::programs::fastboot());
-        c.args(["-s", serial, "getvar", "product"]);
-        let out = crate::programs::output_within(c, std::time::Duration::from_secs(5))?;
-        let all = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let all = if crate::fb::platform() {
+            let mut c = Command::new(crate::programs::fastboot());
+            c.args(["-s", serial, "getvar", "product"]);
+            let out = crate::programs::output_within(c, std::time::Duration::from_secs(5))?;
+            format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+        } else {
+            crate::fb::run(&["-s", serial, "getvar", "product"], std::time::Duration::from_secs(5)).ok()?
+        };
         all.lines().find_map(|l| l.trim().strip_prefix("product:")).map(|v| v.trim().to_owned())
     } else {
         lines("adb", &["-s", serial, "shell", "getprop", "ro.product.device"]).into_iter().next()

@@ -62,6 +62,7 @@ fn main() {
         Some("screenshot") => cmd_screenshot(&args[1..]),
         Some("wifi") => cmd_wifi(),
         Some("bootimg") => cmd_bootimg(&args[1..]),
+        Some("fastboot") => cmd_fastboot(&args[1..]),
         Some(other) => {
             eprintln!("itemgrid: '{other}' is not here yet");
             usage();
@@ -891,6 +892,22 @@ fn cmd_reboot() -> i32 {
     let start = std::time::Instant::now();
     match itemgrid_core::phone::reboot(&host, &mut |b| said(&start, b.words())) {
         Ok(()) => 0,
+        Err(e) => {
+            eprintln!("itemgrid: {e}");
+            1
+        }
+    }
+}
+
+/// fastboot by item/grid itself (fb.rs), its words as fastboot's: for
+/// comparing with platform-tools' (`ITEMGRID_FASTBOOT=platform`).
+fn cmd_fastboot(args: &[String]) -> i32 {
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    match itemgrid_core::fb::run(&a, std::time::Duration::from_secs(120)) {
+        Ok(out) => {
+            print!("{out}");
+            0
+        }
         Err(e) => {
             eprintln!("itemgrid: {e}");
             1

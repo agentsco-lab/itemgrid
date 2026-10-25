@@ -111,6 +111,10 @@ pub struct Fastboot {
 }
 
 pub(crate) fn fastboot(args: &[&str], limit: Duration) -> Result<String, String> {
+    // item/grid's own (fb.rs), unless platform-tools' is asked for.
+    if !crate::fb::platform() {
+        return crate::fb::run(args, limit);
+    }
     let mut child = Command::new(crate::programs::fastboot()).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("fastboot: {e}"))?;
     let start = Instant::now();
     loop {

@@ -29,6 +29,7 @@ pub mod programs;
 pub mod ramboot;
 pub mod restore;
 pub mod bootimg;
+pub mod fb;
 pub mod screen;
 pub mod wifi;
 pub mod screenshot;
