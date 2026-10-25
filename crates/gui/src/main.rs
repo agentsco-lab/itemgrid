@@ -3316,7 +3316,15 @@ fn show_now(ui: &Rc<Ui>, place: Place, guest: bool, status: Option<Result<status
         if place != Place::Gone {
             st.last_seen = Some(now);
         }
+        let moved = st.place != place;
         st.place = place.clone();
+        drop(st);
+        // The board's words follow where it is at once: Android without USB
+        // debugging and then with it is the same scene, nothing else drawn
+        // anew, and "turn on usb debugging" stayed up (2026-10-25).
+        if moved {
+            show_fold(ui, ui.fold.get().0);
+        }
     }
     // A phone seen: the start's "not found" note goes (it stayed under the
     // word over a Duo 2 that came later, the owner, 2026-10-08).
