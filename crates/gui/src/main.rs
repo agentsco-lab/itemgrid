@@ -5611,19 +5611,23 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                 None => Ask::new("install item", wrapped("no release with a boot image on this computer yet")),
                 Some(release) => {
                     let version = release.item.split(['~', '-', '+']).next().unwrap_or(&release.item).to_owned();
-                    // Which image: its day (item-duo1-YYYYMMDD-...) - an
-                    // older one, taken when the newest had no boot image,
-                    // said so (2026-10-25: a day-old image went on unseen).
+                    // An older image, taken when the newest had no boot image,
+                    // said so with its day (2026-10-25: a day-old image went
+                    // on unseen); the newest needs no day (it ran past the
+                    // line's room).
                     let day = release.name.split('-').find(|p| p.len() == 8 && p.chars().all(|c| c.is_ascii_digit())).map(|d| {
                         const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
                         let m = d[4..6].parse::<usize>().unwrap_or(1).clamp(1, 12);
                         format!("{} {}", d[6..8].trim_start_matches('0'), MONTHS[m - 1])
                     });
-                    let mut lines = vec!["erases android".to_owned(), format!("puts item {version}{}", day.map(|d| format!(" · {d}")).unwrap_or_default())];
+                    let mut lines = vec!["erases android".to_owned(), format!("puts item {version}")];
                     if newest.as_deref() != Some(release.name.as_str()) {
-                        lines.push("newest has no boot image".into());
+                        lines.push(format!("an older image{}", day.map(|d| format!(" · {d}")).unwrap_or_default()));
+                        lines.push("the newest has no boot".into());
                     }
-                    lines.push("15 min · cable in".into());
+                    // How long, from the stages' own times (journey.rs).
+                    let mins = (journey::stages("install-stock").iter().map(|s| s.secs).sum::<f64>() / 60.0).round();
+                    lines.push(format!("{mins} min · cable in"));
                     let mut ask = Ask::new("install item", lines);
                     ask.verb = "install";
                     ask.go = Some(Rc::new(move |ui, _, _| run_job(ui, Job::InstallStock(Box::new(release.clone()), serial.clone()))));

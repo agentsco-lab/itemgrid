@@ -78,14 +78,16 @@ pub fn stages(job: &str) -> Vec<Stage> {
             BACK_TO_LINUX,
         ],
         "install-stock" => vec![
-            st("Getting ready", "The image is checked here; the phone goes into its bootloader (unlocked, if it is not: say so on the phone).", "Bootloader", &["checking the image", "into the bootloader", "unlocking"], 90.0),
-            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP"], 60.0),
-            st("Putting item on", "The phone's storage is made anew and the new system written, in checked parts.", "Recovery", &["making userdata", "putting "], 420.0),
-            st("First start", "item starts from the computer and grows to fill the phone.", "Restarting", &["starting item from the computer"], 240.0),
-            st("Its own boot", "item's boot is written to the phone, read back, and the phone restarts from it.", "Linux", &["writing boot", "restarting from the phone"], 120.0),
+            // (Times as measured on the phone with item-recovery, 2026-10-25:
+            // about 11 minutes in all.)
+            st("Getting ready", "The image is checked here; the phone goes into its bootloader (unlocked, if it is not: say so on the phone).", "Bootloader", &["checking the image", "into the bootloader", "unlocking"], 75.0),
+            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP", "into the recovery"], 45.0),
+            st("Putting item on", "The phone's storage is made anew and the new system written, in checked parts.", "Recovery", &["making userdata", "putting "], 360.0),
+            st("First start", "item starts from the computer and grows to fill the phone.", "Restarting", &["starting item from the computer"], 90.0),
+            st("Its own boot", "item's boot is written to the phone, read back, and the phone restarts from it.", "Linux", &["writing boot", "restarting from the phone"], 90.0),
         ],
         "android-clean" => vec![
-            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP", "checking the image"], 30.0),
+            st("Into the recovery", "A small repair system starts from the computer's memory.", "Restarting", &["into TWRP", "into the recovery", "checking the image"], 30.0),
             st("Erasing item", "Linux and everything in it are erased from the phone.", "Recovery", &["zeroing"], 450.0),
             st("Stock boot back", "The phone's own boot goes back on, read back.", "Recovery", &["the stock boot", "writing"], 15.0),
             st("Android starting", "Android sets itself up and opens its welcome screens.", "Restarting", &["clearing misc", "starting Android"], 30.0),
