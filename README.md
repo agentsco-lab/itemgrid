@@ -37,6 +37,8 @@ owner's, from one Linux computer. Keep your own backups of `boot_a`,
 | `stock`, `android` | Microsoft's packages and their boot chain; the way to stock Android and back |
 | `keys` | the phone's keyring from the computer: `set NAME` (from stdin), `set-all FILE`, `list`, `forget NAME` - item/grid keeps no copy |
 | `wifi` | the Wi-Fi this computer is on, its time zone and the zone's city for the weather, given to the phone (the password never shown) |
+| `bootimg` | boot images: `info`, `unpack`, `repack` (a ramdisk, a kernel, a DTB, the command line) - in place of AOSP's mkbootimg |
+| `fastboot`, `adb` | item/grid's own fastboot and adb, for trying them by hand (`adb --android` for stock Android) |
 
 **The window** shows the Duo drawn as it is held - the hinge and the
 gravity from the phone's sensors, its screen live from item's mirror - on a
@@ -67,8 +69,8 @@ work, its progress and the phone's item id. It comes with the system image;
 ```
 Phone:     Linux (172.16.42.1)
 System:    Droidian 102 (2026-10-21), kernel 4.14-190-perf-microsoft-surfaceduo, up 0 h 19 min
-item:      0.3.0 (built 2026-10-25 20:08), running
-Port:      0.22.0, sensorfw 0.14.8+itemae3
+item:      0.3.1 (built 2026-10-26 01:54), running
+Port:      0.22.1, sensorfw 0.14.8+itemae3
 Fingers:   1 enrolled
 Battery:   100%, discharging, 26 °C
 CPU:       32 °C
@@ -108,8 +110,13 @@ Rust, GTK4 and libadwaita.
 | `tools/` | `package-deb.sh`, `install-local.sh`, `fetch-fonts.sh`, `package-windows.sh`, `build-recovery.sh` |
 
 The phone is reached over ssh on the USB link (172.16.42.1), or over Wi-Fi
-once the cable has shown its key; fastboot and item-recovery (adb) for the
-modes where Linux is not running. The installer alone does without ssh: it knows
+once the cable has shown its key. Where Linux is not running, item/grid
+speaks fastboot and adb itself, over USB (`core/src/fb.rs`, `adbusb.rs`):
+the bootloader, item-recovery, and stock Android - signed in with the key
+platform-tools' adb made on this computer, so a phone that trusted adb
+trusts item/grid with no tap. platform-tools are needed only for TWRP, the
+fallback recovery (`ITEMGRID_FASTBOOT=platform`, `ITEMGRID_ADB=platform`
+give them the rest back). The installer alone does without ssh: it knows
 Linux came up by the phone's USB network gadget, and writes the boot chain
 from TWRP after the owner's forced restart (the parking brake parks it in
 fastboot) - the same rules, one more step by hand.
