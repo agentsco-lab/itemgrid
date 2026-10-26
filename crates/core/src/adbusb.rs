@@ -47,11 +47,12 @@ pub fn platform() -> bool {
     std::env::var("ITEMGRID_ADB").is_ok_and(|v| v == "platform")
 }
 
-/// Whether item/grid's own adb speaks to stock Android too
-/// (`ITEMGRID_ADB=own`): until it has been tried on the phone's Android,
-/// platform-tools' answers there by default.
+/// Whether item/grid's own adb speaks to stock Android too: yes since it
+/// was tried on the phone's Android 12 (2026-10-26: AUTH with this
+/// computer's key, no tap); `ITEMGRID_ADB=platform` leaves it to
+/// platform-tools'.
 pub fn android() -> bool {
-    std::env::var("ITEMGRID_ADB").is_ok_and(|v| v == "own")
+    !platform()
 }
 
 const AUTH_TOKEN: u32 = 1;
