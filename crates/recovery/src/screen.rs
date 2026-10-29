@@ -105,6 +105,10 @@ const RED: u32 = 0xe8695e;
 const ACROSS: usize = 18;
 /// The square row the words begin on, and the zoom is anchored on.
 const TITLE_ROW: f32 = 6.0;
+/// How far in from the screen's outer edges the lamp's way begins and ends
+/// (of a panel's width): the drop on it, a square and a half wide, whole.
+const LAMP_IN: f32 = 0.15;
+
 /// The lamp's height on the panels (of the height).
 const LAMP_Y: f32 = 0.62;
 /// item's bezel edge (edge.frag's default): how soft, its corners' radius
@@ -267,7 +271,10 @@ impl Scene {
         let lamp_x = match s.state.as_str() {
             "done" => 1.0,
             "wait" => 0.3,
-            _ => s.path.unwrap_or(0.0) * 2.0,
+            // From a little in from the left edge to as far from the right:
+            // the drop whole at the way's start and end (at 0 it stood
+            // half off the screen).
+            _ => LAMP_IN + s.path.unwrap_or(0.0) * (2.0 - 2.0 * LAMP_IN),
         };
         let glow = match s.state.as_str() {
             "done" => 1.0,
