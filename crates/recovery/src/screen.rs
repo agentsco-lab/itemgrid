@@ -741,7 +741,6 @@ fn light(px: &mut [u32], w: usize, h: usize, stride: usize, keep: &[u8], s: &Sta
         return;
     }
     let (lines, paper) = falloff();
-    let base_line = line_alpha(s) as f32 / 255.0;
     let half = line_thick(s, sq) / 2.0;
     let ink = s.line.unwrap_or(0xffffff);
     let inv = 1024.0 / (reach * reach);
@@ -763,11 +762,14 @@ fn light(px: &mut [u32], w: usize, h: usize, stride: usize, keep: &[u8], s: &Sta
             let p = &mut px[row + x];
             // The soft light over the paper.
             let mut c = blend(*p, shade(accent, kp), (0.10 * glow * paper[qi] * 255.0) as u32);
-            // A line here, as wide as the light makes it.
+            // A line here, as wide as the light makes it: only the light's
+            // own share over the line grid_lines drew - its base again here
+            // made every line in the light's reach brighter than outside,
+            // a hard ring where the reach ended (the owner, 2026-10-29).
             let on = (half + 1.1 * k - dx.min(dy) + 0.5).clamp(0.0, 1.0);
-            if on > 0.0 {
+            if on > 0.0 && k > 0.0 {
                 let colour = blend(ink, accent, (k * 255.0) as u32);
-                c = blend(c, shade(colour, kp), ((base_line + 0.55 * k) * on * 255.0) as u32);
+                c = blend(c, shade(colour, kp), (0.55 * k * on * 255.0) as u32);
             }
             *p = c;
         }

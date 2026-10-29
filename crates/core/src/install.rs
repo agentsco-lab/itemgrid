@@ -385,24 +385,23 @@ fn kept(path: &str) -> bool {
     path.starts_with("home/") || path == "home" || path.starts_with("etc/NetworkManager/system-connections") || path == "etc/localtime" || path == "etc/timezone"
 }
 
+/// The room left in the new system after the kept files are in: its first
+/// start, before it grows, has its own to write.
+const ROOM: u64 = 512 << 20;
+
 /// Files bigger than this go part by part (TWRP's tar writes a big file from
 /// a stream as empty); the rest in one tar stream.
 const BIG: u64 = 32 << 20;
 
-/// The kept part of a quick backup put into the new system, mounted at /tmp/r
-/// in TWRP: small files through tar, big ones part by part, every file's size
-/// checked after; the owner's password hash (the PIN) carried over.
-fn put_kept(rec: &crate::rec::Rec, serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Say) -> Result<(), String> {
-    let archive = quick.dir.join("home-etc.tar.gz");
-    let open = || -> Result<tar::Archive<flate2::read::MultiGzDecoder<std::io::BufReader<std::fs::File>>>, String> {
-        let f = std::fs::File::open(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
-        Ok(tar::Archive::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(f))))
-    };
-    // Pass one: the small entries into a tar of their own, the big ones and
-    // the sizes noted, the PIN's line kept.
+/// The big kept files: path, size, mode, uid, gid.
+type Big = Vec<(String, u64, u32, u64, u64)>;
+
+/// Pass one over the quick backup: the small kept entries into a tar of
+/// their own, the big ones and the small files' sizes noted, the PIN's line
+/// (etc/shadow's droidian:) kept.
+fn split_kept<R: Read>(mut a: tar::Archive<R>) -> Result<(Vec<u8>, Big, String, Option<String>), String> {
     let mut small = tar::Builder::new(Vec::new());
     let (mut big, mut sizes, mut shadow) = (Vec::new(), String::new(), None);
-    let mut a = open()?;
     for entry in a.entries().map_err(|e| e.to_string())? {
         let mut entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().trim_start_matches("./").to_owned();
@@ -428,6 +427,30 @@ fn put_kept(rec: &crate::rec::Rec, serial: &str, quick: &crate::backup::Backup, 
         small.append_data(&mut h, &path, &mut entry).map_err(|e| format!("{path}: {e}"))?;
     }
     let small = small.into_inner().map_err(|e| e.to_string())?;
+    Ok((small, big, sizes, shadow))
+}
+
+/// The kept part of a quick backup put into the new system, mounted at /tmp/r
+/// in TWRP: small files through tar, big ones part by part, every file's size
+/// checked after; the owner's password hash (the PIN) carried over.
+fn put_kept(rec: &crate::rec::Rec, serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Say) -> Result<(), String> {
+    let archive = quick.dir.join("home-etc.tar.gz");
+    let open = || -> Result<tar::Archive<flate2::read::MultiGzDecoder<std::io::BufReader<std::fs::File>>>, String> {
+        let f = std::fs::File::open(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
+        Ok(tar::Archive::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(f))))
+    };
+    let (small, big, sizes, shadow) = split_kept(open()?)?;
+    // The room for them: a release's system has a few hundred MB free until
+    // its first start grows it to the phone (2026-10-29: 799 MB of home
+    // into 654 free stopped an install after the erase); grown now, with
+    // room to spare, if it is short.
+    let need = small.len() as u64 + big.iter().map(|b| b.1).sum::<u64>();
+    let free = rec.space("/tmp/r")?;
+    if need + ROOM > free {
+        let more = (need + ROOM - free).next_multiple_of(256 << 20);
+        say(format!("making room in the new system: {} MB more", more >> 20));
+        rec.grow("/tmp/ud/rootfs.img", "/tmp/r", more)?;
+    }
     say(format!("putting your files back ({} MB)", (small.len() >> 20) as u64 + big.iter().map(|b| b.1 >> 20).sum::<u64>()));
     rec.untar("/tmp/r", &small)?;
     for (path, size, mode, uid, gid) in &big {
@@ -702,4 +725,20 @@ fn without_windows(serial: &str, say: crate::ramboot::Say) -> Result<(), String>
     let done = rec.run(&["gpt", "--write", "/dev/block/sda"], "")?;
     say(done.lines().last().unwrap_or("written").to_owned());
     Ok(())
+}
+
+#[cfg(test)]
+mod kept_tests {
+    /// ITEM_KEPT_FROM=home-etc.tar.gz ITEM_KEPT_TO=small.tar: the small tar
+    /// an install keeping files sends, made from a real quick backup, to
+    /// unpack and look at (2026-10-29: one stopped the phone's untar).
+    #[test]
+    fn the_small_tar_of_a_backup() {
+        let (Some(from), Some(to)) = (std::env::var_os("ITEM_KEPT_FROM"), std::env::var_os("ITEM_KEPT_TO")) else { return };
+        let f = std::fs::File::open(from).unwrap();
+        let a = tar::Archive::new(flate2::read::MultiGzDecoder::new(std::io::BufReader::new(f)));
+        let (small, big, _, shadow) = super::split_kept(a).unwrap();
+        eprintln!("small {} MB, {} big, shadow {}", small.len() >> 20, big.len(), shadow.is_some());
+        std::fs::write(to, small).unwrap();
+    }
 }

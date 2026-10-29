@@ -160,6 +160,21 @@ impl Rec {
         adb_shell(&self.serial, &format!("cat {tmp} > '{path}'; rc=$?; rm -f {tmp}; exit $rc")).map(|_| ())
     }
 
+    /// The bytes free under `dir` (root's).
+    pub(crate) fn space(&self, dir: &str) -> Result<u64, String> {
+        let said = self.run(&["space", dir], &format!("df -k '{dir}' | tail -1 | awk '{{print $4 * 1024}}'"))?;
+        said.trim().parse().map_err(|_| format!("the space under {dir} was not read ({})", said.trim()))
+    }
+
+    /// The image `file`, mounted at `dir`, `more` bytes larger, its ext4
+    /// grown into them while mounted (item-recovery's own; not on TWRP).
+    pub(crate) fn grow(&self, file: &str, dir: &str, more: u64) -> Result<(), String> {
+        if !self.ours {
+            return Err(format!("{dir} has too little room, and TWRP is not asked to grow it"));
+        }
+        self.run(&["grow", file, dir, &more.to_string()], "").map(|_| ())
+    }
+
     /// A tar unpacked under `root`, owners and modes kept.
     pub(crate) fn untar(&self, root: &str, tar: &[u8]) -> Result<(), String> {
         if self.ours {

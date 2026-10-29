@@ -19,7 +19,7 @@ pub const LAST_ERR: &str = "/tmp/item-recovery-last.err";
 
 /// The verbs, for adb.rs: a command line starting with one of these after
 /// `item-recovery ` is run here.
-pub const VERBS: &[&str] = &["drm", "unzstd", "log", "stat", "unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt"];
+pub const VERBS: &[&str] = &["drm", "unzstd", "log", "stat", "unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt", "space", "grow"];
 
 pub fn run(verb: &str, args: &[String]) -> i32 {
     let a = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| format!("{verb}: an argument is missing"));
@@ -89,6 +89,11 @@ pub fn run(verb: &str, args: &[String]) -> i32 {
             Ok(())
         }
         "gpt" => return crate::gpt::command(args),
+        // The bytes free under DIR (root's: the reserved ones counted).
+        "space" => a(0).and_then(space).map(|n| println!("{n}")),
+        // `grow FILE DIR BYTES`: the image FILE, mounted at DIR, made BYTES
+        // larger, its ext4 grown into them while mounted.
+        "grow" => (|| grow(a(0)?, a(1)?, num(2)?))(),
         "mkfs" => crate::mkfs::command(args),
         _ => Err(format!("{verb}: not a verb of item-recovery")),
     };
@@ -817,6 +822,62 @@ fn loop_for(file: &str, ro: bool) -> Result<(String, File), String> {
         return Err(format!("{dev}'s flags: {}", std::io::Error::last_os_error()));
     }
     Ok((dev, lo))
+}
+
+/// The bytes free on the filesystem of `dir`, as root may use them.
+fn space(dir: &str) -> Result<u64, String> {
+    let c = std::ffi::CString::new(dir).map_err(|_| "a NUL in a name")?;
+    // SAFETY: a zeroed statvfs the kernel fills, a valid path.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return Err(format!("{dir}: {}", std::io::Error::last_os_error()));
+    }
+    Ok(st.f_bfree as u64 * st.f_frsize as u64)
+}
+
+/// The image `file`, mounted at `dir` through a loop device, made `more`
+/// bytes larger and its ext4 grown into them, mounted (the kernel's online
+/// resize, EXT4_IOC_RESIZE_FS - no resize2fs): a release's system has a
+/// few hundred MB free until its first start grows it, and an install
+/// keeping files puts the home folder in before that (2026-10-29: 799 MB
+/// into 654 free stopped the install).
+fn grow(file: &str, dir: &str, more: u64) -> Result<(), String> {
+    use std::os::unix::io::AsRawFd;
+    const LOOP_SET_CAPACITY: libc::c_ulong = 0x4C07;
+    const EXT4_IOC_RESIZE_FS: libc::c_ulong = 0x4008_6610;
+    let real = std::fs::canonicalize(dir).map_err(|e| format!("{dir}: {e}"))?;
+    let dev = std::fs::read_to_string("/proc/mounts")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| {
+            let mut w = l.split_whitespace();
+            let (src, at) = (w.next()?, w.next()?);
+            (Path::new(at) == real).then(|| src.to_owned())
+        })
+        .ok_or_else(|| format!("{dir} is not mounted"))?;
+    let size = std::fs::metadata(file).map_err(|e| format!("{file}: {e}"))?.len();
+    let new = size + more;
+    // The file larger (sparse), then the loop device told.
+    OpenOptions::new().write(true).open(file).and_then(|f| f.set_len(new)).map_err(|e| format!("{file}: {e}"))?;
+    let lo = OpenOptions::new().read(true).write(true).open(&dev).map_err(|e| format!("{dev}: {e}"))?;
+    // SAFETY: an ioctl without an argument on the open loop device.
+    if unsafe { libc::ioctl(lo.as_raw_fd(), LOOP_SET_CAPACITY as _, 0) } != 0 {
+        return Err(format!("{dev}'s new size: {}", std::io::Error::last_os_error()));
+    }
+    let c = std::ffi::CString::new(real.as_os_str().as_encoded_bytes()).map_err(|_| "a NUL in a name")?;
+    // SAFETY: as in space().
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return Err(format!("{dir}: {}", std::io::Error::last_os_error()));
+    }
+    let blocks: u64 = new / st.f_frsize as u64;
+    let d = File::open(&real).map_err(|e| format!("{dir}: {e}"))?;
+    // SAFETY: the mounted filesystem's directory open; a u64 the kernel reads.
+    if unsafe { libc::ioctl(d.as_raw_fd(), EXT4_IOC_RESIZE_FS as _, &blocks as *const u64) } != 0 {
+        return Err(format!("growing {dir} to {blocks} blocks: {}", std::io::Error::last_os_error()));
+    }
+    crate::say!("grow: {file} {} MB more, {dir} now {} blocks", more >> 20, blocks);
+    Ok(())
 }
 
 /// Unmounted (and its loop device let go, the kernel's autoclear); not
