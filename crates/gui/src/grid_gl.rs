@@ -65,13 +65,8 @@ pub struct Grid {
     pub lamp: (f32, f32),
     pub lamp_r: f32,
     pub lamp_k: f32,
-    /// The rim (rim.rs): how wide, of the page's shorter side; its curve
-    /// (0 even, 1 soft, 2 thin, 3 deep); its form (0 a frame, 1 rounded,
-    /// 2 an oval); how far from the middle the lines fade (times the
-    /// reach; 0 never).
-    pub rim: f32,
-    pub rim_curve: i32,
-    pub rim_shape: i32,
+    /// How far from the table's middle its lines fade out (times its
+    /// reach; 0: not at all).
     pub lines_fade: f32,
 }
 
@@ -115,22 +110,18 @@ uniform vec4 u_ink_day;
 uniform vec4 u_ink_night;
 uniform vec2 u_near_at;
 uniform vec2 u_size;
-uniform float u_rim;
-uniform int u_rim_curve;
-uniform int u_rim_shape;
 uniform float u_lines_fade;
 uniform vec2 u_lamp;
 uniform float u_lamp_r;
 uniform float u_lamp_k;
 out vec4 color;
 
-// The rim's way from nothing (0) to the table (1) across it.
-float curve(float x) {
-    if (u_rim_curve == 0) return x;
-    if (u_rim_curve == 2) return sqrt(x);
-    if (u_rim_curve == 3) return x * x;
-    return smoothstep(0.0, 1.0, x);
-}
+// The table's edges as item's panels have theirs (item's edge.frag): a
+// rectangle with rounded corners, going soft into nothing - see-through
+// here - over its last EDGE_SOFT px (the owner, 2026-10-29: the window and
+// the phone alike; the rim's own settings gone).
+const float EDGE_SOFT = 12.0;
+const float EDGE_CORNER = 24.0;
 
 float line(float t, float shift) {
     // How far from the nearest line, in the page's device px.
@@ -146,24 +137,12 @@ void main() {
     vec2 t = q.xy / q.z;
     float a = 0.0;
     bool seen = dot(u_w, vec3(t, 1.0)) > 0.005;
-    // Toward the page's edges the table goes, paper and lines: a rim,
-    // see-through, not a cut - as wide, as curved and of the form set
-    // (rim.rs).
-    float rim = u_rim * min(u_size.x, u_size.y);
+    // Toward the page's edges the table goes, paper and lines, as item's
+    // panels go into their bezel.
     vec2 on = page + u_off;
-    float edge;
-    if (u_rim_shape == 0) {
-        vec2 e = clamp(min(on, u_size - on) / rim, 0.0, 1.0);
-        edge = curve(e.x) * curve(e.y);
-    } else if (u_rim_shape == 1) {
-        vec2 mid = 0.5 * u_size;
-        vec2 dq = abs(on - mid) - (mid - vec2(rim));
-        float sd = length(max(dq, 0.0)) + min(max(dq.x, dq.y), 0.0);
-        edge = curve(clamp(1.0 - sd / rim, 0.0, 1.0));
-    } else {
-        float r = length((on - 0.5 * u_size) / (0.5 * u_size));
-        edge = curve(clamp((1.0 - r) / (2.0 * u_rim), 0.0, 1.0));
-    }
+    vec2 dq = abs(on - 0.5 * u_size) - (0.5 * u_size - vec2(EDGE_CORNER));
+    float inside = EDGE_CORNER - (length(max(dq, 0.0)) + min(max(dq.x, dq.y), 0.0));
+    float edge = smoothstep(0.0, EDGE_SOFT, inside);
     if (seen) {
         float d = u_lines_fade > 0.0 ? length(t - u_mid) / (u_reach * u_lines_fade) : 0.0;
         float reached = u_grid >= 1.0 ? 1.0 : clamp((u_grown - length(t - u_cubes)) / (2.0 * u_step), 0.0, 1.0);
@@ -307,9 +286,6 @@ impl Gpu {
             gl.uniform_4_f32(u("u_ink_night").as_ref(), g.ink_night[0], g.ink_night[1], g.ink_night[2], 1.15 * g.grid_k);
             gl.uniform_2_f32(u("u_near_at").as_ref(), g.near_at.0, g.near_at.1);
             gl.uniform_2_f32(u("u_size").as_ref(), g.size.0, g.size.1);
-            gl.uniform_1_f32(u("u_rim").as_ref(), g.rim);
-            gl.uniform_1_i32(u("u_rim_curve").as_ref(), g.rim_curve);
-            gl.uniform_1_i32(u("u_rim_shape").as_ref(), g.rim_shape);
             gl.uniform_1_f32(u("u_lines_fade").as_ref(), g.lines_fade);
             gl.uniform_2_f32(u("u_lamp").as_ref(), g.lamp.0, g.lamp.1);
             gl.uniform_1_f32(u("u_lamp_r").as_ref(), g.lamp_r);

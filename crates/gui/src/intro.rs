@@ -21,9 +21,9 @@ use std::time::Instant;
 const CAPTION_S: f32 = 2.5;
 
 pub const WORD: [&str; 9] = ["i", "t", "e", "m", "/", "g", "r", "i", "d"];
-/// The word turned by its "/" (main.rs's dials): the table's edge and its
-/// light, a cube each; the last cube blank.
-pub const EDGE: [&str; 9] = ["e", "d", "g", "e", "/", "l", "i", "t", ""];
+/// The word turned by its "/" (main.rs's dials): the table's light, a cube
+/// each (l i t); the rest blank (the rim's e d g e gone, 2026-10-29).
+pub const EDGE: [&str; 9] = ["", "", "", "", "/", "l", "i", "t", ""];
 /// How long the word takes to turn over (seconds); its letters change at
 /// the middle.
 const FLIP_S: f32 = 0.6;

@@ -28,7 +28,6 @@ mod floor_area;
 mod grid_gl;
 mod intro;
 mod lamp;
-mod rim;
 // The job's card (GTK): the table tells jobs now; kept for the pages.
 #[allow(dead_code)]
 mod card;
@@ -87,6 +86,10 @@ const SLASH: usize = 4;
 /// item/grid's second "i": night (or day) comes from it when pressed (on
 /// the "/" from 2026-10-08 until the word turned over).
 const NIGHT_CUBE: usize = 7;
+
+/// How far from the table's middle its lines fade out, times its reach:
+/// the owner's "near" of the rim's old settings.
+const LINES_FADE: f32 = 0.65;
 
 /// Night: the table dark, its lines light - by the night button on the
 /// table (kept in ~/.config/itemgrid/night: day or night).
@@ -324,11 +327,12 @@ fn hex_rgb(hex: &str) -> [f64; 3] {
 /// The word's cubes that are dials. item/grid: g the grid's colour, r its
 /// strength, d its lines' width (the table here and the recovery's screen
 /// on the phone); i t e m look for the phone, the second i is night.
-/// edge/lit: e the rim's width, d its shape, g its curve, e the lines'
-/// fade; l the light's strength, i its reach, t the lamp's place.
+/// /lit: l the light's strength, i its reach, t the lamp's place (the
+/// rim's e d g e gone with its settings, 2026-10-29: the table's edges
+/// are item's panels' now).
 fn dial_name(i: usize, edge: bool) -> Option<&'static str> {
     if edge {
-        ["edge", "shape", "curve", "fade", "", "light", "reach", "lamp", ""].get(i).copied().filter(|n| !n.is_empty())
+        ["", "", "", "", "", "light", "reach", "lamp", ""].get(i).copied().filter(|n| !n.is_empty())
     } else {
         ["", "", "", "", "", "colour", "grid", "", "lines"].get(i).copied().filter(|n| !n.is_empty())
     }
@@ -378,22 +382,6 @@ fn keep_accent(i: usize) {
 fn dial(ui: &Rc<Ui>, i: usize, edge: bool) {
     let name = dial_name(i, edge).unwrap_or("");
     let caption = match name {
-        "edge" | "shape" | "curve" | "fade" => {
-            let r = rim::get();
-            let r = match name {
-                "edge" => rim::Rim { width: lamp::next(r.width, rim::WIDTHS.len()), ..r },
-                "shape" => rim::Rim { shape: lamp::next(r.shape, rim::SHAPES.len()), ..r },
-                "curve" => rim::Rim { curve: lamp::next(r.curve, rim::CURVES.len()), ..r },
-                _ => rim::Rim { fade: lamp::next(r.fade, rim::FADES.len()), ..r },
-            };
-            rim::set(r);
-            match name {
-                "edge" => format!("edge {}", rim::WIDTHS[r.width].0),
-                "shape" => format!("shape {}", rim::SHAPES[r.shape]),
-                "curve" => format!("curve {}", rim::CURVES[r.curve]),
-                _ => format!("fade {}", rim::FADES[r.fade].0),
-            }
-        }
         "light" | "reach" | "lamp" => {
             let l = lamp::get();
             let l = match name {
@@ -4161,10 +4149,7 @@ fn grid_of(fv: &FloorView) -> Option<grid_gl::Grid> {
         ink_night: night_ink_rgb().map(|v| v as f32),
         near_at: fv.near_at,
         size: (fv.size.0, fv.size.1),
-        rim: rim::width(),
-        rim_curve: rim::get().curve as i32,
-        rim_shape: rim::get().shape as i32,
-        lines_fade: rim::fade(),
+        lines_fade: LINES_FADE,
         lamp: fv.lamp,
         lamp_r: fv.lamp_r,
         lamp_k: fv.lamp_k,
