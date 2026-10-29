@@ -16,28 +16,7 @@ const UFS: &str = "1d84000.ufshc";
 pub const GADGET: &str = "/sys/kernel/config/usb_gadget/g1";
 pub const FFS: &str = "/dev/usb-ffs/adb";
 
-/// busybox's reboot, poweroff and halt (the shell's own applets, run before
-/// /sbin's) only signal PID 1, as busybox's init expects: TERM a restart,
-/// USR2 power off, USR1 halt. Done here, from the handler (sync and reboot
-/// are system calls, safe there).
-extern "C" fn on_signal(sig: libc::c_int) {
-    // SAFETY: sync and reboot are async-signal-safe system calls.
-    unsafe {
-        libc::sync();
-        let how = match sig {
-            libc::SIGUSR2 => libc::RB_POWER_OFF,
-            libc::SIGUSR1 => libc::RB_HALT_SYSTEM,
-            _ => libc::RB_AUTOBOOT,
-        };
-        libc::reboot(how);
-    }
-}
-
 pub fn run() -> ! {
-    for sig in [libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2] {
-        // SAFETY: a plain C handler for a signal PID 1 is sent.
-        unsafe { libc::signal(sig, on_signal as *const () as libc::sighandler_t) };
-    }
     mounts();
     say!("up ({})", env!("CARGO_PKG_VERSION"));
     // The screen on its own thread: drawn as the status changes.
@@ -262,12 +241,5 @@ pub fn reboot(to: Option<&str>) -> ! {
             libc::reboot(libc::RB_AUTOBOOT);
         },
     }
-    std::process::exit(1)
-}
-
-pub fn power_off() -> ! {
-    sync();
-    // SAFETY: reboot takes a command.
-    unsafe { libc::reboot(libc::RB_POWER_OFF) };
     std::process::exit(1)
 }

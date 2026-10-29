@@ -374,12 +374,9 @@ fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Inbound, okay: Receiver<()>) {
         c.args(words[1..].iter().map(|w| crate::verbs::unescape(w)));
         c
     } else {
-        let mut c = Command::new("/bin/sh");
-        if cmd.is_empty() {
-            c.arg("-i");
-        } else {
-            c.arg("-c").arg(cmd);
-        }
+        // No shell here (one binary, no busybox): the line is answered so.
+        let mut c = Command::new(std::env::current_exe().unwrap_or_else(|_| "/sbin/item-recovery".into()));
+        c.arg("no-shell");
         c
     };
     // A verb by exec (in or out) has no way to tell its end: its stderr

@@ -53,8 +53,9 @@ where they turn the rim and the light. What is not on the table yet is the
 command line's.
 
 **item-recovery** (`crates/recovery`) takes TWRP's place: the port's kernel
-with a static Rust init and adb daemon, busybox and mke2fs, 19 MB. item/grid
-RAM-boots it, never writes it; its screen on both panels is the table's
+with one static Rust program - init, an adb daemon, and every command
+item/grid asks of it (its own mkfs, tar, gzip, partition table; no shell,
+no busybox, no e2fsprogs). item/grid RAM-boots it, never writes it; its screen on both panels is the table's
 grid - the colour, strength and width the window has - with the step at
 work, its progress and the phone's item id. It comes with the system image;
 `tools/build-recovery.sh` builds it here.

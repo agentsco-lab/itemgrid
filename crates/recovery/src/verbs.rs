@@ -19,7 +19,7 @@ pub const LAST_ERR: &str = "/tmp/item-recovery-last.err";
 
 /// The verbs, for adb.rs: a command line starting with one of these after
 /// `item-recovery ` is run here.
-pub const VERBS: &[&str] = &["unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt"];
+pub const VERBS: &[&str] = &["log", "stat", "unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt"];
 
 pub fn run(verb: &str, args: &[String]) -> i32 {
     let a = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| format!("{verb}: an argument is missing"));
@@ -32,11 +32,15 @@ pub fn run(verb: &str, args: &[String]) -> i32 {
             Ok(())
         }
         "real" => a(0).and_then(|p| std::fs::canonicalize(p).map(|r| println!("{}", r.display())).map_err(|e| format!("{p}: {e}"))),
-        "truncate" => match crate::tools::truncate(args) {
+        "truncate" => match truncate(args) {
             0 => Ok(()),
             _ => Err("truncate failed".into()),
         },
         "size" => a(0).and_then(|p| size(p).map(|n| println!("{n}"))),
+        // The kernel's log as it is now (dmesg's), its last N lines.
+        "log" => (if args.is_empty() { Ok(200) } else { num(0) }).and_then(|n| kernel_log(n as usize)),
+        // What a path is: its kind, mode, owner, size; a link's target.
+        "stat" => args.iter().try_for_each(|p| stat(p)),
         // `hash --direct PATH`: read from the flash, past the page cache
         // (O_DIRECT): what was written, not what is remembered of it.
         "hash" if args.first().is_some_and(|a| a == "--direct") => a(1).and_then(|p| hash_direct(p).map(|h| println!("{h}"))),
@@ -117,6 +121,103 @@ pub fn unescape(word: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `truncate -s SIZE FILE...` (bytes, or with K, M, G): each file made
+/// that long, created if it is not there.
+fn truncate(args: &[String]) -> i32 {
+    let mut size: Option<u64> = None;
+    let mut files = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "-s" {
+            size = it.next().and_then(|v| parse_size(v));
+        } else if let Some(v) = a.strip_prefix("-s") {
+            size = parse_size(v);
+        } else {
+            files.push(a);
+        }
+    }
+    let Some(size) = size else {
+        eprintln!("truncate -s SIZE FILE...");
+        return 1;
+    };
+    let mut rc = 0;
+    for f in files {
+        let r = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(f).and_then(|h| h.set_len(size));
+        if let Err(e) = r {
+            eprintln!("truncate: {f}: {e}");
+            rc = 1;
+        }
+    }
+    rc
+}
+
+fn parse_size(v: &str) -> Option<u64> {
+    let (n, k) = match v.chars().last()? {
+        'K' | 'k' => (&v[..v.len() - 1], 1 << 10),
+        'M' | 'm' => (&v[..v.len() - 1], 1 << 20),
+        'G' | 'g' => (&v[..v.len() - 1], 1 << 30),
+        _ => (v, 1),
+    };
+    n.parse::<u64>().ok().map(|n| n * k)
+}
+
+/// The kernel's ring buffer read from /dev/kmsg without waiting: each
+/// record's time and text, the last `n`.
+fn kernel_log(n: usize) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open("/dev/kmsg").map_err(|e| format!("/dev/kmsg: {e}"))?;
+    let mut lines = std::collections::VecDeque::new();
+    let mut buf = vec![0u8; 8192];
+    loop {
+        // One record a read; EAGAIN at the end; EPIPE where the ring ran
+        // over what was not read yet (read on).
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(k) => {
+                let rec = String::from_utf8_lossy(&buf[..k]);
+                let (head, text) = rec.split_once(';').unwrap_or(("", &rec));
+                let usec: u64 = head.split(',').nth(2).and_then(|t| t.parse().ok()).unwrap_or(0);
+                lines.push_back(format!("[{:>5}.{:06}] {}", usec / 1_000_000, usec % 1_000_000, text.lines().next().unwrap_or("")));
+                if lines.len() > n {
+                    lines.pop_front();
+                }
+            }
+            Err(e) if e.raw_os_error() == Some(libc::EPIPE) || e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => return Err(format!("/dev/kmsg: {e}")),
+        }
+    }
+    lines.iter().for_each(|l| println!("{l}"));
+    Ok(())
+}
+
+/// A path's kind, mode, owner and group, size (a device's: where its end
+/// is), modified time; a link's target. One line.
+fn stat(path: &str) -> Result<(), String> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let m = std::fs::symlink_metadata(path).map_err(|e| format!("{path}: {e}"))?;
+    let t = m.file_type();
+    let kind = if t.is_symlink() {
+        "link"
+    } else if t.is_dir() {
+        "dir"
+    } else if t.is_block_device() {
+        "block"
+    } else if t.is_char_device() {
+        "char"
+    } else if t.is_fifo() {
+        "fifo"
+    } else if t.is_socket() {
+        "socket"
+    } else {
+        "file"
+    };
+    let size = if t.is_block_device() { size(path).unwrap_or(0) } else { m.len() };
+    let target = if t.is_symlink() { std::fs::read_link(path).map(|l| format!(" -> {}", l.display())).unwrap_or_default() } else { String::new() };
+    println!("{kind} {:o} {}:{} {size} {} {path}{target}", m.mode() & 0o7777, m.uid(), m.gid(), m.mtime());
+    Ok(())
 }
 
 fn open(path: &str) -> Result<File, String> {
