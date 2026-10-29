@@ -90,6 +90,27 @@ pub fn public_key() -> Result<String, String> {
 /// Erase and install, from Linux. `confirm` must be the phone's word
 /// (android::confirm_word).
 pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    erase_and_install_from(host, release, mode, None, confirm, say)
+}
+
+/// A quick backup on this computer, by its folder (its manifest read).
+pub fn quick_backup(dir: &std::path::Path) -> Result<crate::backup::Backup, String> {
+    let text = std::fs::read_to_string(dir.join("manifest.json")).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let manifest: crate::backup::Manifest = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if manifest.kind != crate::backup::Kind::Quick || !dir.join("home-etc.tar.gz").exists() {
+        return Err(format!("{} is not a quick backup (home and settings)", dir.display()));
+    }
+    Ok(crate::backup::Backup { dir: dir.to_owned(), manifest })
+}
+
+/// As erase_and_install; keeping files, from the quick backup `kept`
+/// (an install stopped after its erase, its backup taken) instead of one
+/// taken now - the phone's home then may be the empty one of a new system.
+pub fn erase_and_install_from(host: &str, release: &Release, mode: Mode, kept: Option<&std::path::Path>, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    let kept = kept.map(quick_backup).transpose()?;
+    if kept.is_some() && mode != Mode::KeepFiles {
+        return Err("--from-backup goes with --keep-files".into());
+    }
     crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
     let serial = crate::backup::serial(host)?;
@@ -111,10 +132,19 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     let mut quick = None;
     match mode {
         Mode::Erase => say("nothing is kept: the phone starts afresh".into()),
-        Mode::KeepFiles => {
-            say("backing up your files and settings".into());
-            quick = Some(crate::backup::take(host, crate::backup::Kind::Quick, say)?);
-        }
+        Mode::KeepFiles => match kept {
+            Some(b) => {
+                if b.manifest.serial != serial {
+                    return Err(format!("the backup is of {}, the phone is {serial} - nothing is changed", b.manifest.serial));
+                }
+                say(format!("your files and settings from the backup of {}", b.manifest.created));
+                quick = Some(b);
+            }
+            None => {
+                say("backing up your files and settings".into());
+                quick = Some(crate::backup::take(host, crate::backup::Kind::Quick, say)?);
+            }
+        },
         Mode::FullCopy => match crate::android::fresh_full(host, &serial)? {
             Some(b) => say(format!("the whole system was backed up {} - fresh", b.manifest.created)),
             None => {

@@ -581,7 +581,9 @@ fn cmd_ramboot(args: &[String]) -> i32 {
 
 fn cmd_install(args: &[String]) -> i32 {
     use itemgrid_core::install;
-    let release = match args.iter().find(|a| !a.starts_with('-')) {
+    // --from-backup DIR: the files kept from that quick backup, none taken.
+    let from = args.iter().position(|a| a == "--from-backup").and_then(|i| args.get(i + 1)).cloned();
+    let release = match args.iter().find(|a| !a.starts_with('-') && Some(*a) != from.as_ref()) {
         Some(d) => match install::read(std::path::Path::new(d)) {
             Ok(r) => r,
             Err(e) => {
@@ -609,6 +611,15 @@ fn cmd_install(args: &[String]) -> i32 {
     println!("Image:     {} ({} MB; adaptation {}, item {})", release.name, release.size >> 20, release.adaptation, release.item);
     let serial = itemgrid_core::backup::serial(&host).unwrap_or_default();
     println!("Kept:      {} (--keep-files: home, Wi-Fi, time zone, PIN; --full-copy: the whole system, ~20 min more)", mode.words());
+    if let Some(dir) = &from {
+        match install::quick_backup(std::path::Path::new(dir)) {
+            Ok(b) => println!("From:      the backup of {} ({dir}), none taken now", b.manifest.created),
+            Err(e) => {
+                eprintln!("itemgrid: {e}");
+                return 1;
+            }
+        }
+    }
     println!("Erased:    everything on userdata - the system, home, settings, the Android container");
     println!("Untouched: the device data, the boot chain, the unlocked bootloader");
     println!("After:     the new system's first start; unlock with 1234, then choose a PIN");
@@ -621,7 +632,7 @@ fn cmd_install(args: &[String]) -> i32 {
     let mut typed = String::new();
     let _ = std::io::stdin().read_line(&mut typed);
     let start = std::time::Instant::now();
-    match install::erase_and_install(&host, &release, mode, &typed, &mut |l| said(&start, &l)) {
+    match install::erase_and_install_from(&host, &release, mode, from.as_deref().map(std::path::Path::new), &typed, &mut |l| said(&start, &l)) {
         Ok(()) => 0,
         Err(e) => {
             stop(&e);
@@ -1122,7 +1133,8 @@ fn usage() {
     println!("               a TWRP image, or --recovery, is awaited in the recovery)");
     println!("  recovery-exit  out of the recovery, back into Linux");
     println!("  install      erase and install item from a release image ([DIR]; the plan; --yes to go;
-               --keep-files keeps home, Wi-Fi, time zone, PIN; --full-copy backs up the whole system)");
+               --keep-files keeps home, Wi-Fi, time zone, PIN; --full-copy backs up the whole system;
+               --from-backup DIR with --keep-files: from that quick backup, none taken)");
     println!("  stock        Microsoft's packages here, their boot chain taken out and checked ([PACKAGE])");
     println!("  brake        arm the parking brake (misc): the next restart stops in the bootloader");
     println!("  android      the plan for returning to the phone's stock Android (reads only);");
