@@ -444,9 +444,12 @@ fn night_ink_rgb() -> [f64; 3] {
     if m < 0.05 {
         return [1.0; 3];
     }
-    let sat = (1.0 - c.iter().cloned().fold(1.0, f64::min) / m).min(1.0);
-    // The greys stay white; the colours keep about two thirds of their hue.
-    c.map(|v| 1.0 - (1.0 - v / m) * 0.65 * sat.max(0.0))
+    // The greys stay white (their channels all at the top once raised);
+    // the colours keep about two thirds of their hue. Their saturation
+    // was taken a second time here: item's pastel accents (pink #f092bb,
+    // ~0.4) came out ~10% coloured - #ffe6f0, near white - and the colour
+    // cube seemed to change nothing (the owner, 2026-10-29).
+    c.map(|v| 1.0 - (1.0 - v / m) * 0.65)
 }
 
 /// The lines' colour at `alpha`: the ink by day, the ink lit by night.
