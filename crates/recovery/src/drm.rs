@@ -158,8 +158,10 @@ fn ioctl<T>(fd: i32, req: libc::c_ulong, arg: &mut T) -> std::io::Result<()> {
     }
 }
 
-/// A connector shown: its buffer's pixels (0xXXRRGGBB), its size and row
-/// length in pixels.
+/// A connector shown: its buffers' pixels (0xXXRRGGBB), its size and row
+/// length in pixels. Two buffers where the card gives them: one shown,
+/// the other drawn into, then shown in its turn - a frame never seen half
+/// drawn.
 pub struct Output {
     connector: u32,
     crtc: u32,
@@ -167,15 +169,19 @@ pub struct Output {
     pub width: usize,
     pub height: usize,
     pub stride: usize,
-    pixels: *mut u32,
+    /// (framebuffer, mapping) a buffer.
+    bufs: Vec<(u32, *mut u32)>,
+    shown: usize,
     len: usize,
-    fb: u32,
 }
 
 impl Output {
+    /// The buffer to draw into: the one not shown (the only one if there
+    /// is one).
     pub fn pixels(&mut self) -> &mut [u32] {
+        let back = (self.shown + 1) % self.bufs.len();
         // SAFETY: the mapping lives as long as the device (never unmapped).
-        unsafe { std::slice::from_raw_parts_mut(self.pixels, self.len) }
+        unsafe { std::slice::from_raw_parts_mut(self.bufs[back].1, self.len) }
     }
 }
 
@@ -221,17 +227,21 @@ impl Display {
         Some(Display { card, outputs })
     }
 
-    /// The buffers drawn into: each committed to its panel again.
+    /// The buffers drawn into shown: each committed to its panel (the
+    /// one drawn into becomes the one shown).
     pub fn flush(&mut self) {
         let fd = self.card.as_raw_fd();
-        for o in &self.outputs {
+        for o in &mut self.outputs {
+            let back = (o.shown + 1) % o.bufs.len();
+            let fb = o.bufs[back].0;
             let mut conn = o.connector;
-            let mut set = Crtc { set_connectors_ptr: &mut conn as *mut u32 as u64, count_connectors: 1, crtc_id: o.crtc, fb_id: o.fb, x: 0, y: 0, gamma_size: 0, mode_valid: 1, mode: o.mode };
+            let mut set = Crtc { set_connectors_ptr: &mut conn as *mut u32 as u64, count_connectors: 1, crtc_id: o.crtc, fb_id: fb, x: 0, y: 0, gamma_size: 0, mode_valid: 1, mode: o.mode };
             if let Err(e) = ioctl(fd, SETCRTC, &mut set) {
                 say!("screen: committing to crtc {}: {e}", o.crtc);
             }
-            let mut d = DirtyFb { fb_id: o.fb, ..Default::default() };
+            let mut d = DirtyFb { fb_id: fb, ..Default::default() };
             let _ = ioctl(fd, DIRTYFB, &mut d);
+            o.shown = back;
         }
     }
 }
@@ -275,25 +285,35 @@ fn light(fd: i32, id: u32, crtcs: &[u32], used: &mut Vec<u32>) -> Result<Option<
         return Err("no CRTC for it".into());
     }
     let (w, h) = (mode.hdisplay as u32, mode.vdisplay as u32);
-    let mut dumb = CreateDumb { width: w, height: h, bpp: 32, ..Default::default() };
-    ioctl(fd, CREATE_DUMB, &mut dumb).map_err(|e| format!("a buffer of {w}x{h}: {e}"))?;
-    let mut fb = FbCmd { width: w, height: h, pitch: dumb.pitch, bpp: 32, depth: 24, handle: dumb.handle, ..Default::default() };
-    ioctl(fd, ADDFB, &mut fb).map_err(|e| format!("its framebuffer: {e}"))?;
-    let mut map = MapDumb { handle: dumb.handle, ..Default::default() };
-    ioctl(fd, MAP_DUMB, &mut map).map_err(|e| format!("mapping it: {e}"))?;
-    // SAFETY: mapping the dumb buffer's offset on the card, its whole size.
-    let ptr = unsafe { libc::mmap(std::ptr::null_mut(), dumb.size as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, map.offset as libc::off_t) };
-    if ptr == libc::MAP_FAILED {
-        return Err(format!("mmap: {}", std::io::Error::last_os_error()));
+    let buffer = || -> Result<(u32, *mut u32, u32), String> {
+        let mut dumb = CreateDumb { width: w, height: h, bpp: 32, ..Default::default() };
+        ioctl(fd, CREATE_DUMB, &mut dumb).map_err(|e| format!("a buffer of {w}x{h}: {e}"))?;
+        let mut fb = FbCmd { width: w, height: h, pitch: dumb.pitch, bpp: 32, depth: 24, handle: dumb.handle, ..Default::default() };
+        ioctl(fd, ADDFB, &mut fb).map_err(|e| format!("its framebuffer: {e}"))?;
+        let mut map = MapDumb { handle: dumb.handle, ..Default::default() };
+        ioctl(fd, MAP_DUMB, &mut map).map_err(|e| format!("mapping it: {e}"))?;
+        // SAFETY: mapping the dumb buffer's offset on the card, its whole size.
+        let ptr = unsafe { libc::mmap(std::ptr::null_mut(), dumb.size as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED, fd, map.offset as libc::off_t) };
+        if ptr == libc::MAP_FAILED {
+            return Err(format!("mmap: {}", std::io::Error::last_os_error()));
+        }
+        Ok((fb.fb_id, ptr.cast(), dumb.pitch))
+    };
+    let (fb0, ptr0, pitch) = buffer()?;
+    let mut bufs = vec![(fb0, ptr0)];
+    // A second, to draw into while the first is shown (none: one will do).
+    match buffer() {
+        Ok((fb1, ptr1, _)) => bufs.push((fb1, ptr1)),
+        Err(e) => say!("screen: one buffer only ({e})"),
     }
     let mut conn = id;
-    let mut set = Crtc { set_connectors_ptr: &mut conn as *mut u32 as u64, count_connectors: 1, crtc_id: crtc, fb_id: fb.fb_id, x: 0, y: 0, gamma_size: 0, mode_valid: 1, mode };
+    let mut set = Crtc { set_connectors_ptr: &mut conn as *mut u32 as u64, count_connectors: 1, crtc_id: crtc, fb_id: fb0, x: 0, y: 0, gamma_size: 0, mode_valid: 1, mode };
     ioctl(fd, SETCRTC, &mut set).map_err(|e| format!("setting crtc {crtc}: {e}"))?;
     used.push(crtc);
     let name = String::from_utf8_lossy(&mode.name).trim_end_matches('\0').to_owned();
     say!("screen: connector {id} ({name}, {w}x{h}) on crtc {crtc}");
-    let stride = (dumb.pitch / 4) as usize;
-    Ok(Some(Output { connector: id, crtc, mode, width: w as usize, height: h as usize, stride, pixels: ptr.cast(), len: stride * h as usize, fb: fb.fb_id }))
+    let stride = (pitch / 4) as usize;
+    Ok(Some(Output { connector: id, crtc, mode, width: w as usize, height: h as usize, stride, bufs, shown: 0, len: stride * h as usize }))
 }
 
 /// The panels' backlight (if they have one) at its brightest: an OLED
@@ -307,4 +327,195 @@ pub fn brightest() {
             let _ = std::fs::write(e.path().join("brightness"), (max * 6 / 10).max(1).to_string());
         }
     }
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ObjProps {
+    props_ptr: u64,
+    values_ptr: u64,
+    count_props: u32,
+    obj_id: u32,
+    obj_type: u32,
+}
+
+#[repr(C)]
+struct GetProperty {
+    values_ptr: u64,
+    enum_blob_ptr: u64,
+    prop_id: u32,
+    flags: u32,
+    name: [u8; 32],
+    count_values: u32,
+    count_enum_blobs: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PropEnum {
+    value: u64,
+    name: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct PlaneRes {
+    planes_ptr: u64,
+    count_planes: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ClientCap {
+    capability: u64,
+    value: u64,
+}
+
+const OBJ_GETPROPERTIES: libc::c_ulong = iowr(0xB9, std::mem::size_of::<ObjProps>());
+const GETPROPERTY: libc::c_ulong = iowr(0xAA, std::mem::size_of::<GetProperty>());
+const GETPLANERESOURCES: libc::c_ulong = iowr(0xB5, std::mem::size_of::<PlaneRes>());
+const SET_CLIENT_CAP: libc::c_ulong = ((1u32 << 30) | ((std::mem::size_of::<ClientCap>() as u32) << 16) | (('d' as u32) << 8) | 0x0D) as libc::c_ulong;
+
+/// Every CRTC's, connector's and plane's properties - names, kinds, values
+/// (an enum's names, a range's bounds) - for looking at what the display
+/// can do (`item-recovery drm`): its colour (CTM, GAMMA_LUT, the vendor's
+/// own) above all. Reads only.
+pub fn report() -> Result<String, String> {
+    let card = std::fs::OpenOptions::new().read(true).write(true).open("/dev/dri/card0").map_err(|e| format!("/dev/dri/card0: {e}"))?;
+    let fd = card.as_raw_fd();
+    // Planes all listed (DRM_CLIENT_CAP_UNIVERSAL_PLANES), atomic's too.
+    for cap in [2u64, 3] {
+        let _ = ioctl(fd, SET_CLIENT_CAP, &mut ClientCap { capability: cap, value: 1 });
+    }
+    let mut res = CardRes::default();
+    ioctl(fd, GETRESOURCES, &mut res).map_err(|e| format!("resources: {e}"))?;
+    let mut crtcs = vec![0u32; res.count_crtcs as usize];
+    let mut conns = vec![0u32; res.count_connectors as usize];
+    let mut encs = vec![0u32; res.count_encoders as usize];
+    let mut fbs = vec![0u32; res.count_fbs as usize];
+    res.crtc_id_ptr = crtcs.as_mut_ptr() as u64;
+    res.connector_id_ptr = conns.as_mut_ptr() as u64;
+    res.encoder_id_ptr = encs.as_mut_ptr() as u64;
+    res.fb_id_ptr = fbs.as_mut_ptr() as u64;
+    ioctl(fd, GETRESOURCES, &mut res).map_err(|e| format!("resources: {e}"))?;
+    let mut pr = PlaneRes::default();
+    let _ = ioctl(fd, GETPLANERESOURCES, &mut pr);
+    let mut planes = vec![0u32; pr.count_planes as usize];
+    pr.planes_ptr = planes.as_mut_ptr() as u64;
+    let _ = ioctl(fd, GETPLANERESOURCES, &mut pr);
+    let name = |n: &[u8]| String::from_utf8_lossy(n).trim_end_matches('\0').to_owned();
+    let mut out = String::new();
+    for (kind, ty, ids) in [("crtc", 0xccccccccu32, &crtcs), ("connector", 0xc0c0c0c0, &conns), ("plane", 0xeeeeeeee, &planes)] {
+        for &id in ids.iter() {
+            let mut op = ObjProps { obj_id: id, obj_type: ty, ..Default::default() };
+            if ioctl(fd, OBJ_GETPROPERTIES, &mut op).is_err() {
+                continue;
+            }
+            let mut props = vec![0u32; op.count_props as usize];
+            let mut values = vec![0u64; op.count_props as usize];
+            op.props_ptr = props.as_mut_ptr() as u64;
+            op.values_ptr = values.as_mut_ptr() as u64;
+            ioctl(fd, OBJ_GETPROPERTIES, &mut op).map_err(|e| e.to_string())?;
+            out.push_str(&format!("{kind} {id}\n"));
+            for (p, v) in props.iter().zip(&values) {
+                let mut gp = GetProperty { values_ptr: 0, enum_blob_ptr: 0, prop_id: *p, flags: 0, name: [0; 32], count_values: 0, count_enum_blobs: 0 };
+                if ioctl(fd, GETPROPERTY, &mut gp).is_err() {
+                    continue;
+                }
+                let mut vals = vec![0u64; gp.count_values as usize];
+                let mut enums = vec![PropEnum { value: 0, name: [0; 32] }; gp.count_enum_blobs as usize];
+                gp.values_ptr = vals.as_mut_ptr() as u64;
+                gp.enum_blob_ptr = enums.as_mut_ptr() as u64;
+                let _ = ioctl(fd, GETPROPERTY, &mut gp);
+                // DRM_MODE_PROP_RANGE 2, ENUM 8, BLOB 16, BITMASK 32,
+                // OBJECT 64, SIGNED_RANGE 128; IMMUTABLE 4.
+                let f = gp.flags;
+                let what = if f & 16 != 0 {
+                    "blob".to_owned()
+                } else if f & (8 | 32) != 0 {
+                    format!("enum [{}]", enums.iter().map(|e| format!("{}={}", name(&e.name), e.value)).collect::<Vec<_>>().join(" "))
+                } else if f & (2 | 128) != 0 && vals.len() >= 2 {
+                    format!("range {}..{}", vals[0] as i64, vals[1] as i64)
+                } else if f & 64 != 0 {
+                    "object".to_owned()
+                } else {
+                    format!("flags {f:#x}")
+                };
+                out.push_str(&format!("  {:<28} = {:<12} {}{}\n", name(&gp.name), v, what, if f & 4 != 0 { " (immutable)" } else { "" }));
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct CreateBlob {
+    data: u64,
+    length: u32,
+    blob_id: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct DestroyBlob {
+    blob_id: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ObjSetProperty {
+    value: u64,
+    prop_id: u32,
+    obj_id: u32,
+    obj_type: u32,
+}
+
+const CREATEPROPBLOB: libc::c_ulong = iowr(0xBD, std::mem::size_of::<CreateBlob>());
+const DESTROYPROPBLOB: libc::c_ulong = iowr(0xBE, std::mem::size_of::<DestroyBlob>());
+const OBJ_SETPROPERTY: libc::c_ulong = iowr(0xBA, std::mem::size_of::<ObjSetProperty>());
+const OBJ_CRTC: u32 = 0xcccccccc;
+
+impl Display {
+    /// The CRTCs shown on, in the outputs' order.
+    pub fn crtcs(&self) -> Vec<u32> {
+        self.outputs.iter().map(|o| o.crtc).collect()
+    }
+
+    /// A blob property of `crtc` by its name (SDE_DSPP_PCC_V4...) set to
+    /// `data`, or cleared (the feature off) with none.
+    pub fn set_blob(&self, crtc: u32, name: &str, data: Option<&[u8]>) -> Result<(), String> {
+        let fd = self.card.as_raw_fd();
+        let prop = prop_id(fd, crtc, OBJ_CRTC, name)?;
+        let mut blob = CreateBlob::default();
+        if let Some(d) = data {
+            blob = CreateBlob { data: d.as_ptr() as u64, length: d.len() as u32, blob_id: 0 };
+            ioctl(fd, CREATEPROPBLOB, &mut blob).map_err(|e| format!("{name}'s blob: {e}"))?;
+        }
+        let mut set = ObjSetProperty { value: blob.blob_id as u64, prop_id: prop, obj_id: crtc, obj_type: OBJ_CRTC };
+        let r = ioctl(fd, OBJ_SETPROPERTY, &mut set).map_err(|e| format!("{name} on crtc {crtc}: {e}"));
+        // The property keeps its own reference to the blob.
+        if blob.blob_id != 0 {
+            let _ = ioctl(fd, DESTROYPROPBLOB, &mut DestroyBlob { blob_id: blob.blob_id });
+        }
+        r
+    }
+}
+
+/// A property's id on an object, by its name.
+fn prop_id(fd: i32, obj: u32, ty: u32, want: &str) -> Result<u32, String> {
+    let mut op = ObjProps { obj_id: obj, obj_type: ty, ..Default::default() };
+    ioctl(fd, OBJ_GETPROPERTIES, &mut op).map_err(|e| e.to_string())?;
+    let mut props = vec![0u32; op.count_props as usize];
+    let mut values = vec![0u64; op.count_props as usize];
+    op.props_ptr = props.as_mut_ptr() as u64;
+    op.values_ptr = values.as_mut_ptr() as u64;
+    ioctl(fd, OBJ_GETPROPERTIES, &mut op).map_err(|e| e.to_string())?;
+    for p in props {
+        let mut gp = GetProperty { values_ptr: 0, enum_blob_ptr: 0, prop_id: p, flags: 0, name: [0; 32], count_values: 0, count_enum_blobs: 0 };
+        if ioctl(fd, GETPROPERTY, &mut gp).is_ok() && String::from_utf8_lossy(&gp.name).trim_end_matches('\0') == want {
+            return Ok(p);
+        }
+    }
+    Err(format!("no {want} on object {obj}"))
 }

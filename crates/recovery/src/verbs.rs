@@ -19,7 +19,7 @@ pub const LAST_ERR: &str = "/tmp/item-recovery-last.err";
 
 /// The verbs, for adb.rs: a command line starting with one of these after
 /// `item-recovery ` is run here.
-pub const VERBS: &[&str] = &["unzstd", "log", "stat", "unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt"];
+pub const VERBS: &[&str] = &["drm", "unzstd", "log", "stat", "unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt"];
 
 pub fn run(verb: &str, args: &[String]) -> i32 {
     let a = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| format!("{verb}: an argument is missing"));
@@ -71,6 +71,8 @@ pub fn run(verb: &str, args: &[String]) -> i32 {
         "gz" => a(0).and_then(gz_file),
         "sparse" => a(0).and_then(|p| sparse(p, &mut std::io::stdout().lock())),
         "unsparse" => a(0).and_then(|p| unsparse(p, &mut std::io::stdin().lock())),
+        // What the display can do, its colour above all (reads only).
+        "drm" => crate::drm::report().map(|r| print!("{r}")),
         "unzstd" => a(0).and_then(|p| unzstd(p, &mut std::io::stdin().lock()).map(|n| println!("{n}"))),
         "tar" => a(0).and_then(|dir| tar_gz(dir, &args[1..], &mut std::io::stdout().lock())),
         "untar" => a(0).and_then(|root| untar(root, args.get(1).map(String::as_str))),

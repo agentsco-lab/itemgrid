@@ -10,6 +10,7 @@
 //! As `item-recovery VERB ...`: what item/grid asks of it (verbs.rs).
 
 mod adb;
+mod colour;
 mod drm;
 mod gpt;
 mod init;
