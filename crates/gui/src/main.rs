@@ -7235,6 +7235,12 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                         let left = (journey::left(&stages, at, secs_in) / 60.0).ceil();
                         lines.extend(jwrap(&if left <= 1.0 { "a minute left in all".to_owned() } else { format!("{left} min left in all") }));
                     }
+                    // What it is doing this moment: the job's last line, as
+                    // the command line has it (the owner, 2026-10-29: "all
+                    // seen, not looking stuck").
+                    if let Some(now) = jlines.last().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                        lines.extend(jwrap(&format!("› {now}")).into_iter().take(2));
+                    }
                     // What the hands do meanwhile: nothing - unless the
                     // phone asks (its bootloader's unlock, by its keys).
                     if jlines.last().is_some_and(|l| l.starts_with("unlocking")) {

@@ -19,7 +19,7 @@ pub const LAST_ERR: &str = "/tmp/item-recovery-last.err";
 
 /// The verbs, for adb.rs: a command line starting with one of these after
 /// `item-recovery ` is run here.
-pub const VERBS: &[&str] = &["log", "stat", "unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt"];
+pub const VERBS: &[&str] = &["unzstd", "log", "stat", "unsparse", "sparse", "mkfs", "last", "real", "truncate", "write", "replace", "copy", "list", "size", "hash", "zero", "put", "get", "gz", "tar", "untar", "mount", "umount", "link", "rm", "mkdir", "meta", "sizes", "sync", "gpt"];
 
 pub fn run(verb: &str, args: &[String]) -> i32 {
     let a = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| format!("{verb}: an argument is missing"));
@@ -71,6 +71,7 @@ pub fn run(verb: &str, args: &[String]) -> i32 {
         "gz" => a(0).and_then(gz_file),
         "sparse" => a(0).and_then(|p| sparse(p, &mut std::io::stdout().lock())),
         "unsparse" => a(0).and_then(|p| unsparse(p, &mut std::io::stdin().lock())),
+        "unzstd" => a(0).and_then(|p| unzstd(p, &mut std::io::stdin().lock()).map(|n| println!("{n}"))),
         "tar" => a(0).and_then(|dir| tar_gz(dir, &args[1..], &mut std::io::stdout().lock())),
         "untar" => a(0).and_then(|root| untar(root, args.get(1).map(String::as_str))),
         "mount" => mount_verb(args),
@@ -575,6 +576,45 @@ pub fn unsparse(path: &str, input: &mut dyn Read) -> Result<(), String> {
     f.sync_all().map_err(|e| format!("{path}: {e}"))
 }
 
+/// A zstd stream (a release's rootfs.img.zst, as it is: a third of its
+/// gzip over the cable) unpacked into `path`, made anew: its 4 MB pieces
+/// that are all zeros left as holes, the file cut to the stream's length.
+/// Synced. Its size back. (Its sha256 is checked after, from the flash.)
+pub fn unzstd(path: &str, input: &mut dyn Read) -> Result<u64, String> {
+    use std::os::unix::fs::FileExt;
+    const PIECE: usize = 4 << 20;
+    let f = OpenOptions::new().write(true).create(true).truncate(true).open(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut d = zstd::stream::read::Decoder::new(input).map_err(|e| format!("zstd: {e}"))?;
+    // The release images are made with --long=27.
+    d.window_log_max(31).map_err(|e| format!("zstd: {e}"))?;
+    let mut piece = vec![0u8; PIECE];
+    let mut at = 0u64;
+    loop {
+        let mut filled = 0;
+        while filled < PIECE {
+            match d.read(&mut piece[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(format!("the stream at {}: {e}", at + filled as u64)),
+            }
+        }
+        if filled == 0 {
+            break;
+        }
+        if piece[..filled].iter().any(|&b| b != 0) {
+            f.write_all_at(&piece[..filled], at).map_err(|e| format!("{path} at {at}: {e}"))?;
+        }
+        at += filled as u64;
+        if filled < PIECE {
+            break;
+        }
+    }
+    f.set_len(at).map_err(|e| format!("{path}: {e}"))?;
+    f.sync_all().map_err(|e| format!("{path}: {e}"))?;
+    Ok(at)
+}
+
 fn gz_file(path: &str) -> Result<(), String> {
     gz(&mut open(path)?, &mut std::io::stdout().lock())
 }
@@ -889,6 +929,20 @@ mod tests {
         let _ = std::fs::remove_file(&dst);
         unsparse(&dst, &mut &stream[..]).unwrap();
         assert!(std::fs::read(&src).unwrap() == std::fs::read(&dst).unwrap());
+    }
+
+    #[test]
+    fn unzstd_with_holes() {
+        let mut data = vec![0u8; (9 << 20) + 123];
+        data[10..20].copy_from_slice(b"0123456789");
+        let n = data.len();
+        data[n - 1] = 7;
+        let z = zstd::encode_all(&data[..], 3).unwrap();
+        let p = tmp("unz");
+        assert_eq!(unzstd(&p, &mut &z[..]).unwrap(), data.len() as u64);
+        assert!(std::fs::read(&p).unwrap() == data);
+        // A stream cut short is refused.
+        assert!(unzstd(&p, &mut &z[..z.len() / 2]).is_err());
     }
 
     #[test]

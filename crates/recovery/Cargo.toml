@@ -14,6 +14,7 @@ fontdue = { version = "0.9", default-features = false }
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
+zstd = "0.13"
 
 # On the phone: sha256 by the CPU's own instructions (the Snapdragon 855
 # has them), about ten times the plain code's 224 MB/s.

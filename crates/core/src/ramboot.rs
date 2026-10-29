@@ -483,15 +483,15 @@ pub fn preflight(host: &str, image: &Path) -> Result<(Image, String, char), Stri
 pub fn ram_boot(host: &str, image: &Path, expect: Expect, say: Say) -> Result<(), String> {
     crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
-    say("checking the image and the phone".into());
+    say("checking the phone and the image to start".into());
     let (img, serial, slot) = preflight(host, image)?;
-    say(format!("image fine: header v2, ARM64 kernel, DTB, Android {}, sha {}", img.os_version, &img.sha256[..16]));
+    say("the image is sound".into());
 
-    say("arming the parking brake".into());
+    say("setting the safety catch: a failed start stops in the bootloader".into());
     arm_brake_linux(host)?;
     crate::flash::log(&serial, "parking brake armed from Linux - itemgrid")?;
 
-    say("into the bootloader".into());
+    say("restarting into the bootloader".into());
     to_bootloader(host);
     let start = Instant::now();
     loop {
@@ -519,7 +519,7 @@ pub fn boot_in_fastboot(host: &str, serial: &str, slot: char, image: &Path, img:
 /// system's first start grows it to fill userdata: longer).
 pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Path, img: &Image, expect: Expect, wait_secs: u64, say: Say) -> Result<(), String> {
     let serial = serial.to_owned();
-    say("in fastboot: checking it is the same phone, and its health".into());
+    say("in the bootloader: checking it is the same phone, healthy".into());
     let fb = probe()?;
     if fb.serial != serial {
         return Err(format!("fastboot shows another phone ({}): stopping", fb.serial));
@@ -548,7 +548,6 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
         }
     }
 
-    say("re-arming the parking brake in fastboot".into());
     let brake = std::env::temp_dir().join("itemgrid-misc-brake.img");
     std::fs::write(&brake, brake_bytes()).map_err(|e| e.to_string())?;
     for args in [vec!["erase", "misc"], vec!["flash", "misc", brake.to_str().unwrap_or_default()]] {
@@ -563,7 +562,7 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
     }
 
     let n = crate::flash::count_attempt(&serial, &img.sha256)?;
-    say(format!("booting the image from RAM (attempt {n} of {})", crate::flash::MAX_UNCONFIRMED));
+    say(format!("starting it from memory, nothing written (try {n} of {})", crate::flash::MAX_UNCONFIRMED));
     let out = fastboot(&["boot", image.to_str().unwrap_or_default()], Duration::from_secs(120))?;
     if let Some(sig) = PRE_BRICK.iter().find(|s| out.contains(*s)) {
         crate::flash::log(&serial, &format!("BRICK-SIGNATURE during: fastboot boot ({sig}) - itemgrid"))?;
@@ -591,7 +590,6 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
     // never is (SAFETY.md), and the stock kernel only by its own step.
     crate::flash::confirm_ram_boot(&serial, &img.sha256, &fb, matches!(expect, Expect::Linux | Expect::LinuxOnUsb))?;
     say(format!("{what} is up: the RAM boot is confirmed"));
-    say("re-arming the parking brake".into());
     match expect {
         Expect::Linux => {
             arm_brake_linux(host)?;
@@ -601,7 +599,7 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
         Expect::Recovery => {
             arm_brake_recovery(&serial)?;
             crate::flash::log(&serial, "parking brake armed from the recovery after the RAM boot - itemgrid")?;
-            say("done: the phone is in the recovery (no touch there); itemgrid recovery-exit brings it back".into());
+            say("the phone is in the recovery".into());
         }
         // No root in stock Android: no brake from it. An unattended reset
         // starts the port's kernel, still on the slot, or stops in fastboot.

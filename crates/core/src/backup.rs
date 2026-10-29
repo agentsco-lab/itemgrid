@@ -259,18 +259,18 @@ fn take_into(host: &str, kind: Kind, dir: &Path, say: &mut dyn FnMut(String)) ->
         }
         Kind::Full => return Err("the whole system is taken with full::take, from TWRP".into()),
         Kind::Quick => {
-            say("listing the packages".into());
+            say("noting the installed packages".into());
             let list = crate::phone::run(host, "dpkg-query -W -f='${Package}\\t${Version}\\n'; echo '#manual'; apt-mark showmanual 2>/dev/null\n")?;
             std::fs::write(dir.join("packages.txt"), &list).map_err(|e| e.to_string())?;
             items.push(Item { source: "the packages".into(), file: "packages.txt".into(), size: list.len() as u64, sha256: sha_of(list.as_bytes()) });
-            say("archiving /home and /etc".into());
+            say("copying your home folder and settings".into());
             // GNU tar's exit 1 is "a file changed as it was read" (a live
             // system: logs, the session's state) - a warning, not a failure;
             // 2 and up are.
             let (size, sha) = crate::phone::download(host, "tar -C / --one-file-system -czf - home etc 2>/dev/null; rc=$?; [ $rc -eq 1 ] && rc=0; exit $rc\n", &dir.join("home-etc.tar.gz"))?;
             // A tar read on the fly has nothing to compare with on the
             // phone: it is checked whole instead.
-            say("checking the archive".into());
+            say("checking the copy".into());
             let ok = gzip_whole(&dir.join("home-etc.tar.gz"));
             if !ok || size < 1024 {
                 return Err("the archive did not arrive whole - try again".into());
@@ -280,7 +280,7 @@ fn take_into(host: &str, kind: Kind, dir: &Path, say: &mut dyn FnMut(String)) ->
             // it, which an install keeping files puts back (install.rs).
             // Read with the container running: stopping it may reset the
             // phone. Missing, the backup still stands.
-            say("archiving the Android container's data (the fingerprints)".into());
+            say("copying the fingerprints".into());
             let file = dir.join(ANDROID_DATA);
             match crate::phone::download(host, "cd /userdata && tar --one-file-system -czf - android-data 2>/dev/null; rc=$?; [ $rc -eq 1 ] && rc=0; exit $rc\n", &file) {
                 Ok((size, sha)) if size >= 1024 && gzip_whole(&file) => items.push(Item { source: "/userdata/android-data".into(), file: ANDROID_DATA.into(), size, sha256: sha }),
@@ -312,7 +312,7 @@ pub(crate) fn prune(serial: &str, kind: Kind, say: &mut dyn FnMut(String)) {
     all.retain(|b| !b.manifest.keep && (kind != Kind::Boot || Some(&b.dir) != first.as_ref()));
     for old in all.into_iter().skip(count) {
         if std::fs::remove_dir_all(&old.dir).is_ok() {
-            say(format!("removed an old backup from {}", old.manifest.created));
+            say(format!("an older backup removed ({})", old.manifest.created));
         }
     }
 }

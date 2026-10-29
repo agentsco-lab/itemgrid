@@ -19,6 +19,8 @@ pub struct Release {
     pub size: u64,
     pub sha256: String,
     pub compressed: PathBuf,
+    /// The compressed file's sha256 ("" in a manifest without one).
+    pub compressed_sha256: String,
     /// The port's boot image that goes with it (a phone coming from stock
     /// Android has none), and its sha256 - none in releases made before.
     pub boot: Option<(PathBuf, String)>,
@@ -65,6 +67,7 @@ pub fn read(dir: &Path) -> Result<Release, String> {
         size: m["image"]["size"].as_u64().unwrap_or(0),
         sha256: s(&m["image"]["sha256"]),
         compressed,
+        compressed_sha256: s(&m["compressed"]["sha256"]),
         boot: m["boot"]["file"].as_str().map(|f| dir.join(f)).filter(|f| f.exists()).map(|f| (f, s(&m["boot"]["sha256"]))),
         vbmeta: m["vbmeta"]["file"].as_str().map(|f| dir.join(f)).filter(|f| f.exists()).map(|f| (f, s(&m["vbmeta"]["sha256"]))),
     })
@@ -96,12 +99,8 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     let key = public_key()?;
     let twrp = crate::full::recovery().ok_or("no recovery image (tools/build-recovery.sh, or a release with item-recovery.img)")?;
     crate::ramboot::check_image(&twrp)?;
-    // The image checked here before anything: decompressed, its sha.
-    say(format!("checking the image {} here", release.name));
-    let (size, sha) = hash_stream(&mut decompress(&release.compressed)?)?;
-    if sha != release.sha256 || (release.size > 0 && size != release.size) {
-        return Err("the release image does not match its manifest - nothing is changed".into());
-    }
+    // The image checked here before anything.
+    let size = check_release(release, say)?;
 
     // What is kept, taken first. The device data (not on userdata, never
     // touched here) is backed up once in any case.
@@ -126,13 +125,13 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     }
     crate::flash::log(&serial, &format!("erase and install {} begun ({}) - itemgrid", release.name, mode.words()))?;
 
-    say("into the recovery".into());
+    say("starting the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     if !crate::full::ours(&serial) && !crate::full::fast_tools(&serial) {
         let _ = crate::ramboot::leave_recovery(host, &serial, say);
         return Err("this TWRP lacks pigz or nc".into());
     }
-    say("trying the way in (512 MB onto the phone, checked)".into());
+    say("testing the cable: 512 MB sent and checked".into());
     if let Err(e) = crate::android::try_the_way_back(&serial) {
         let _ = crate::ramboot::leave_recovery(host, &serial, say);
         return Err(format!("{e} - nothing is erased"));
@@ -140,7 +139,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
 
     put_on_userdata(&serial, release, size, &key, quick.as_ref(), say)?;
 
-    say("starting the new system - its first start grows it to fill userdata".into());
+    say("starting item: the first start takes a minute longer".into());
     crate::rec::Rec::on(&serial).restart();
     let start = std::time::Instant::now();
     while !crate::phone::answers_fresh(host) {
@@ -151,7 +150,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     }
     crate::ramboot::arm_brake_linux(host)?;
     crate::flash::log(&serial, "the new system answers, parking brake armed - itemgrid")?;
-    say(if mode == Mode::KeepFiles { "the new system is up: unlock with your PIN".into() } else { "the new system is up: unlock with 1234, then choose your own PIN".into() });
+    say(if mode == Mode::KeepFiles { "item is up: unlock with your PIN".into() } else { "item is up: unlock with 1234, then choose your own PIN".into() });
     Ok(())
 }
 
@@ -175,21 +174,27 @@ fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick:
 fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, quick: Option<&crate::backup::Backup>, say: crate::ramboot::Say) -> Result<(), String> {
     let serial = serial.to_owned();
     crate::flash::log(&serial, &format!("ERASING userdata for {} - itemgrid", release.name))?;
-    say("making userdata anew (what it held goes)".into());
+    say("erasing the phone's data partition".into());
     crate::screen::step(0, "cleaning", "old data goes");
     let blk = crate::android::BLK;
     let rec = crate::rec::Rec::on(&serial);
     rec.make_ext4(&format!("{blk}/userdata"), "userdata", "/tmp/ud")?;
 
-    say(format!("putting {} on the phone", release.name));
+    say(format!("writing item {}", release.item.split(['~', '-', '+']).next().unwrap_or(&release.item)));
     crate::screen::step(1, "writing item", "");
     crate::screen::total(size);
-    let (written, written_sha) = crate::android::put_file(&serial, "rootfs.img", &mut decompress(&release.compressed)?, "image", true, say)?;
-    if written_sha.as_deref() != Some(release.sha256.as_str()) || written != size {
-        return Err("the image read here changed while it was sent - stopping in the recovery; run it again".into());
+    if rec.ours() {
+        // As it is, zstd (a third of the gzip): unpacked on the phone
+        // (item-recovery's unzstd), checked whole from its flash below.
+        put_compressed(&rec, release, say)?;
+    } else {
+        let (written, written_sha) = crate::android::put_file(&serial, "rootfs.img", &mut decompress(&release.compressed)?, "image", true, say)?;
+        if written_sha.as_deref() != Some(release.sha256.as_str()) || written != size {
+            return Err("the image read here changed while it was sent - stopping in the recovery; run it again".into());
+        }
     }
     rec.run(&["meta", "/tmp/ud/rootfs.img", "644", "0", "0"], "chmod 644 /tmp/ud/rootfs.img")?;
-    say("checking the whole image on the phone".into());
+    say("checking every byte on the phone".into());
     crate::screen::step(2, "checking", "every byte");
     if rec.hash_written("/tmp/ud/rootfs.img")? != release.sha256 {
         return Err("the image on the phone differs from the release - stopping in the recovery; run it again".into());
@@ -198,7 +203,7 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
     if key.is_empty() {
         say("no ssh key to put in: the phone is reached from here by USB only".into());
     } else {
-        say("putting this computer's ssh key in".into());
+        say("letting this computer in (its ssh key)".into());
     }
     crate::screen::step(3, "linking", "to item/grid");
     rec.mount("/tmp/ud/rootfs.img", "/tmp/r", false)?;
@@ -235,7 +240,7 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
     kept?;
     android?;
 
-    say("clearing misc".into());
+    say("clearing the bootloader's note".into());
     rec.zero(&format!("{blk}/misc"), Some(2048))?;
     let _ = std::fs::remove_file(crate::android::guest_path_of(&serial));
     crate::flash::log(&serial, &format!("{} installed (userdata anew) - itemgrid", release.name))?;
@@ -256,9 +261,51 @@ fn put_android_data(rec: &crate::rec::Rec, serial: &str, quick: &crate::backup::
         say(format!("the Android data was taken under port {}, the release runs {}: the fingerprints are enrolled again on the phone", quick.manifest.port, release.adaptation));
         return Ok(());
     }
-    say("putting back the Android container's data (the fingerprints)".into());
+    say("putting the fingerprints back".into());
     rec.rm("/tmp/ud/android-data")?;
     crate::android::put_archive(serial, &archive, "/tmp/ud", say)
+}
+
+/// The release's rootfs.img.zst sent as it is into item-recovery's unzstd,
+/// which writes /tmp/ud/rootfs.img; sent again whole if the sending fails
+/// (three times at most). Its progress on the phone's screen by the
+/// compressed bytes sent.
+fn put_compressed(rec: &crate::rec::Rec, release: &Release, say: crate::ramboot::Say) -> Result<(), String> {
+    struct Counted<'a, R> {
+        inner: R,
+        sent: u64,
+        len: u64,
+        next: u64,
+        say: &'a mut dyn FnMut(String),
+    }
+    impl<R: Read> Read for Counted<'_, R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.sent += n as u64;
+            crate::screen::progress("writing item", self.sent);
+            if self.sent >= self.next {
+                (self.say)(format!("  {} of {} sent", crate::status::size_words(self.sent / 1024), crate::status::size_words(self.len / 1024)));
+                self.next += 512 << 20;
+            }
+            Ok(n)
+        }
+    }
+    let len = std::fs::metadata(&release.compressed).map(|m| m.len()).unwrap_or(0);
+    crate::screen::total(len);
+    let mut last = String::new();
+    for _ in 0..3 {
+        let file = std::fs::File::open(&release.compressed).map_err(|e| format!("{}: {e}", release.compressed.display()))?;
+        let mut r = Counted { inner: std::io::BufReader::with_capacity(4 << 20, file), sent: 0, len, next: 512 << 20, say: &mut *say };
+        match rec.send(&["unzstd", "/tmp/ud/rootfs.img"], "", &mut r) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                say(format!("  image: {e} - sending it again"));
+                last = e;
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
+        }
+    }
+    Err(format!("the image did not arrive whole in three tries ({last}) - the phone stays in the recovery; run it again"))
 }
 
 /// The release image decompressed as it is read (zstd, a window of up to
@@ -268,6 +315,27 @@ fn decompress(path: &Path) -> Result<impl Read, String> {
     let mut d = zstd::stream::read::Decoder::new(std::io::BufReader::with_capacity(4 << 20, file)).map_err(|e| format!("zstd: {e}"))?;
     d.window_log_max(27).map_err(|e| format!("zstd: {e}"))?;
     Ok(d)
+}
+
+/// The release checked against its manifest before anything is changed:
+/// its compressed file's sha256 (seconds), or - a manifest without it -
+/// the image decompressed and hashed (half a minute to two here). The
+/// image's size back.
+fn check_release(release: &Release, say: crate::ramboot::Say) -> Result<u64, String> {
+    say("checking the image here".into());
+    if !release.compressed_sha256.is_empty() && release.size > 0 {
+        let mut f = std::fs::File::open(&release.compressed).map_err(|e| format!("{}: {e}", release.compressed.display()))?;
+        let (_, sha) = hash_stream(&mut f)?;
+        if sha != release.compressed_sha256 {
+            return Err("the release image does not match its manifest - nothing is changed".into());
+        }
+        return Ok(release.size);
+    }
+    let (size, sha) = hash_stream(&mut decompress(&release.compressed)?)?;
+    if sha != release.sha256 || (release.size > 0 && size != release.size) {
+        return Err("the release image does not match its manifest - nothing is changed".into());
+    }
+    Ok(size)
 }
 
 fn hash_stream(r: &mut dyn Read) -> Result<(u64, String), String> {
@@ -360,7 +428,7 @@ fn put_kept(rec: &crate::rec::Rec, serial: &str, quick: &crate::backup::Backup, 
         small.append_data(&mut h, &path, &mut entry).map_err(|e| format!("{path}: {e}"))?;
     }
     let small = small.into_inner().map_err(|e| e.to_string())?;
-    say(format!("putting back your files ({} MB, {} big)", small.len() >> 20, big.len()));
+    say(format!("putting your files back ({} MB)", (small.len() >> 20) as u64 + big.iter().map(|b| b.1 >> 20).sum::<u64>()));
     rec.untar("/tmp/r", &small)?;
     for (path, size, mode, uid, gid) in &big {
         say(format!("putting back {path} ({} MB)", size >> 20));
@@ -495,7 +563,7 @@ pub fn from_stock_by_usb(serial: &str, release: &Release, key: &str, say: crate:
     crate::flash::log(serial, "back in fastboot after the RAM boot (the owner's forced restart) - itemgrid")?;
 
     // The boot chain from TWRP, both slots.
-    say("into the recovery".into());
+    say("starting the recovery".into());
     crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
     let other = if slot == 'a' { 'b' } else { 'a' };
     for s in [slot, other] {
@@ -503,7 +571,7 @@ pub fn from_stock_by_usb(serial: &str, release: &Release, key: &str, say: crate:
     }
     // misc cleared: the phone starts by itself now (no brake armed on the
     // way out - from TWRP a reboot might consume it and park in fastboot).
-    say("clearing misc and restarting from the phone's own boot".into());
+    say("clearing the bootloader's note, restarting from the phone's own boot".into());
     let rec = crate::rec::Rec::on(serial);
     rec.zero(&format!("{}/misc", crate::android::BLK), Some(2048))?;
     rec.restart();
@@ -554,11 +622,7 @@ fn prepare_from_stock(serial: &str, release: &Release, say: crate::ramboot::Say)
     if !vb_sha.is_empty() && vb_sha != vbmeta.sha256 {
         return Err("the release's vbmeta does not match its manifest - nothing is changed".into());
     }
-    say(format!("checking the image {} here", release.name));
-    let (size, sha) = hash_stream(&mut decompress(&release.compressed)?)?;
-    if sha != release.sha256 || (release.size > 0 && size != release.size) {
-        return Err("the release image does not match its manifest - nothing is changed".into());
-    }
+    let size = check_release(release, say)?;
 
     // Into the bootloader, unlocked.
     if !crate::programs::present("fastboot") || !crate::programs::present("adb") {
@@ -601,7 +665,7 @@ fn prepare_from_stock(serial: &str, release: &Release, say: crate::ramboot::Say)
 
 /// TWRP from RAM, and the image onto userdata from it (with `key`, if any).
 fn image_on_from_stock(serial: &str, release: &Release, p: &Prepared, key: &str, say: crate::ramboot::Say) -> Result<(), String> {
-    say("into the recovery".into());
+    say("starting the recovery".into());
     crate::ramboot::boot_in_fastboot(crate::link::CABLE, serial, p.slot, &p.twrp, &p.twrp_img, crate::ramboot::Expect::Recovery, say)?;
     // TWRP sends through nc; item/grid's own recovery takes the stream.
     if !crate::full::ours(serial) && !crate::full::fast_tools(serial) {

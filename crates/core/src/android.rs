@@ -400,7 +400,7 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
     crate::flash::log(&serial, &format!("return to Android begun: {backed} - itemgrid"))?;
 
     // Into TWRP, where the way back is tried and userdata erased.
-    say("into the recovery".into());
+    say("starting the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     crate::screen::begin(&serial, &["test", "erase", "android"]);
     say("trying the way back (512 MB onto the phone, checked)".into());
@@ -420,7 +420,7 @@ pub fn go(host: &str, plan: &Plan, confirm: &str, accept_losses: bool, say: crat
     crate::screen::done("android next", "set it up|on the phone");
 
     // The stock kernel from RAM, on its slot.
-    say("into the bootloader".into());
+    say("restarting into the bootloader".into());
     crate::ramboot::adb_to_bootloader(&serial)?;
     remember_guest(&serial, &kernel.path, build.slot)?;
     crate::ramboot::boot_in_fastboot(host, &serial, build.slot, &kernel.path, &stock, crate::ramboot::Expect::Android, say)?;
@@ -441,7 +441,7 @@ pub fn start(host: &str, serial: &str, say: crate::ramboot::Say) -> Result<(), S
     let (kernel, slot) = guest(serial).ok_or("Android was never started by item/grid on this phone: return to it first")?;
     let img = crate::ramboot::check_image(&kernel)?;
     if !crate::ramboot::in_fastboot(serial) {
-        say("into the bootloader".into());
+        say("restarting into the bootloader".into());
         crate::ramboot::adb_to_bootloader(serial)?;
     }
     crate::ramboot::boot_in_fastboot(host, serial, slot, &kernel, &img, crate::ramboot::Expect::Android, say)?;
@@ -473,7 +473,7 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
         crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     } else if !crate::ramboot::in_recovery(serial) {
         if !crate::ramboot::in_fastboot(serial) {
-            say("into the bootloader".into());
+            say("restarting into the bootloader".into());
             crate::ramboot::adb_to_bootloader(serial)?;
         }
         crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
@@ -506,7 +506,7 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
                 return Err("the backup's image does not match its manifest - stopping in TWRP".into());
             }
             rec.run(&["meta", "/tmp/ud/rootfs.img", "644", "0", "0"], &format!("truncate -s {total} /tmp/ud/rootfs.img && chmod 644 /tmp/ud/rootfs.img"))?;
-            say("checking the whole image on the phone".into());
+            say("checking every byte on the phone".into());
             crate::screen::step(2, "checking", "every byte");
             if rec.hash_written("/tmp/ud/rootfs.img")? != image.sha256 {
                 return Err("the image on the phone differs from the backup - stopping in TWRP; run back again".into());
@@ -527,7 +527,7 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
         rec.umount("/tmp/ud")?;
 
         // A failed stock boot may have left --prompt_and_wipe_data in misc.
-        say("clearing misc".into());
+        say("clearing the bootloader's note".into());
         rec.zero(&format!("{BLK}/misc"), Some(2048))?;
         crate::flash::log(serial, &format!("back to Linux: the system put back from {} - itemgrid", full.manifest.created))?;
         Ok(())
@@ -938,7 +938,7 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
     let _ = crate::ramboot::check_image(&twrp)?;
     crate::flash::log(&serial, &format!("clean return to Android begun ({}) - itemgrid", build.fingerprint))?;
 
-    say("into the recovery".into());
+    say("starting the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
     // Its steps on the phone's screen (item/grid's own recovery).
     crate::screen::begin(&serial, &["erase", "android", "restart"]);
@@ -949,7 +949,7 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
         say(format!("the stock boot on slot {}", build.slot));
         crate::screen::step(1, "android boot", &format!("slot {}", build.slot));
         crate::bootchain::write(&serial, build.slot, &plan.chain, say)?;
-        say("clearing misc".into());
+        say("clearing the bootloader's note".into());
         crate::rec::Rec::on(&serial).zero(&format!("{BLK}/misc"), Some(2048))
     })();
     if let Err(e) = r {

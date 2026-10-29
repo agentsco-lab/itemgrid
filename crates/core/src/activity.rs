@@ -61,6 +61,9 @@ pub fn line(words: &str) {
         a.lines.drain(..extra);
         write(a);
     }
+    drop(cur);
+    // On the phone's screen too, under its step, when its recovery shows one.
+    crate::screen::note(words);
 }
 
 /// This process's job over.

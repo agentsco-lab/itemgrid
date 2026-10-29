@@ -8,7 +8,15 @@ struct Shown {
     serial: String,
     steps: Vec<String>,
     step: usize,
+    /// The step's title as last written, and how far it was: a note
+    /// written under it keeps them.
+    title: String,
+    fraction: Option<f64>,
     total: u64,
+    /// When progress last went to the phone: each write is an adb round of
+    /// its own, side by side with the job's (unthrottled, a reader that
+    /// told it every read sent 0.5 MB/s, 2026-10-29).
+    shown: Option<std::time::Instant>,
 }
 
 static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
@@ -16,7 +24,7 @@ static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
 /// A job's steps on the phone `serial`, if its recovery is item/grid's.
 pub fn begin(serial: &str, steps: &[&str]) {
     let ours = crate::full::ours(serial);
-    *SHOWN.lock().unwrap() = ours.then(|| Shown { serial: serial.to_owned(), steps: steps.iter().map(|s| s.to_string()).collect(), step: 0, total: 0 });
+    *SHOWN.lock().unwrap() = ours.then(|| Shown { serial: serial.to_owned(), steps: steps.iter().map(|s| s.to_string()).collect(), step: 0, title: String::new(), fraction: None, total: 0, shown: None });
 }
 
 /// Step `i` at work: what it does, and a word more.
@@ -25,6 +33,8 @@ pub fn step(i: usize, title: &str, detail: &str) {
     let Some(s) = g.as_mut() else { return };
     s.step = i;
     s.total = 0;
+    s.title = title.to_owned();
+    s.fraction = None;
     write(s, title, detail, None, "work");
 }
 
@@ -39,12 +49,33 @@ pub fn total(bytes: u64) {
 pub fn progress(title: &str, done: u64) {
     let mut g = SHOWN.lock().unwrap();
     let Some(s) = g.as_mut() else { return };
-    if s.total == 0 {
+    if s.total == 0 || s.shown.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
         return;
     }
+    s.shown = Some(std::time::Instant::now());
     let gb = |b: u64| format!("{:.1}", b as f64 / (1u64 << 30) as f64);
     let detail = format!("{} of {} gb", gb(done.min(s.total)), gb(s.total));
-    write(s, title, &detail, Some(done as f64 / s.total as f64), "work");
+    s.title = title.to_owned();
+    s.fraction = Some(done as f64 / s.total as f64);
+    write(s, title, &detail, s.fraction, "work");
+}
+
+/// The job's line of this moment under the step at work (activity.rs's,
+/// each line said), at most one a second: what the command line says, on
+/// the phone too (the owner, 2026-10-29).
+pub fn note(line: &str) {
+    let mut g = SHOWN.lock().unwrap();
+    let Some(s) = g.as_mut() else { return };
+    // Nothing after the end (the phone leaving the recovery: a write would
+    // wait for adb), nor more than one a second.
+    if s.title.is_empty() || s.step >= s.steps.len() || s.shown.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
+        return;
+    }
+    s.shown = Some(std::time::Instant::now());
+    let (title, fraction) = (s.title.clone(), s.fraction);
+    // As much as the screen's line holds.
+    let short: String = line.trim().chars().take(36).collect();
+    write(s, &title, &short, fraction, "work");
 }
 
 /// The job done.
@@ -62,6 +93,8 @@ pub fn error(what: &str) {
     let mut g = SHOWN.lock().unwrap();
     if let Some(s) = g.as_mut() {
         let short: String = what.replace('|', " ").chars().take(48).collect();
+        // Over: no note goes over the error.
+        s.step = s.steps.len();
         write(s, "stopped", &format!("{short}|retry from|item/grid"), None, "error");
     }
 }
