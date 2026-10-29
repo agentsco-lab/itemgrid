@@ -71,7 +71,9 @@ pub fn total(bytes: u64) {
 pub fn progress(title: &str, done: u64) {
     let mut g = SHOWN.lock().unwrap();
     let Some(s) = g.as_mut() else { return };
-    if s.total == 0 || s.over || s.shown.is_some_and(|t| t.elapsed() < Duration::from_secs(1)) {
+    // Not while the send itself holds the phone's interface (a second
+    // connection would stall it); the screen moves on its own meanwhile.
+    if s.total == 0 || s.over || s.shown.is_some_and(|t| t.elapsed() < Duration::from_secs(1)) || crate::adbusb::in_use() {
         return;
     }
     s.title = title.to_owned();
@@ -88,7 +90,7 @@ pub fn note(_line: &str) {
     let Some(s) = g.as_mut() else { return };
     // Nothing after the end (the phone leaving the recovery: a write would
     // wait for adb), nor more than one a second.
-    if s.title.is_empty() || s.over || s.step >= s.steps.len() || s.shown.is_some_and(|t| t.elapsed() < Duration::from_secs(1)) {
+    if s.title.is_empty() || s.over || s.step >= s.steps.len() || s.shown.is_some_and(|t| t.elapsed() < Duration::from_secs(1)) || crate::adbusb::in_use() {
         return;
     }
     write(s, "work");

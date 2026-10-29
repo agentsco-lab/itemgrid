@@ -328,7 +328,7 @@ pub fn serial(host: &str) -> Result<String, String> {
 }
 
 /// Whether a gzip file reads through to its end (as `gzip -t`).
-fn gzip_whole(path: &std::path::Path) -> bool {
+pub(crate) fn gzip_whole(path: &std::path::Path) -> bool {
     let Ok(f) = std::fs::File::open(path) else { return false };
     let mut d = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(f));
     std::io::copy(&mut d, &mut std::io::sink()).is_ok()

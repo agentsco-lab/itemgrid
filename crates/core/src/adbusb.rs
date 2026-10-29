@@ -137,6 +137,16 @@ impl From<&str> for Opened {
     }
 }
 
+/// Connections open in this process: one holds the interface, and a
+/// second asked for meanwhile would stop adb's server and wait for nothing.
+static OPEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether a connection of this process holds a phone's interface now (a
+/// stream on its way): what can wait - the screen's progress - waits.
+pub fn in_use() -> bool {
+    OPEN.load(std::sync::atomic::Ordering::Acquire) > 0
+}
+
 /// A connection to a phone's item-recovery.
 pub struct Conn {
     _iface: nusb::Interface,
@@ -148,6 +158,12 @@ pub struct Conn {
     /// Bytes read and not yet a whole message.
     pending: Vec<u8>,
     next_id: u32,
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        OPEN.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 fn le(b: &[u8], o: usize) -> u32 {
@@ -250,6 +266,7 @@ impl Conn {
         // Stream ids not used by a connection before (a closed one's late
         // messages must not land in a new stream of the same number).
         let first_id = (std::process::id().wrapping_mul(7919) ^ (Instant::now().elapsed().subsec_nanos() as u32)).wrapping_add(crate::adbusb::next_base()) | 1;
+        OPEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let mut c = Conn { _iface: iface, ep_in, ep_out, max_packet, max: MAX_PAYLOAD, pending: Vec::new(), next_id: first_id };
         // What a host that went left in the pipe (a payload half read),
         // read and dropped first: else it reads as a broken header.

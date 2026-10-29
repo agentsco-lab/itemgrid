@@ -230,7 +230,7 @@ pub fn command(args: &[String]) -> i32 {
         if back.entries != plan.entries {
             return Err("read back, the table differs from what was written".into());
         }
-        reread(&disk);
+        reread(&disk)?;
         drop(disk);
         println!("written, {} partitions by name again; userdata is to be made anew", crate::init::relink());
         Ok(true)
@@ -246,17 +246,20 @@ pub fn command(args: &[String]) -> i32 {
 }
 
 /// The kernel told to read the table again (BLKRRPART), for a block
-/// device; nothing for an image.
-fn reread(disk: &File) {
+/// device; nothing for an image. Refused, it is an error: the kernel would
+/// keep the old userdata, and the install would make it there - where the
+/// new table has no userdata's start (a phone that does not start).
+fn reread(disk: &File) -> Result<(), String> {
     use std::os::unix::io::AsRawFd;
     const BLKRRPART: libc::c_ulong = 0x125f;
     // SAFETY: an ioctl without an argument on an open descriptor.
     if unsafe { libc::ioctl(disk.as_raw_fd(), BLKRRPART as _) } != 0 {
         let e = std::io::Error::last_os_error();
         if e.raw_os_error() != Some(libc::ENOTTY) {
-            println!("the kernel did not read the table again ({e}): a restart will");
+            return Err(format!("the table is written, and the kernel did not read it again ({e}): nothing else is changed - restart the phone into the bootloader and install again"));
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

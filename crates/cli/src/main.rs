@@ -582,7 +582,15 @@ fn cmd_ramboot(args: &[String]) -> i32 {
 fn cmd_install(args: &[String]) -> i32 {
     use itemgrid_core::install;
     // --from-backup DIR: the files kept from that quick backup, none taken.
-    let from = args.iter().position(|a| a == "--from-backup").and_then(|i| args.get(i + 1)).cloned();
+    let from = args.iter().position(|a| a == "--from-backup").map(|i| args.get(i + 1).filter(|d| !d.starts_with('-')).cloned());
+    let from = match from {
+        Some(None) => {
+            eprintln!("itemgrid: --from-backup wants the backup's folder");
+            return 2;
+        }
+        Some(Some(d)) => Some(d),
+        None => None,
+    };
     let release = match args.iter().find(|a| !a.starts_with('-') && Some(*a) != from.as_ref()) {
         Some(d) => match install::read(std::path::Path::new(d)) {
             Ok(r) => r,

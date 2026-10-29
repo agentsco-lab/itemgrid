@@ -103,6 +103,27 @@ pub fn quick_backup(dir: &std::path::Path) -> Result<crate::backup::Backup, Stri
     Ok(crate::backup::Backup { dir: dir.to_owned(), manifest })
 }
 
+/// A backup's files as its manifest has them, every byte (sha256), the
+/// archives read through to their end - before an install erases what the
+/// phone holds for them.
+fn backup_whole(b: &crate::backup::Backup, say: crate::ramboot::Say) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    say("checking the backup, every file".into());
+    for item in &b.manifest.items {
+        let path = b.dir.join(&item.file);
+        let mut f = std::fs::File::open(&path).map_err(|e| format!("the backup's {}: {e} - nothing is changed", item.file))?;
+        let mut h = Sha256::new();
+        std::io::copy(&mut f, &mut h).map_err(|e| format!("the backup's {}: {e} - nothing is changed", item.file))?;
+        if format!("{:x}", h.finalize()) != item.sha256 {
+            return Err(format!("the backup's {} is not as it was taken (its sha256 differs) - nothing is changed", item.file));
+        }
+        if item.file.ends_with(".gz") && !crate::backup::gzip_whole(&path) {
+            return Err(format!("the backup's {} does not read to its end - nothing is changed", item.file));
+        }
+    }
+    Ok(())
+}
+
 /// As erase_and_install; keeping files, from the quick backup `kept`
 /// (an install stopped after its erase, its backup taken) instead of one
 /// taken now - the phone's home then may be the empty one of a new system.
@@ -118,6 +139,9 @@ pub fn erase_and_install_from(host: &str, release: &Release, mode: Mode, kept: O
         return Err(format!("the confirmation does not match ({} expected) - nothing is changed", crate::android::confirm_word(&serial)));
     }
     let key = public_key()?;
+    if let Some(b) = &kept {
+        backup_whole(b, say)?;
+    }
     let twrp = crate::full::recovery().ok_or("no recovery image (tools/build-recovery.sh, or a release with item-recovery.img)")?;
     crate::ramboot::check_image(&twrp)?;
     // The image checked here before anything.
@@ -261,14 +285,17 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
     // The Android container's data back (the fingerprints with it), when
     // the release's port is the one it was taken under: another port's
     // container may not take it.
-    let android = match (quick, &put_key, &kept) {
-        (Some(q), Ok(()), Ok(())) => put_android_data(&rec, &serial, q, release, say),
-        _ => Ok(()),
-    };
+    // Not put back, the install stands all the same: what came of it goes
+    // (the container starts afresh), the fingers are enrolled again.
+    if let (Some(q), Ok(()), Ok(())) = (quick, &put_key, &kept) {
+        if let Err(e) = put_android_data(&rec, &serial, q, release, say) {
+            let _ = rec.rm("/tmp/ud/android-data");
+            say(format!("the fingerprints were not put back ({e}): they are enrolled again on the phone"));
+        }
+    }
     let _ = rec.umount("/tmp/ud");
     put_key?;
     kept?;
-    android?;
 
     say("clearing the bootloader's note".into());
     rec.zero(&format!("{blk}/misc"), Some(2048))?;
@@ -770,5 +797,13 @@ mod kept_tests {
         let (small, big, _, shadow) = super::split_kept(a).unwrap();
         eprintln!("small {} MB, {} big, shadow {}", small.len() >> 20, big.len(), shadow.is_some());
         std::fs::write(to, small).unwrap();
+    }
+
+    /// ITEM_BACKUP_CHECK=DIR: a quick backup checked as --from-backup does.
+    #[test]
+    fn a_backup_checked_whole() {
+        let Some(dir) = std::env::var_os("ITEM_BACKUP_CHECK") else { return };
+        let b = super::quick_backup(std::path::Path::new(&dir)).unwrap();
+        super::backup_whole(&b, &mut |l| eprintln!("{l}")).unwrap();
     }
 }

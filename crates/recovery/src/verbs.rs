@@ -628,7 +628,7 @@ fn gz_file(path: &str) -> Result<(), String> {
 
 /// `names` under `dir` as a tar (owners, modes, links kept), gzipped,
 /// into `out`. Nothing but regular files, directories and symlinks; a name
-/// that is not there is skipped.
+/// that is not there is skipped, one that cannot be read is an error.
 fn tar_gz(dir: &str, names: &[String], out: &mut dyn Write) -> Result<(), String> {
     let (mut reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
     let (dir, names) = (dir.to_owned(), names.to_vec());
@@ -653,7 +653,12 @@ fn tar_gz(dir: &str, names: &[String], out: &mut dyn Write) -> Result<(), String
 fn add<W: Write>(t: &mut tar::Builder<W>, dir: &Path, name: &Path) -> Result<(), String> {
     use std::os::unix::fs::FileTypeExt;
     let p = dir.join(name);
-    let Ok(m) = p.symlink_metadata() else { return Ok(()) };
+    let m = match p.symlink_metadata() {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        // Unread, it is an error: a backup without it is not one.
+        Err(e) => return Err(format!("{}: {e}", p.display())),
+    };
     let kind = m.file_type();
     if kind.is_socket() {
         return Ok(());
@@ -678,7 +683,11 @@ fn add<W: Write>(t: &mut tar::Builder<W>, dir: &Path, name: &Path) -> Result<(),
     }
     t.append_path_with_name(&p, name).map_err(|e| format!("{}: {e}", p.display()))?;
     if kind.is_dir() {
-        let mut names: Vec<_> = std::fs::read_dir(&p).map_err(|e| format!("{}: {e}", p.display()))?.flatten().map(|e| e.file_name()).collect();
+        let mut names = std::fs::read_dir(&p)
+            .map_err(|e| format!("{}: {e}", p.display()))?
+            .map(|e| e.map(|e| e.file_name()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("{}: {e}", p.display()))?;
         names.sort();
         for n in names {
             add(t, dir, &name.join(n))?;
@@ -968,7 +977,7 @@ mod tests {
         assert_eq!(hash(&p, Some((2, 3))).unwrap(), format!("{:x}", Sha256::digest(b"234")));
         assert_eq!(hash(&p, Some((8, 100))).unwrap(), format!("{:x}", Sha256::digest(b"89")));
         zero(&p, Some(4)).unwrap();
-        assert_eq!(std::fs::read(&p).unwrap(), b"\0\0\0\0456789");
+        assert_eq!(std::fs::read(&p).unwrap(), b"\x00\x00\x00\x00456789");
         zero(&p, None).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), [0u8; 10]);
     }
