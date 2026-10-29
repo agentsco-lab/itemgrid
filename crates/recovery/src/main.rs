@@ -7,16 +7,22 @@
 //! own: a shell with exit codes, push and pull, a stream into a command,
 //! reboot. Nothing else: no network, no touch, no Android.
 //!
+//! As `item-recovery VERB ...`: what item/grid asks of it (verbs.rs),
+//! in place of shell lines.
+//!
 //! As `reboot`, `poweroff` or `halt` (busybox's would signal PID 1): the
 //! filesystems synced, then that. As `truncate` and `mountpoint`: those,
 //! which the port's busybox has not.
 
 mod adb;
 mod drm;
+mod gpt;
 mod init;
 mod log;
+mod mkfs;
 mod screen;
 mod tools;
+mod verbs;
 
 fn main() {
     let argv0 = std::env::args().next().unwrap_or_default();
@@ -32,6 +38,8 @@ fn main() {
             // The daemon, as init's child (init reaps orphans; the daemon
             // waits for its own children).
             Some("adbd") => adb::run(),
+            // What item/grid asks of the recovery: verbs.rs.
+            Some(v) if verbs::VERBS.contains(&v) => std::process::exit(verbs::run(v, &args[1..])),
             // The screen's design as pictures, on a computer.
             Some("preview") => std::process::exit(screen::preview(args.get(1).map_or(".", String::as_str), args.get(2).map_or(screen::FONT, String::as_str))),
             _ if std::process::id() == 1 => init::run(),

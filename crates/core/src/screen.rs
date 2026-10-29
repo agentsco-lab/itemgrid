@@ -84,7 +84,7 @@ fn write(s: &Shown, title: &str, detail: &str, progress: Option<f64>, state: &st
     if let Some(p) = progress {
         text.push_str(&format!("progress {:.3}\n", p.clamp(0.0, 1.0)));
     }
-    let _ = crate::full::adb_shell(&s.serial, &format!("printf '%s' '{text}' > /run/item-screen.new && mv /run/item-screen.new /run/item-screen"));
+    let _ = crate::full::adb_send(&s.serial, "item-recovery replace /run/item-screen", &mut text.as_bytes());
 }
 
 /// item/grid's window's grid for the recovery (~/.config/itemgrid/

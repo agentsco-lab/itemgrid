@@ -200,6 +200,9 @@ fn serve(from_host: &mut File, out: Sender<Packet>) -> ! {
     loop {
         let n = match from_host.read(&mut buf) {
             Ok(n) => n,
+            // A signal mid-read is not the host going (it was, once, mid
+            // install: the daemon left and the host saw a protocol fault).
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => {
                 say!("the host went (reading: {e})");
                 std::process::exit(1);
@@ -363,13 +366,35 @@ enum Mode {
 }
 
 fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Inbound, okay: Receiver<()>) {
-    let mut c = Command::new("/bin/sh");
-    if cmd.is_empty() {
-        c.arg("-i");
+    // item/grid's verbs run straight, no shell between (verbs.rs).
+    let words: Vec<&str> = cmd.split(' ').filter(|w| !w.is_empty()).collect();
+    let direct = words.first() == Some(&"item-recovery") && words.get(1).is_some_and(|v| crate::verbs::VERBS.contains(v)) && cmd.bytes().all(|b| b == b' ' || crate::verbs::plain(b));
+    let mut c = if direct {
+        let mut c = Command::new(std::env::current_exe().unwrap_or_else(|_| "/sbin/item-recovery".into()));
+        c.args(words[1..].iter().map(|w| crate::verbs::unescape(w)));
+        c
     } else {
-        c.arg("-c").arg(cmd);
-    }
-    c.current_dir("/").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(if mode == Mode::Exec { Stdio::null() } else { Stdio::piped() });
+        let mut c = Command::new("/bin/sh");
+        if cmd.is_empty() {
+            c.arg("-i");
+        } else {
+            c.arg("-c").arg(cmd);
+        }
+        c
+    };
+    // A verb by exec (in or out) has no way to tell its end: its stderr
+    // and exit code are kept for `item-recovery last` (verbs.rs).
+    let kept_err = if direct && mode == Mode::Exec {
+        let _ = std::fs::remove_file(crate::verbs::LAST_RC);
+        std::fs::File::create(crate::verbs::LAST_ERR).ok()
+    } else {
+        None
+    };
+    c.current_dir("/").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(match kept_err {
+        Some(f) => Stdio::from(f),
+        None if mode == Mode::Exec => Stdio::null(),
+        None => Stdio::piped(),
+    });
     let mut child = match c.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -416,7 +441,12 @@ fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Inbound, okay: Receiver<()>) {
     let pump = |mut r: Box<dyn Read + Send>, id: u8, tx: Sender<(u8, Vec<u8>)>| {
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 256 * 1024];
-            while let Ok(n) = r.read(&mut buf) {
+            loop {
+                let n = match r.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
                 if n == 0 || tx.send((id, buf[..n].to_vec())).is_err() {
                     break;
                 }
@@ -454,9 +484,12 @@ fn shell(ctx: &Ctx, cmd: &str, mode: Mode, input: Inbound, okay: Receiver<()>) {
         }
     }
     let status = child.wait();
+    use std::os::unix::process::ExitStatusExt;
+    let code = status.map(|s| s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0))).unwrap_or(255);
+    if direct && mode == Mode::Exec {
+        let _ = std::fs::write(crate::verbs::LAST_RC, code.to_string());
+    }
     if open && mode == Mode::V2 {
-        use std::os::unix::process::ExitStatusExt;
-        let code = status.map(|s| s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0))).unwrap_or(255);
         ctx.write(&okay, &framed(EXIT, &[code as u8]));
     }
     ctx.close();
@@ -611,6 +644,7 @@ fn send_file(ctx: &Ctx, okay: &Receiver<()>, path: &str) -> bool {
                     return false;
                 }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return ctx.write(okay, &fail(&format!("{path}: {e}"))),
         }
     }

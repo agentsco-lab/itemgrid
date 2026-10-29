@@ -104,6 +104,21 @@ fn cmd_status() -> i32 {
     println!("Phone:     {}{via}", seen.mode.name());
     if seen.mode != Mode::Linux {
         println!("           {}", seen.mode.means());
+        // What stock Android says of itself, or the bootloader (read only).
+        let in_fastboot = matches!(seen.mode, Mode::Fastboot | Mode::Duo2) && itemgrid_core::ramboot::in_fastboot(&seen.via);
+        if in_fastboot {
+            if let Ok(fb) = itemgrid_core::ramboot::probe() {
+                println!("Lock:      {}unlocked, slot {}, battery {}", if fb.unlocked == "yes" { "" } else { "not " }, fb.slot, fb.battery.map_or("?".into(), |b| format!("{b}%")));
+                if let Some(w) = fb.windows {
+                    println!("Windows:   {}", w.line());
+                }
+            }
+        } else if matches!(seen.mode, Mode::Android | Mode::Duo2) {
+            match itemgrid_core::facts::read(&seen.via) {
+                Ok(f) => f.lines().into_iter().for_each(|(k, v)| println!("{:<10} {v}", format!("{k}:"))),
+                Err(e) => eprintln!("itemgrid: {e}"),
+            }
+        }
         return if seen.mode == Mode::Gone { 1 } else { 0 };
     }
     let s = match status::read(&seen.via) {

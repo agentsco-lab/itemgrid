@@ -47,8 +47,33 @@ pub fn run() -> ! {
     if let Err(e) = gadget() {
         say!("the USB gadget: {e}");
     }
-    let _ = std::process::Command::new("/bin/busybox").args(["ip", "link", "set", "lo", "up"]).status();
+    loopback_up();
     supervise();
+}
+
+/// The loopback interface up (adb's forwarded ports reach it), as `ip
+/// link set lo up` does: its flags read and IFF_UP added.
+fn loopback_up() {
+    // SAFETY: a datagram socket for the ioctls, closed after; ifreq is
+    // plain data the kernel fills and reads.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
+        if fd < 0 {
+            say!("lo: {}", std::io::Error::last_os_error());
+            return;
+        }
+        let mut req: libc::ifreq = std::mem::zeroed();
+        for (i, b) in b"lo".iter().enumerate() {
+            req.ifr_name[i] = *b as libc::c_char;
+        }
+        if libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &mut req) == 0 {
+            req.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+            if libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &req) != 0 {
+                say!("lo up: {}", std::io::Error::last_os_error());
+            }
+        }
+        libc::close(fd);
+    }
 }
 
 fn mount(src: &str, target: &str, fs: &str, flags: libc::c_ulong, data: &str) {
@@ -98,6 +123,17 @@ fn by_name() {
     let _ = std::os::unix::fs::symlink(BY_NAME, "/dev/block/by-name");
 }
 
+/// The partitions' links made again after their table changed (gpt.rs):
+/// the old names gone, the new ones linked as at the start.
+pub fn relink() -> usize {
+    if let Ok(dir) = std::fs::read_dir(BY_NAME) {
+        for e in dir.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    link_partitions()
+}
+
 fn link_partitions() -> usize {
     let _ = std::fs::create_dir_all(BY_NAME);
     let Ok(dir) = std::fs::read_dir("/sys/class/block") else { return 0 };
@@ -109,10 +145,11 @@ fn link_partitions() -> usize {
         }
         let Ok(uevent) = std::fs::read_to_string(e.path().join("uevent")) else { continue };
         let get = |k: &str| uevent.lines().find_map(|l| l.strip_prefix(k)).map(str::to_owned);
-        let (Some(name), Some(dev)) = (get("PARTNAME="), get("DEVNAME=")) else { continue };
+        let Some(dev) = get("DEVNAME=") else { continue };
         // The node where Android has it, /dev/block/sdXN (item/grid checks
         // a partition resolves there before it writes), its name a link to
-        // it - as ueventd makes them.
+        // it - as ueventd makes them; a whole disk's node too, /dev/block/sdX
+        // (its partition table: gpt.rs).
         let node = format!("/dev/block/{dev}");
         if !Path::new(&node).exists() {
             let (Some(major), Some(minor)) = (get("MAJOR=").and_then(|v| v.parse::<u32>().ok()), get("MINOR=").and_then(|v| v.parse::<u32>().ok())) else { continue };
@@ -122,6 +159,7 @@ fn link_partitions() -> usize {
                 continue;
             }
         }
+        let Some(name) = get("PARTNAME=") else { continue };
         let link = format!("{BY_NAME}/{name}");
         if !Path::new(&link).exists() {
             let _ = std::os::unix::fs::symlink(&node, &link);

@@ -7,7 +7,6 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 /// A release image on this computer.
 #[derive(Debug, Clone)]
@@ -90,7 +89,6 @@ pub fn public_key() -> Result<String, String> {
 pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &str, say: crate::ramboot::Say) -> Result<(), String> {
     crate::link::need_cable(host)?;
     let _ = crate::phone::keep_awake(host, true);
-    use crate::full::adb_shell;
     let serial = crate::backup::serial(host)?;
     if confirm.trim() != crate::android::confirm_word(&serial) {
         return Err(format!("the confirmation does not match ({} expected) - nothing is changed", crate::android::confirm_word(&serial)));
@@ -130,7 +128,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
 
     say("into the recovery".into());
     crate::ramboot::ram_boot(host, &twrp, crate::ramboot::Expect::Recovery, say)?;
-    if !crate::full::fast_tools(&serial) {
+    if !crate::full::ours(&serial) && !crate::full::fast_tools(&serial) {
         let _ = crate::ramboot::leave_recovery(host, &serial, say);
         return Err("this TWRP lacks pigz or nc".into());
     }
@@ -143,7 +141,7 @@ pub fn erase_and_install(host: &str, release: &Release, mode: Mode, confirm: &st
     put_on_userdata(&serial, release, size, &key, quick.as_ref(), say)?;
 
     say("starting the new system - its first start grows it to fill userdata".into());
-    adb_shell(&serial, "reboot").ok();
+    crate::rec::Rec::on(&serial).restart();
     let start = std::time::Instant::now();
     while !crate::phone::answers_fresh(host) {
         if start.elapsed() > std::time::Duration::from_secs(480) {
@@ -175,26 +173,25 @@ fn put_on_userdata(serial: &str, release: &Release, size: u64, key: &str, quick:
 }
 
 fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, quick: Option<&crate::backup::Backup>, say: crate::ramboot::Say) -> Result<(), String> {
-    use crate::full::adb_shell;
     let serial = serial.to_owned();
     crate::flash::log(&serial, &format!("ERASING userdata for {} - itemgrid", release.name))?;
     say("making userdata anew (what it held goes)".into());
     crate::screen::step(0, "cleaning", "old data goes");
     let blk = crate::android::BLK;
-    adb_shell(&serial, &format!("umount /tmp/ud 2>/dev/null; mke2fs -F -t ext4 -L userdata {blk}/userdata >/dev/null && mkdir -p /tmp/ud && mount -t ext4 {blk}/userdata /tmp/ud && echo ok"))?;
+    let rec = crate::rec::Rec::on(&serial);
+    rec.make_ext4(&format!("{blk}/userdata"), "userdata", "/tmp/ud")?;
 
     say(format!("putting {} on the phone", release.name));
     crate::screen::step(1, "writing item", "");
     crate::screen::total(size);
-    let (written, written_sha) = crate::android::put_file(&serial, "rootfs.img", &mut decompress(&release.compressed)?, "image", say)?;
-    if written_sha != release.sha256 || written != size {
+    let (written, written_sha) = crate::android::put_file(&serial, "rootfs.img", &mut decompress(&release.compressed)?, "image", true, say)?;
+    if written_sha.as_deref() != Some(release.sha256.as_str()) || written != size {
         return Err("the image read here changed while it was sent - stopping in the recovery; run it again".into());
     }
-    adb_shell(&serial, "chmod 644 /tmp/ud/rootfs.img")?;
+    rec.run(&["meta", "/tmp/ud/rootfs.img", "644", "0", "0"], "chmod 644 /tmp/ud/rootfs.img")?;
     say("checking the whole image on the phone".into());
     crate::screen::step(2, "checking", "every byte");
-    let there = adb_shell(&serial, "sha256sum /tmp/ud/rootfs.img | cut -d' ' -f1")?;
-    if there.trim() != release.sha256 {
+    if rec.hash_written("/tmp/ud/rootfs.img")? != release.sha256 {
         return Err("the image on the phone differs from the release - stopping in the recovery; run it again".into());
     }
 
@@ -204,32 +201,33 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
         say("putting this computer's ssh key in".into());
     }
     crate::screen::step(3, "linking", "to item/grid");
-    adb_shell(&serial, "mkdir -p /tmp/r && mount -o loop,rw /tmp/ud/rootfs.img /tmp/r && echo ok")?;
+    rec.mount("/tmp/ud/rootfs.img", "/tmp/r", false)?;
     let put_key = (|| -> Result<(), String> {
         if key.is_empty() {
             return Ok(());
         }
-        // A small text by adb push: through the socket it did not arrive
-        // (2026-10-04) - the big transfers go that way, this need not.
-        push_text(&serial, key, "/tmp/itemgrid.pub")?;
-        adb_shell(
-            &serial,
-            "for d in /tmp/r/root /tmp/r/home/droidian; do mkdir -p $d/.ssh && cat /tmp/itemgrid.pub > $d/.ssh/authorized_keys && chmod 700 $d/.ssh && chmod 600 $d/.ssh/authorized_keys; done; \
-             chown -R 0:0 /tmp/r/root/.ssh; chown -R 32011:32011 /tmp/r/home/droidian/.ssh; rm -f /tmp/itemgrid.pub; \
-             grep -q ssh- /tmp/r/root/.ssh/authorized_keys && echo ok",
-        )
-        .map(|_| ())
+        for (home, id) in [("/tmp/r/root", 0), ("/tmp/r/home/droidian", 32011)] {
+            let (dir, keys) = (format!("{home}/.ssh"), format!("{home}/.ssh/authorized_keys"));
+            rec.mkdir(&dir)?;
+            rec.write(&keys, key.as_bytes())?;
+            rec.meta(&dir, 0o700, id, id)?;
+            rec.meta(&keys, 0o600, id, id)?;
+        }
+        if !rec.read_text("/tmp/r/root/.ssh/authorized_keys")?.contains("ssh-") {
+            return Err("the ssh key did not arrive in the image".into());
+        }
+        Ok(())
     })();
     let kept = match (quick, &put_key) {
-        (Some(q), Ok(())) => put_kept(&serial, q, say),
+        (Some(q), Ok(())) => put_kept(&rec, &serial, q, say),
         _ => Ok(()),
     };
-    adb_shell(&serial, "sync; umount /tmp/r; sync; umount /tmp/ud").ok();
+    let _ = rec.umount("/tmp/r").and_then(|_| rec.umount("/tmp/ud"));
     put_key?;
     kept?;
 
     say("clearing misc".into());
-    adb_shell(&serial, &format!("dd if=/dev/zero of={blk}/misc bs=2048 count=1 2>/dev/null; sync"))?;
+    rec.zero(&format!("{blk}/misc"), Some(2048))?;
     let _ = std::fs::remove_file(crate::android::guest_path_of(&serial));
     crate::flash::log(&serial, &format!("{} installed (userdata anew) - itemgrid", release.name))?;
 
@@ -299,8 +297,7 @@ const BIG: u64 = 32 << 20;
 /// The kept part of a quick backup put into the new system, mounted at /tmp/r
 /// in TWRP: small files through tar, big ones part by part, every file's size
 /// checked after; the owner's password hash (the PIN) carried over.
-fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Say) -> Result<(), String> {
-    use crate::full::adb_shell;
+fn put_kept(rec: &crate::rec::Rec, serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Say) -> Result<(), String> {
     let archive = quick.dir.join("home-etc.tar.gz");
     let open = || -> Result<tar::Archive<flate2::read::MultiGzDecoder<std::io::BufReader<std::fs::File>>>, String> {
         let f = std::fs::File::open(&archive).map_err(|e| format!("{}: {e}", archive.display()))?;
@@ -337,8 +334,7 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
     }
     let small = small.into_inner().map_err(|e| e.to_string())?;
     say(format!("putting back your files ({} MB, {} big)", small.len() >> 20, big.len()));
-    crate::full::push_file(serial, &small, "/tmp/itemgrid-small.tar")?;
-    adb_shell(serial, "tar -C /tmp/r -xpf /tmp/itemgrid-small.tar; rc=$?; rm -f /tmp/itemgrid-small.tar; exit $rc")?;
+    rec.untar("/tmp/r", &small)?;
     for (path, size, mode, uid, gid) in &big {
         say(format!("putting back {path} ({} MB)", size >> 20));
         let mut a = open()?;
@@ -346,8 +342,8 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
         for entry in a.entries().map_err(|e| e.to_string())? {
             let mut entry = entry.map_err(|e| e.to_string())?;
             if entry.path().map(|p| p.to_string_lossy().trim_start_matches("./") == path.as_str()).unwrap_or(false) {
-                crate::android::put_file(serial, &format!("/tmp/r/{path}"), &mut entry, path, say)?;
-                adb_shell(serial, &format!("chmod {mode:o} '/tmp/r/{path}'; chown {uid}:{gid} '/tmp/r/{path}'"))?;
+                crate::android::put_file(serial, &format!("/tmp/r/{path}"), &mut entry, path, false, say)?;
+                rec.meta(&format!("/tmp/r/{path}"), *mode, *uid, *gid)?;
                 found = true;
                 break;
             }
@@ -357,27 +353,20 @@ fn put_kept(serial: &str, quick: &crate::backup::Backup, say: crate::ramboot::Sa
         }
     }
     // Every small file there, at its size.
-    push_text(serial, &sizes, "/tmp/kept-sizes")?;
-    let bad = adb_shell(serial, "n=0; while read s p; do [ \"$(stat -c %s \"$p\" 2>/dev/null)\" = \"$s\" ] || n=$((n+1)); done < /tmp/kept-sizes; rm -f /tmp/kept-sizes; echo $n")?;
-    if bad.trim() != "0" {
-        return Err(format!("{} of your files did not arrive whole - stopping in TWRP", bad.trim()));
+    let bad = rec.check_sizes(&sizes)?;
+    if bad != 0 {
+        return Err(format!("{bad} of your files did not arrive whole - stopping in the recovery"));
     }
-    // The PIN: the owner's password hash in place of the image's.
+    // The PIN: the owner's password hash in place of the image's (the
+    // file rewritten in place: its mode and group stay).
     if let Some(line) = shadow {
-        push_text(serial, &line, "/tmp/kept-shadow")?;
-        adb_shell(serial, "l=$(cat /tmp/kept-shadow); rm -f /tmp/kept-shadow; grep -v '^droidian:' /tmp/r/etc/shadow > /tmp/shadow.new && echo \"$l\" >> /tmp/shadow.new && cat /tmp/shadow.new > /tmp/r/etc/shadow && rm -f /tmp/shadow.new && grep -c '^droidian:' /tmp/r/etc/shadow")?;
-    }
-    Ok(())
-}
-
-/// A small text put at `to` in TWRP, by adb push.
-fn push_text(serial: &str, text: &str, to: &str) -> Result<(), String> {
-    let tmp = std::env::temp_dir().join(format!("itemgrid-push-{}", std::process::id()));
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    let out = Command::new(crate::programs::adb()).args(["-s", serial, "push"]).arg(&tmp).arg(to).stdin(Stdio::null()).output().map_err(|e| format!("adb: {e}"))?;
-    let _ = std::fs::remove_file(&tmp);
-    if !out.status.success() {
-        return Err(format!("adb push: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        let now = rec.read_text("/tmp/r/etc/shadow")?;
+        let mut new: String = now.lines().filter(|l| !l.starts_with("droidian:")).map(|l| format!("{l}\n")).collect();
+        new.push_str(&format!("{line}\n"));
+        rec.write("/tmp/r/etc/shadow", new.as_bytes())?;
+        if rec.read_text("/tmp/r/etc/shadow")?.lines().filter(|l| l.starts_with("droidian:")).count() != 1 {
+            return Err("the PIN did not go into the image".into());
+        }
     }
     Ok(())
 }
@@ -488,8 +477,9 @@ pub fn from_stock_by_usb(serial: &str, release: &Release, key: &str, say: crate:
     // misc cleared: the phone starts by itself now (no brake armed on the
     // way out - from TWRP a reboot might consume it and park in fastboot).
     say("clearing misc and restarting from the phone's own boot".into());
-    crate::full::adb_shell(serial, &format!("dd if=/dev/zero of={}/misc bs=2048 count=1 2>/dev/null; sync", crate::android::BLK))?;
-    crate::full::adb_shell(serial, "reboot").ok();
+    let rec = crate::rec::Rec::on(serial);
+    rec.zero(&format!("{}/misc", crate::android::BLK), Some(2048))?;
+    rec.restart();
     let start = Instant::now();
     while !crate::ramboot::linux_on_usb(serial) {
         if start.elapsed() > Duration::from_secs(600) {
@@ -590,5 +580,35 @@ fn image_on_from_stock(serial: &str, release: &Release, p: &Prepared, key: &str,
     if !crate::full::ours(serial) && !crate::full::fast_tools(serial) {
         return Err("this TWRP lacks pigz or nc".into());
     }
+    without_windows(serial, say)?;
     put_on_userdata(serial, release, p.size, key, None, say)
+}
+
+/// Windows taken off the phone, if the WOA Project's guides put it there:
+/// its partitions dropped and userdata grown back over their room
+/// (item-recovery's `gpt`), before userdata is made anew. The install's
+/// plan said so (the window's "erases windows too"). Nothing on a phone
+/// without it.
+fn without_windows(serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
+    let rec = crate::rec::Rec::on(serial);
+    if !rec.ours() {
+        let names = crate::full::adb_shell(serial, &format!("ls {}", crate::android::BLK)).unwrap_or_default();
+        if names.split_whitespace().any(|n| n == "win") {
+            return Err("Windows is on this phone, and only item/grid's own recovery takes it off: nothing is changed".into());
+        }
+        return Ok(());
+    }
+    let plan = rec.run(&["gpt", "/dev/block/sda"], "");
+    let plan = match plan {
+        Ok(p) => p,
+        // 1: no Windows there.
+        Err(e) if e.contains("nothing to do") => return Ok(()),
+        Err(e) => return Err(format!("the phone's partition table: {e}")),
+    };
+    say("Windows is on this phone: taking it off (its partitions go, userdata takes their room)".into());
+    let after = plan.lines().skip_while(|l| !l.starts_with("without Windows")).skip(1).map(str::trim).collect::<Vec<_>>().join("; ");
+    crate::flash::log(serial, &format!("WINDOWS OFF: the table rewritten without esp and win ({after}) - itemgrid"))?;
+    let done = rec.run(&["gpt", "--write", "/dev/block/sda"], "")?;
+    say(done.lines().last().unwrap_or("written").to_owned());
+    Ok(())
 }

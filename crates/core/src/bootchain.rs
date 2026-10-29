@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::full::{adb_send, adb_shell};
 
 /// A vbmeta image's flags (AVB: magic "AVB0", the flags a big-endian u32 at
 /// 120): bit 0 the hashtree disabled, bit 1 verification disabled - a
@@ -61,29 +60,31 @@ impl Part {
 /// differs. `log`: each written partition noted (flash.rs's history).
 pub fn write(serial: &str, slot: char, parts: &[Part], say: crate::ramboot::Say) -> Result<(), String> {
     let blk = crate::android::BLK;
+    let rec = crate::rec::Rec::on(serial);
     for p in parts {
-        let dev = adb_shell(serial, &format!("readlink -f {blk}/{}_{slot}", p.name))?.trim().to_owned();
+        let dev = rec.real(&format!("{blk}/{}_{slot}", p.name))?;
         if !dev.starts_with("/dev/block/sd") {
             return Err(format!("{}_{slot} is not where it should be ({dev}): stopping", p.name));
         }
-        let room: u64 = adb_shell(serial, &format!("blockdev --getsize64 {dev}"))?.trim().parse().map_err(|_| format!("{}_{slot}'s size was not read", p.name))?;
+        let room = rec.size(&dev)?;
         if room < p.size {
             return Err(format!("{} ({} bytes) does not fit {}_{slot} ({room} bytes): stopping", p.file.display(), p.size, p.name));
         }
         say(format!("writing {}_{slot}", p.name));
         let tmp = format!("/tmp/itemgrid-{}.img", p.name);
         let mut f = std::fs::File::open(&p.file).map_err(|e| format!("{}: {e}", p.file.display()))?;
-        adb_send(serial, &format!("cat > {tmp}"), &mut f)?;
-        let there = adb_shell(serial, &format!("sha256sum {tmp} | cut -d' ' -f1"))?;
-        if there.trim() != p.sha256 {
-            let _ = adb_shell(serial, &format!("rm -f {tmp}"));
+        rec.rm(&tmp)?;
+        rec.send(&["put", &tmp], &format!("cat > {tmp}"), &mut f)?;
+        if rec.hash(&tmp, None)? != p.sha256 {
+            let _ = rec.rm(&tmp);
             return Err(format!("{} arrived different on the phone - nothing written to {}_{slot}", p.name, p.name));
         }
         // Written whole (the rest of a larger partition zeroed: nothing of
         // what was there left behind the image), then read back.
-        adb_shell(serial, &format!("dd if={tmp} of={dev} bs=4194304 2>/dev/null; dd if=/dev/zero of={dev} bs=4096 seek={} 2>/dev/null; sync; rm -f {tmp}; true", p.size.div_ceil(4096)))?;
-        let back = adb_shell(serial, &format!("head -c {} {dev} | sha256sum | cut -d' ' -f1", p.size))?;
-        if back.trim() != p.sha256 {
+        let copied = rec.copy(&tmp, &dev, p.size);
+        let _ = rec.rm(&tmp);
+        copied?;
+        if rec.hash(&dev, Some((0, p.size)))? != p.sha256 {
             return Err(format!("{}_{slot} reads back different from the image - stopping (the phone still starts TWRP from the computer)", p.name));
         }
         crate::flash::log(serial, &format!("wrote {}_{slot} from {} ({}) - itemgrid", p.name, p.file.display(), &p.sha256[..16]))?;

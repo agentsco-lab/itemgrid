@@ -5621,6 +5621,11 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                         format!("{} {}", d[6..8].trim_start_matches('0'), MONTHS[m - 1])
                     });
                     let mut lines = vec!["erases android".to_owned(), format!("puts item {version}")];
+                    // Windows beside Android (the WOA Project's): taken off
+                    // too, its room given back (install.rs).
+                    if itemgrid_core::facts::read(&serial).is_ok_and(|f| f.windows()) {
+                        lines.insert(1, "erases windows too".into());
+                    }
                     if newest.as_deref() != Some(release.name.as_str()) {
                         lines.push(format!("an older image{}", day.map(|d| format!(" · {d}")).unwrap_or_default()));
                         lines.push("the newest has no boot".into());

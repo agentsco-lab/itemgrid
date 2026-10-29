@@ -108,6 +108,37 @@ pub struct Fastboot {
     pub unbootable_a: String,
     pub unbootable_b: String,
     pub critical: String,
+    /// Windows beside Android (the WOA Project's guides): their partitions'
+    /// sizes, as the bootloader lists them.
+    pub windows: Option<Windows>,
+}
+
+/// The WOA Project's layout: `esp` and `win` made between misc and a
+/// userdata shrunk to leave them room (their Partitioning guides).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Windows {
+    pub esp: u64,
+    pub win: u64,
+    pub userdata: u64,
+}
+
+impl Windows {
+    /// From `getvar all`: `partition-size:win` is not a stock Duo's.
+    pub fn of(all: &str) -> Option<Windows> {
+        let size = |name: &str| {
+            all.lines().find_map(|l| {
+                let v = l.trim().strip_prefix("(bootloader) ")?.strip_prefix("partition-size:")?.strip_prefix(name)?.strip_prefix(':')?.trim();
+                u64::from_str_radix(v.trim_start_matches("0x"), 16).ok()
+            })
+        };
+        Some(Windows { esp: size("esp").unwrap_or(0), win: size("win")?, userdata: size("userdata").unwrap_or(0) })
+    }
+
+    /// In a line: "Windows 63.9 GB, Android's data 38.6 GB".
+    pub fn line(&self) -> String {
+        let gb = |b: u64| b as f64 / 1e9;
+        format!("Windows {:.1} GB, Android's data {:.1} GB", gb(self.win), gb(self.userdata))
+    }
 }
 
 pub(crate) fn fastboot(args: &[&str], limit: Duration) -> Result<String, String> {
@@ -174,6 +205,7 @@ pub fn probe() -> Result<Fastboot, String> {
         unbootable_a: var("slot-unbootable:a"),
         unbootable_b: var("slot-unbootable:b"),
         critical,
+        windows: Windows::of(&all),
     };
     if f.serial.is_empty() || f.product.is_empty() {
         return Err("fastboot did not give the serial and product".into());
@@ -258,10 +290,11 @@ pub enum Expect {
 }
 
 impl Expect {
-    /// A recovery by its name (TWRP's images say so), Linux otherwise.
+    /// A recovery by its name (TWRP's images say so; WOA's TWRP without
+    /// its screen is surfaceduo1-headless.img), Linux otherwise.
     pub fn of(image: &Path) -> Expect {
         let name = image.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-        if name.contains("twrp") || name.contains("recovery") { Expect::Recovery } else { Expect::Linux }
+        if ["twrp", "recovery", "headless"].iter().any(|w| name.contains(w)) { Expect::Recovery } else { Expect::Linux }
     }
 }
 
@@ -343,6 +376,21 @@ pub fn in_recovery(serial: &str) -> bool {
 
 /// The parking brake armed from the recovery (adb) and read back.
 fn arm_brake_recovery(serial: &str) -> Result<(), String> {
+    let want = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(brake_bytes()))
+    };
+    // item-recovery: its own verbs, by the name it gives misc.
+    let rec = crate::rec::Rec::on(serial);
+    if rec.ours() {
+        let misc = format!("{}/misc", crate::android::BLK);
+        rec.send(&["put", &misc, "0"], "", &mut brake_bytes().as_slice())?;
+        let back = rec.hash(&misc, Some((0, BRAKE_LEN as u64)))?;
+        if back != want {
+            return Err(format!("the parking brake read back in the recovery differs: {back}"));
+        }
+        return Ok(());
+    }
     // Where the recovery keeps it: TWRP for the Duo (built on cepheus's) has
     // the UFS controller's by-name, not bootdevice; the first that is there.
     let script = format!(
@@ -352,10 +400,6 @@ fn arm_brake_recovery(serial: &str) -> Result<(), String> {
         String::from_utf8_lossy(BRAKE)
     );
     let back = adb(&["-s", serial, "shell", &script], Duration::from_secs(30))?;
-    let want = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(brake_bytes()))
-    };
     if back.trim() != want {
         return Err(format!("the parking brake read back in the recovery differs: {}", back.trim()));
     }
@@ -486,6 +530,9 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
     if fb.unlocked != "yes" {
         return Err(format!("the bootloader is not unlocked ({}): stopping", fb.unlocked));
     }
+    if let Some(w) = fb.windows {
+        say(format!("Windows is on this phone too (the WOA Project's layout): {}", w.line()));
+    }
     if fb.slot != slot.to_string() {
         return Err(format!("fastboot is on slot {}, Linux booted from {slot}: the slot drifted - stopping, nothing booted", fb.slot));
     }
@@ -564,4 +611,24 @@ pub fn boot_in_fastboot_within(host: &str, serial: &str, slot: char, image: &Pat
         Expect::LinuxOnUsb => say("done: Linux is up from RAM, seen on the USB".into()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_by_its_partitions() {
+        let stock = "(bootloader) partition-size:misc: 0x100000\n(bootloader) partition-size:userdata: 0x19FD7FB000\n(bootloader) product:surfaceduo\n";
+        assert_eq!(Windows::of(stock), None);
+        let woa = "(bootloader) partition-size:esp: 0x10600000\n(bootloader) partition-type:win:raw\n(bootloader) partition-size:win: 0x1000000000\n(bootloader) partition-size:userdata: 0x9000000000\n";
+        assert_eq!(Windows::of(woa), Some(Windows { esp: 0x10600000, win: 0x1000000000, userdata: 0x9000000000 }));
+    }
+
+    #[test]
+    fn recovery_by_its_name() {
+        for (name, expect) in [("item-recovery.img", Expect::Recovery), ("surfaceduo1-twrp.img", Expect::Recovery), ("surfaceduo1-headless.img", Expect::Recovery), ("boot.img", Expect::Linux)] {
+            assert_eq!(Expect::of(Path::new(name)), expect, "{name}");
+        }
+    }
 }

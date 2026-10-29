@@ -324,9 +324,13 @@ pub fn try_the_way_back(serial: &str) -> Result<(), String> {
         data.extend_from_slice(&block);
     }
     let want = format!("{:x}", Sha256::digest(&data));
-    crate::full::adb_send(serial, "cat > /tmp/itemgrid-way-back", &mut data.as_slice())?;
-    let there = crate::full::adb_shell(serial, "sha256sum /tmp/itemgrid-way-back | cut -d' ' -f1; rm -f /tmp/itemgrid-way-back")?;
-    if there.trim() != want {
+    let rec = crate::rec::Rec::on(serial);
+    let trial = "/tmp/itemgrid-way-back";
+    rec.run(&["rm", trial], &format!("rm -f {trial}"))?;
+    rec.send(&["put", trial], &format!("cat > {trial}"), &mut data.as_slice())?;
+    let there = rec.hash(trial, None);
+    rec.run(&["rm", trial], &format!("rm -f {trial}"))?;
+    if there? != want {
         return Err("the way back failed its trial (what arrived differs) - nothing is erased".into());
     }
     Ok(())
@@ -337,21 +341,21 @@ pub fn try_the_way_back(serial: &str) -> Result<(), String> {
 /// under Android's first boot, and Android would poison misc
 /// (STOCK-ANDROID.md). Then a few places read back: all zeros.
 fn erase(serial: &str, say: crate::ramboot::Say) -> Result<(), String> {
-    let _ = crate::full::adb_shell(serial, "umount /tmp/ud 2>/dev/null; true");
-    for (name, bs) in [("metadata", 1048576u64), ("userdata", 4194304)] {
-        let dev = crate::full::adb_shell(serial, &format!("readlink -f {BLK}/{name}"))?.trim().to_owned();
+    let rec = crate::rec::Rec::on(serial);
+    let _ = rec.umount("/tmp/ud");
+    for name in ["metadata", "userdata"] {
+        let link = format!("{BLK}/{name}");
+        let dev = rec.run(&["real", &link], &format!("readlink -f {link}"))?.trim().to_owned();
         if !dev.starts_with("/dev/block/sd") {
             return Err(format!("{name} is not where it should be ({dev}): stopping"));
         }
         say(format!("zeroing {name} ({dev}) whole{}", if name == "userdata" { " - about 7 minutes" } else { "" }));
-        crate::full::adb_shell(serial, &format!("dd if=/dev/zero of={dev} bs={bs} 2>/dev/null; sync; true"))?;
+        rec.zero(&dev, None)?;
         // Read back at the start, the end and between.
-        let size: u64 = crate::full::adb_shell(serial, &format!("blockdev --getsize64 {dev}"))?.trim().parse().map_err(|_| format!("{name}'s size was not read"))?;
-        let mb = size >> 20;
+        let mb = rec.size(&dev)? >> 20;
         for k in 0..14u64 {
             let at = if k == 13 { mb.saturating_sub(1) } else { mb * k / 13 };
-            let sha = crate::full::adb_shell(serial, &format!("dd if={dev} bs=1048576 skip={at} count=1 2>/dev/null | sha256sum | cut -d' ' -f1"))?;
-            if sha.trim() != ZERO_MB {
+            if rec.hash(&dev, Some((at << 20, 1 << 20)))? != ZERO_MB {
                 return Err(format!("{name} is not all zeros at {at} MB - stopping before Android boots"));
             }
         }
@@ -474,51 +478,68 @@ pub fn back(host: &str, serial: &str, data_only: bool, say: crate::ramboot::Say)
         }
         crate::ramboot::boot_in_fastboot(host, serial, slot, &twrp, &twrp_img, crate::ramboot::Expect::Recovery, say)?;
     }
-    if !crate::full::fast_tools(serial) {
+    let rec = crate::rec::Rec::on(serial);
+    if !rec.ours() && !crate::full::fast_tools(serial) {
         return Err("this TWRP lacks pigz or nc - the way back needs them".into());
     }
+    // Its steps on the phone's screen (item/grid's own recovery).
+    crate::screen::begin(serial, &["clean", "linux", "check", "data", "restart"]);
+    let r = (|| -> Result<(), String> {
+        let userdata = format!("{BLK}/userdata");
 
-    if data_only {
-        crate::full::adb_shell(serial, &format!("mkdir -p /tmp/ud; mountpoint -q /tmp/ud || mount -t ext4 {BLK}/userdata /tmp/ud; test -f /tmp/ud/rootfs.img && echo ok"))?;
-    } else {
-        say("making userdata ext4 again (Android's data goes)".into());
-        crate::flash::log(serial, "back to Linux: userdata made ext4 again - itemgrid")?;
-        crate::full::adb_shell(serial, &format!("umount /tmp/ud 2>/dev/null; mke2fs -F -t ext4 -L userdata {BLK}/userdata >/dev/null && mkdir -p /tmp/ud && mount -t ext4 {BLK}/userdata /tmp/ud && echo ok"))?;
+        if data_only {
+            rec.mount(&userdata, "/tmp/ud", false)?;
+            rec.size("/tmp/ud/rootfs.img").map_err(|_| "no rootfs.img on userdata: only the data cannot go back".to_owned())?;
+        } else {
+            say("making userdata ext4 again (Android's data goes)".into());
+            crate::screen::step(0, "cleaning", "for linux");
+            crate::flash::log(serial, "back to Linux: userdata made ext4 again - itemgrid")?;
+            rec.make_ext4(&userdata, "userdata", "/tmp/ud")?;
 
-        // The image in 512 MB parts; empty parts are left as holes.
-        let image = full.manifest.items.iter().find(|i| i.file == "rootfs.img.gz").ok_or("the backup has no rootfs image")?;
-        let file = std::fs::File::open(full.dir.join(&image.file)).map_err(|e| e.to_string())?;
-        let mut dec = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(file));
-        let (total, whole) = put_file(serial, "rootfs.img", &mut dec, "image", say)?;
-        if whole != image.sha256 {
-            return Err("the backup's image does not match its manifest - stopping in TWRP".into());
+            // The image in 4 MB pieces (put_file); empty ones left as holes.
+            crate::screen::step(1, "writing item", "from the backup");
+            let image = full.manifest.items.iter().find(|i| i.file == "rootfs.img.gz").ok_or("the backup has no rootfs image")?;
+            let file = std::fs::File::open(full.dir.join(&image.file)).map_err(|e| e.to_string())?;
+            let mut dec = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(file));
+            let (total, whole) = put_file(serial, "rootfs.img", &mut dec, "image", false, say)?;
+            if whole.is_some_and(|w| w != image.sha256) {
+                return Err("the backup's image does not match its manifest - stopping in TWRP".into());
+            }
+            rec.run(&["meta", "/tmp/ud/rootfs.img", "644", "0", "0"], &format!("truncate -s {total} /tmp/ud/rootfs.img && chmod 644 /tmp/ud/rootfs.img"))?;
+            say("checking the whole image on the phone".into());
+            crate::screen::step(2, "checking", "every byte");
+            if rec.hash_written("/tmp/ud/rootfs.img")? != image.sha256 {
+                return Err("the image on the phone differs from the backup - stopping in TWRP; run back again".into());
+            }
+
         }
-        crate::full::adb_shell(serial, &format!("truncate -s {total} /tmp/ud/rootfs.img && chmod 644 /tmp/ud/rootfs.img"))?;
-        say("checking the whole image on the phone".into());
-        let there = crate::full::adb_shell(serial, "sha256sum /tmp/ud/rootfs.img | cut -d' ' -f1")?;
-        if there.trim() != image.sha256 {
-            return Err("the image on the phone differs from the backup - stopping in TWRP; run back again".into());
+
+        say("putting back the Android container's data".into());
+        crate::screen::step(3, "android data", "");
+        let data = full.manifest.items.iter().find(|i| i.file == "android-data.tar.gz").ok_or("the backup has no container data")?;
+        rec.run(&["rm", "/tmp/ud/android-data"], "rm -rf /tmp/ud/android-data")?;
+        put_archive(serial, &full.dir.join(&data.file), "/tmp/ud", say)?;
+        if let Some(rest) = full.manifest.items.iter().find(|i| i.file == crate::full::REST) {
+            say(format!("putting back the rest of userdata ({})", rest.source.trim_start_matches("/userdata: ")));
+            put_archive(serial, &full.dir.join(&rest.file), "/tmp/ud", say)?;
         }
+        rec.run(&["link", "/halium-system/var/lib/lxc/android/android-rootfs.img", "/tmp/ud/android-rootfs.img"], "ln -sf /halium-system/var/lib/lxc/android/android-rootfs.img /tmp/ud/android-rootfs.img")?;
+        rec.umount("/tmp/ud")?;
 
+        // A failed stock boot may have left --prompt_and_wipe_data in misc.
+        say("clearing misc".into());
+        rec.zero(&format!("{BLK}/misc"), Some(2048))?;
+        crate::flash::log(serial, &format!("back to Linux: the system put back from {} - itemgrid", full.manifest.created))?;
+        Ok(())
+    })();
+    match &r {
+        Ok(()) => crate::screen::done("linux next", "enter your pin"),
+        Err(e) => crate::screen::error(e),
     }
-
-    say("putting back the Android container's data".into());
-    let data = full.manifest.items.iter().find(|i| i.file == "android-data.tar.gz").ok_or("the backup has no container data")?;
-    crate::full::adb_shell(serial, "rm -rf /tmp/ud/android-data")?;
-    put_archive(serial, &full.dir.join(&data.file), "/tmp/ud", say)?;
-    if let Some(rest) = full.manifest.items.iter().find(|i| i.file == crate::full::REST) {
-        say(format!("putting back the rest of userdata ({})", rest.source.trim_start_matches("/userdata: ")));
-        put_archive(serial, &full.dir.join(&rest.file), "/tmp/ud", say)?;
-    }
-    crate::full::adb_shell(serial, "ln -sf /halium-system/var/lib/lxc/android/android-rootfs.img /tmp/ud/android-rootfs.img; sync; umount /tmp/ud")?;
-
-    // A failed stock boot may have left --prompt_and_wipe_data in misc.
-    say("clearing misc".into());
-    crate::full::adb_shell(serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync"))?;
-    crate::flash::log(serial, &format!("back to Linux: the system put back from {} - itemgrid", full.manifest.created))?;
+    r?;
 
     say("starting the port".into());
-    crate::full::adb_shell(serial, "reboot").ok();
+    rec.restart();
     let start = std::time::Instant::now();
     while !crate::phone::answers_fresh(host) {
         if start.elapsed() > std::time::Duration::from_secs(360) {
@@ -583,15 +604,139 @@ pub fn on_usb_quietly() -> Option<String> {
 /// A file put onto userdata (mounted at /tmp/ud in TWRP) in 512 MB parts,
 /// each checked on the phone and sent again if it differs; parts all zeros
 /// left as holes. Returns its size and sha256.
-pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, label: &str, say: crate::ramboot::Say) -> Result<(u64, String), String> {
-    use sha2::{Digest, Sha256};
+/// `whole`: the file's sha256 worked out here as it is read (the release
+/// image's, against its manifest); without it none (a backup's image is
+/// checked on the phone, from its flash, after).
+pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, label: &str, whole: bool, say: crate::ramboot::Say) -> Result<(u64, Option<String>), String> {
     // A name is on userdata; a path (from /) is anywhere.
     let path = if name.starts_with('/') { name.to_owned() } else { format!("/tmp/ud/{name}") };
+    let rec = crate::rec::Rec::on(serial);
+    if rec.ours() {
+        return put_pieces(&rec, &path, from, label, whole, say);
+    }
+    put_file_twrp(serial, &path, name, from, label, say).map(|(n, sha)| (n, Some(sha)))
+}
+
+/// item-recovery's way: the file in 4 MB pieces, those all zeros not
+/// sent (left as holes), the rest gzipped on every core here and sent as
+/// `unsparse` records in batches of 64 pieces (a batch whose sending
+/// failed sent again, three times at most), each piece checked against
+/// its sha256 there. The 512 MB parts before, nearly never all zeros
+/// (ext4 inside the image spreads its tables), sent 26 of 86 GB.
+fn put_pieces(rec: &crate::rec::Rec, path: &str, from: &mut dyn std::io::Read, label: &str, whole: bool, say: crate::ramboot::Say) -> Result<(u64, Option<String>), String> {
+    use sha2::{Digest, Sha256};
+    const PIECE: usize = 4 << 20;
+    const BATCH: usize = 64;
+    rec.rm(path)?;
+    let mut hash = whole.then(Sha256::new);
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let (mut total, mut sent, mut next_note) = (0u64, 0u64, 4u64 << 30);
+    let send = |payload: &[u8], say: &mut dyn FnMut(String)| -> Result<(), String> {
+        let mut last = String::new();
+        for _ in 0..3 {
+            match rec.send(&["unsparse", path], "", &mut &payload[..]) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    say(format!("  {label}: {e} - sending it again"));
+                    last = e;
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                }
+            }
+        }
+        Err(format!("{label} did not arrive whole in three tries ({last}) - the phone stays in the recovery; run it again"))
+    };
+    loop {
+        let mut pieces: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut end = false;
+        for _ in 0..BATCH {
+            let mut buf = vec![0u8; PIECE];
+            let mut filled = 0;
+            while filled < PIECE {
+                let n = from.read(&mut buf[filled..]).map_err(|e| format!("{label}: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                filled += n;
+            }
+            buf.truncate(filled);
+            if let Some(h) = hash.as_mut() {
+                h.update(&buf);
+            }
+            let at = total;
+            total += filled as u64;
+            if buf.iter().any(|&b| b != 0) {
+                pieces.push((at, buf));
+            }
+            if filled < PIECE {
+                end = true;
+                break;
+            }
+        }
+        if !pieces.is_empty() {
+            send(&piece_records(&pieces, cores), &mut *say)?;
+            sent += pieces.iter().map(|(_, r)| r.len() as u64).sum::<u64>();
+        }
+        crate::screen::progress(&format!("writing {label}"), total);
+        if total >= next_note || end {
+            say(format!("  {label}: {} of it put back ({} sent)", crate::status::size_words(total / 1024), crate::status::size_words(sent / 1024)));
+            next_note = total + (4 << 30);
+        }
+        if end {
+            break;
+        }
+    }
+    let mut e = vec![b'E'];
+    e.extend_from_slice(&total.to_le_bytes());
+    e.extend_from_slice(&[0u8; 32]);
+    send(&e, &mut *say)?;
+    Ok((total, hash.map(|h| format!("{:x}", h.finalize()))))
+}
+
+/// `unsparse` records for `pieces` (offset, bytes): gzipped on every core,
+/// in order.
+pub(crate) fn piece_records(pieces: &[(u64, Vec<u8>)], cores: usize) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let share = pieces.len().div_ceil(cores);
+    let records: Vec<Vec<u8>> = std::thread::scope(|s| {
+        let jobs: Vec<_> = pieces
+            .chunks(share)
+            .map(|chunk| {
+                s.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|(at, raw)| {
+                            let mut e = flate2::write::GzEncoder::new(Vec::with_capacity(raw.len() / 4), flate2::Compression::fast());
+                            let _ = e.write_all(raw);
+                            let gz = e.finish().unwrap_or_default();
+                            let mut r = Vec::with_capacity(49 + gz.len());
+                            r.push(b'D');
+                            r.extend_from_slice(&at.to_le_bytes());
+                            r.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+                            r.extend_from_slice(&(gz.len() as u32).to_le_bytes());
+                            r.extend_from_slice(&Sha256::digest(raw));
+                            r.extend_from_slice(&gz);
+                            r
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
+    });
+    records.concat()
+}
+
+/// A TWRP's way: 512 MB parts by dd, each read back and hashed there.
+fn put_file_twrp(serial: &str, path: &str, name: &str, from: &mut dyn std::io::Read, label: &str, say: crate::ramboot::Say) -> Result<(u64, String), String> {
+    use sha2::{Digest, Sha256};
+    let path = path.to_owned();
     let part = 512usize << 20;
     let mut buf = vec![0u8; part];
     let mut whole = Sha256::new();
     let (mut index, mut total, mut sent) = (0u64, 0u64, 0u64);
-    crate::full::adb_shell(serial, &format!("rm -f '{path}' && touch '{path}'"))?;
+    let rec = crate::rec::Rec::on(serial);
+    rec.run(&["rm", &path], &format!("rm -f '{path}' && touch '{path}'"))?;
     loop {
         let mut filled = 0;
         while filled < part {
@@ -615,9 +760,15 @@ pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, l
             for _ in 0..3 {
                 // dd without conv= (TWRP's toybox has it disabled): it cuts
                 // the file at the seek, harmless as parts go in order.
-                crate::full::adb_send(serial, &format!("dd of='{path}' bs=1048576 seek={seek} 2>/dev/null"), &mut &chunk[..])?;
-                let there = crate::full::adb_shell(serial, &format!("dd if='{path}' bs=1048576 skip={seek} count={} 2>/dev/null | sha256sum | cut -d' ' -f1", filled.div_ceil(1 << 20)))?;
-                if there.trim() == want {
+                // A part whose sending failed (the cable, the phone's adb
+                // restarting) is sent again, as one that arrived different.
+                let sent = rec.send(&["put", &path, &(seek << 20).to_string()], &format!("dd of='{path}' bs=1048576 seek={seek} 2>/dev/null"), &mut &chunk[..]);
+                if let Err(e) = sent {
+                    say(format!("  part {index}: {e} - sending it again"));
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    continue;
+                }
+                if rec.hash(&path, Some((seek << 20, filled as u64))).is_ok_and(|h| h == want) {
                     ok = true;
                     break;
                 }
@@ -632,7 +783,7 @@ pub(crate) fn put_file(serial: &str, name: &str, from: &mut dyn std::io::Read, l
             say(format!("  {label}: {} of it put back ({} sent)", crate::status::size_words(total / 1024), crate::status::size_words(sent / 1024)));
         }
     }
-    crate::full::adb_shell(serial, &format!("truncate -s {total} '{path}'"))?;
+    rec.run(&["truncate", "-s", &total.to_string(), &path], &format!("truncate -s {total} '{path}'"))?;
     Ok((total, format!("{:x}", whole.finalize())))
 }
 
@@ -678,11 +829,8 @@ pub(crate) fn put_archive(serial: &str, archive: &Path, root: &str, say: crate::
         }
     }
     let small = small.into_inner().map_err(|e| e.to_string())?;
-    crate::full::adb_shell(serial, &format!("mkdir -p '{root}'"))?;
-    // From a file, not a pipe: from a pipe TWRP's tar cut a 1.3 MB file
-    // short and stopped there, quietly (2026-10-04).
-    crate::full::push_file(serial, &small, "/tmp/itemgrid-small.tar")?;
-    crate::full::adb_shell(serial, &format!("tar -C '{root}' -xpf /tmp/itemgrid-small.tar; rc=$?; rm -f /tmp/itemgrid-small.tar; exit $rc"))?;
+    let rec = crate::rec::Rec::on(serial);
+    rec.untar(root, &small)?;
     for (path, size, mode, uid, gid) in &big {
         say(format!("putting back {path} ({} MB)", size >> 20));
         let mut a = open()?;
@@ -691,9 +839,10 @@ pub(crate) fn put_archive(serial: &str, archive: &Path, root: &str, say: crate::
             let mut entry = entry.map_err(|e| e.to_string())?;
             if entry.path().map(|p| p.to_string_lossy().trim_start_matches("./") == path.as_str()).unwrap_or(false) {
                 let target = format!("{root}/{path}");
-                crate::full::adb_shell(serial, &format!("mkdir -p \"$(dirname '{target}')\""))?;
-                put_file(serial, &target, &mut entry, path, say)?;
-                crate::full::adb_shell(serial, &format!("chmod {mode:o} '{target}'; chown {uid}:{gid} '{target}'"))?;
+                let parent = target.rsplit_once('/').map_or(root, |(d, _)| d);
+                rec.mkdir(parent)?;
+                put_file(serial, &target, &mut entry, path, false, say)?;
+                rec.meta(&target, *mode, *uid, *gid)?;
                 done = true;
                 break;
             }
@@ -702,10 +851,9 @@ pub(crate) fn put_archive(serial: &str, archive: &Path, root: &str, say: crate::
             return Err(format!("{path} went missing from the backup"));
         }
     }
-    crate::full::adb_send(serial, "cat > /tmp/itemgrid-sizes", &mut sizes.as_bytes())?;
-    let bad = crate::full::adb_shell(serial, "n=0; while read s p; do [ \"$(stat -c %s \"$p\" 2>/dev/null)\" = \"$s\" ] || n=$((n+1)); done < /tmp/itemgrid-sizes; rm -f /tmp/itemgrid-sizes; echo $n")?;
-    if bad.trim() != "0" {
-        return Err(format!("{} files did not arrive whole - stopping in TWRP; run back again", bad.trim()));
+    let bad = rec.check_sizes(&sizes)?;
+    if bad != 0 {
+        return Err(format!("{bad} files did not arrive whole - stopping in the recovery; run back again"));
     }
     Ok(())
 }
@@ -802,7 +950,7 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
         crate::screen::step(1, "android boot", &format!("slot {}", build.slot));
         crate::bootchain::write(&serial, build.slot, &plan.chain, say)?;
         say("clearing misc".into());
-        adb(&serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync")).map(|_| ())
+        crate::rec::Rec::on(&serial).zero(&format!("{BLK}/misc"), Some(2048))
     })();
     if let Err(e) = r {
         crate::screen::error(&e);
@@ -813,7 +961,7 @@ pub fn go_clean(host: &str, plan: &CleanPlan, confirm: &str, say: crate::ramboot
     crate::screen::done("android next", "its welcome|in a few min");
     say("starting Android: it sets itself up (a few minutes), its welcome screens open".into());
     std::thread::sleep(std::time::Duration::from_secs(2));
-    adb(&serial, "reboot").ok();
+    crate::rec::Rec::on(&serial).restart();
     Ok(())
 }
 
@@ -827,11 +975,11 @@ pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<
     if !crate::ramboot::in_recovery(serial) {
         return Err("the phone is not in the recovery".into());
     }
-    let cmdline = adb(serial, "cat /proc/cmdline")?;
+    let rec = crate::rec::Rec::on(serial);
+    let cmdline = rec.read_text("/proc/cmdline")?;
     let slot = cmdline.split_whitespace().find_map(|w| w.strip_prefix("androidboot.slot_suffix=_")).and_then(|s| s.chars().next()).ok_or("the slot the phone runs was not read")?;
-    let ud = adb(serial, &format!("readlink -f {BLK}/userdata"))?;
-    let zero = adb(serial, &format!("dd if={} bs=1048576 count=1 2>/dev/null | sha256sum | cut -d' ' -f1", ud.trim()))?;
-    if zero.trim() != ZERO_MB {
+    let ud = rec.real(&format!("{BLK}/userdata"))?;
+    if rec.hash(&ud, Some((0, 1 << 20)))? != ZERO_MB {
         return Err("userdata is not erased: this finishes only a return that erased it".into());
     }
     // The boot and vbmeta that last brought this phone back to Android
@@ -853,7 +1001,7 @@ pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<
     }
     crate::screen::begin(serial, &["erase", "android", "restart"]);
     crate::screen::step(1, "android boot", &format!("slot {slot}"));
-    let r = crate::bootchain::write(serial, slot, &chain, say).and_then(|_| adb(serial, &format!("dd if=/dev/zero of={BLK}/misc bs=2048 count=1 2>/dev/null; sync")).map(|_| ()));
+    let r = crate::bootchain::write(serial, slot, &chain, say).and_then(|_| rec.zero(&format!("{BLK}/misc"), Some(2048)));
     if let Err(e) = r {
         crate::screen::error(&e);
         return Err(e);
@@ -863,7 +1011,7 @@ pub fn finish_clean(serial: &str, go: bool, say: crate::ramboot::Say) -> Result<
     crate::screen::done("android next", "its welcome|in a few min");
     say("starting Android: it sets itself up (a few minutes)".into());
     std::thread::sleep(std::time::Duration::from_secs(2));
-    adb(serial, "reboot").ok();
+    rec.restart();
     Ok(plan)
 }
 
@@ -879,6 +1027,32 @@ fn last_stock_pair(serial: &str) -> Option<(std::path::PathBuf, std::path::PathB
     (b.exists() && v.exists()).then_some((b, v))
 }
 
-fn adb(serial: &str, cmd: &str) -> Result<String, String> {
-    crate::full::adb_shell(serial, cmd)
+#[cfg(test)]
+mod pieces_tests {
+    /// Records made here taken by item-recovery's `unsparse` (the built
+    /// program, if it is there): the same file.
+    #[test]
+    fn pieces_there() {
+        use std::io::Write;
+        let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/item-recovery");
+        if !bin.exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("itemgrid-pieces-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut want = vec![0u8; 13 << 20];
+        want[5..9].copy_from_slice(b"item");
+        want[(8 << 20) + 1] = 9;
+        let pieces: Vec<(u64, Vec<u8>)> = vec![(0, want[..4 << 20].to_vec()), (8 << 20, want[8 << 20..12 << 20].to_vec())];
+        let mut stream = super::piece_records(&pieces, 3);
+        stream.push(b'E');
+        stream.extend_from_slice(&(want.len() as u64).to_le_bytes());
+        stream.extend_from_slice(&[0u8; 32]);
+        let out = dir.join("f");
+        let mut child = std::process::Command::new(&bin).arg("unsparse").arg(&out).stdin(std::process::Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(&stream).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(std::fs::read(&out).unwrap() == want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
