@@ -9,7 +9,7 @@ use gtk::{gdk, gio};
 
 /// Idle this long, the saver comes - off for now (the window as the second
 /// monitor's wallpaper instead: place::desktop).
-pub const AFTER_MS: u64 = u64::MAX;
+pub const AFTER_MS: Option<u64> = None;
 
 /// How long nothing has been pressed or moved (ms), as GNOME counts it -
 /// not waited for on the main thread (a D-Bus call in its own time: the

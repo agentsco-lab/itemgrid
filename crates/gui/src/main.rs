@@ -5172,7 +5172,7 @@ fn idle_now(ui: &Rc<Ui>, idle: u64) {
         }
     }
     match ui.saver.get() {
-        None if idle >= saver::AFTER_MS => saver_on(&ui),
+        None if saver::AFTER_MS.is_some_and(|after| idle >= after) => saver_on(&ui),
         // Something done since it came (idle less than it has been
         // on), after its first second: the pointer moved well away
         // (a hand resting on the mouse stirs it a little), or not at
