@@ -7039,6 +7039,39 @@ fn show_fold_now(ui: &Ui, angle: f64) {
             e.on = (anchor.0 + (e.on.0 - anchor.0) * f, anchor.1 + (e.on.1 - anchor.1) * f);
             e.near *= f;
         }
+        // The eye nearer in a big window: the word, the board, the page and
+        // the Duo at most 90% of the window's width (86% of its height),
+        // about their middle - not a small island in the middle of a large
+        // table (the owner, 2026-10-29). As far as 1.8 times; in a window
+        // they fill already, nothing. The wheel draws back from here.
+        if eye >= 1.0 {
+            let seen = |e: &Eye| {
+                gsk::Transform::new()
+                    .translate(&graphene::Point::new(e.on.0, e.on.1))
+                    .scale(e.near, e.near)
+                    .perspective(e.far * h)
+                    .rotate_3d(e.tilt, &graphene::Vec3::x_axis())
+                    .rotate_3d(turn, &graphene::Vec3::z_axis())
+                    .translate_3d(&graphene::Point3D::new(-e.look.0, -e.look.1, 0.0))
+                    .to_matrix()
+            };
+            let (pc, pr) = ui.page_dims.get().unwrap_or((20.0, 10.0));
+            let menu_rows = ui.board.borrow().as_ref().map_or(8, |b| b.lines.len()) as f32;
+            let menu_cols = ui.board.borrow().as_ref().map_or(9, |b| b.width().max(8)) as f32;
+            let top = cubes_at.1 - 0.5 * cur;
+            let right = (left + (place.menu.0 + menu_cols + 2.0 + pc) * cur).max(buttons_at.0 + FLOOR_BUTTONS.len() as f32 * cur);
+            let bottom = under + (place.menu.1 + menu_rows.max(pr)) * cur;
+            let m = seen(&e);
+            let corners = [(left, top), (right, top), (left, bottom), (right, bottom)].map(|p| on_page(&m, p));
+            let (x0, x1) = (corners.iter().map(|c| c.0).fold(f32::MAX, f32::min), corners.iter().map(|c| c.0).fold(f32::MIN, f32::max));
+            let (y0, y1) = (corners.iter().map(|c| c.1).fold(f32::MAX, f32::min), corners.iter().map(|c| c.1).fold(f32::MIN, f32::max));
+            let grow = ((page_w * 0.90) / (x1 - x0).max(1.0)).min((page_h * 0.86) / (y1 - y0).max(1.0)).clamp(1.0, 1.8);
+            if grow > 1.0 {
+                let c = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+                e.on = (c.0 + (e.on.0 - c.0) * grow, c.1 + (e.on.1 - c.1) * grow);
+                e.near *= grow;
+            }
+        }
         // From the frame's px into the page's (the Duo's room's): scaled.
         e.on = (e.on.0 * frame_s, e.on.1 * frame_s);
         e.near *= frame_s;
