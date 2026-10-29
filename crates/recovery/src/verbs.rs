@@ -296,7 +296,7 @@ fn zero(path: &str, len: Option<u64>) -> Result<(), String> {
 
 /// A block device discarded whole and read back as zeros at 64 places
 /// (O_DIRECT); false for a file, or where it did not read as zeros.
-fn discarded(path: &str) -> Result<bool, String> {
+pub(crate) fn discarded(path: &str) -> Result<bool, String> {
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
     use std::os::unix::io::AsRawFd;
     if !std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.file_type().is_block_device() {

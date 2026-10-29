@@ -264,7 +264,10 @@ fn take_into(host: &str, kind: Kind, dir: &Path, say: &mut dyn FnMut(String)) ->
             std::fs::write(dir.join("packages.txt"), &list).map_err(|e| e.to_string())?;
             items.push(Item { source: "the packages".into(), file: "packages.txt".into(), size: list.len() as u64, sha256: sha_of(list.as_bytes()) });
             say("archiving /home and /etc".into());
-            let (size, sha) = crate::phone::download(host, "exec tar -C / --one-file-system -czf - home etc 2>/dev/null\n", &dir.join("home-etc.tar.gz"))?;
+            // GNU tar's exit 1 is "a file changed as it was read" (a live
+            // system: logs, the session's state) - a warning, not a failure;
+            // 2 and up are.
+            let (size, sha) = crate::phone::download(host, "tar -C / --one-file-system -czf - home etc 2>/dev/null; rc=$?; [ $rc -eq 1 ] && rc=0; exit $rc\n", &dir.join("home-etc.tar.gz"))?;
             // A tar read on the fly has nothing to compare with on the
             // phone: it is checked whole instead.
             say("checking the archive".into());
@@ -273,10 +276,26 @@ fn take_into(host: &str, kind: Kind, dir: &Path, say: &mut dyn FnMut(String)) ->
                 return Err("the archive did not arrive whole - try again".into());
             }
             items.push(Item { source: "/home /etc".into(), file: "home-etc.tar.gz".into(), size, sha256: sha });
+            // The Android container's data (19 MB): its fingerprints among
+            // it, which an install keeping files puts back (install.rs).
+            // Read with the container running: stopping it may reset the
+            // phone. Missing, the backup still stands.
+            say("archiving the Android container's data (the fingerprints)".into());
+            let file = dir.join(ANDROID_DATA);
+            match crate::phone::download(host, "cd /userdata && tar --one-file-system -czf - android-data 2>/dev/null; rc=$?; [ $rc -eq 1 ] && rc=0; exit $rc\n", &file) {
+                Ok((size, sha)) if size >= 1024 && gzip_whole(&file) => items.push(Item { source: "/userdata/android-data".into(), file: ANDROID_DATA.into(), size, sha256: sha }),
+                _ => {
+                    let _ = std::fs::remove_file(&file);
+                    say("the Android container's data was not taken: the fingerprints would be enrolled again".into());
+                }
+            }
         }
     }
     Ok(items)
 }
+
+/// A quick backup's Android container data (its fingerprints).
+pub(crate) const ANDROID_DATA: &str = "android-data.tar.gz";
 
 fn sha_of(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

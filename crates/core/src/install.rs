@@ -222,9 +222,18 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
         (Some(q), Ok(())) => put_kept(&rec, &serial, q, say),
         _ => Ok(()),
     };
-    let _ = rec.umount("/tmp/r").and_then(|_| rec.umount("/tmp/ud"));
+    let _ = rec.umount("/tmp/r");
+    // The Android container's data back (the fingerprints with it), when
+    // the release's port is the one it was taken under: another port's
+    // container may not take it.
+    let android = match (quick, &put_key, &kept) {
+        (Some(q), Ok(()), Ok(())) => put_android_data(&rec, &serial, q, release, say),
+        _ => Ok(()),
+    };
+    let _ = rec.umount("/tmp/ud");
     put_key?;
     kept?;
+    android?;
 
     say("clearing misc".into());
     rec.zero(&format!("{blk}/misc"), Some(2048))?;
@@ -232,6 +241,24 @@ fn put_on_userdata_steps(serial: &str, release: &Release, size: u64, key: &str, 
     crate::flash::log(&serial, &format!("{} installed (userdata anew) - itemgrid", release.name))?;
 
     Ok(())
+}
+
+/// The quick backup's Android container data onto the new userdata, if it
+/// has it and the release runs the port it was taken under; said either way.
+fn put_android_data(rec: &crate::rec::Rec, serial: &str, quick: &crate::backup::Backup, release: &Release, say: crate::ramboot::Say) -> Result<(), String> {
+    let archive = quick.dir.join(crate::backup::ANDROID_DATA);
+    let base = |v: &str| v.split(['+', '~']).next().unwrap_or(v).to_owned();
+    if !archive.exists() {
+        say("no Android data in the backup: the fingerprints are enrolled again on the phone".into());
+        return Ok(());
+    }
+    if base(&quick.manifest.port) != base(&release.adaptation) {
+        say(format!("the Android data was taken under port {}, the release runs {}: the fingerprints are enrolled again on the phone", quick.manifest.port, release.adaptation));
+        return Ok(());
+    }
+    say("putting back the Android container's data (the fingerprints)".into());
+    rec.rm("/tmp/ud/android-data")?;
+    crate::android::put_archive(serial, &archive, "/tmp/ud", say)
 }
 
 /// The release image decompressed as it is read (zstd, a window of up to
@@ -278,7 +305,7 @@ impl Mode {
     pub fn words(self) -> &'static str {
         match self {
             Mode::Erase => "nothing kept",
-            Mode::KeepFiles => "your files, Wi-Fi networks, time zone and PIN kept",
+            Mode::KeepFiles => "your files, Wi-Fi networks, time zone, PIN and fingerprints kept",
             Mode::FullCopy => "a full copy of the current system kept on this computer",
         }
     }

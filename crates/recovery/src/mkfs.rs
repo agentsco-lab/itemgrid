@@ -257,8 +257,21 @@ fn random16() -> [u8; 16] {
     u
 }
 
-/// The filesystem made on `dev` (a device or an image file).
-pub fn make(dev: &str, label: &str) -> Result<Shape, String> {
+/// The filesystem made on `dev` (a device or an image file), and whether
+/// its inode tables are known zeros. A device is discarded whole first and
+/// read back (verbs.rs): reading zeros, its tables are marked zeroed
+/// (INODE_ZEROED), as mke2fs does - else the kernel zeroes them itself
+/// in the background after the first mount (ext4lazyinit: 1.7 GB on the
+/// Duo's userdata, during the new system's first start, its image grown
+/// at the same time; the phone did not answer for minutes once,
+/// 2026-10-29).
+pub fn make(dev: &str, label: &str) -> Result<(Shape, bool), String> {
+    let zeroed = crate::verbs::discarded(dev)?;
+    build(dev, label, zeroed).map(|s| (s, zeroed))
+}
+
+/// The filesystem written, its inode tables marked zeroed if `zeroed`.
+fn build(dev: &str, label: &str, zeroed: bool) -> Result<Shape, String> {
     let mut f = OpenOptions::new().read(true).write(true).open(dev).map_err(|e| format!("{dev}: {e}"))?;
     let bytes = f.seek(SeekFrom::End(0)).map_err(|e| format!("{dev}: {e}"))?;
     let s = Shape::of(bytes)?;
@@ -374,6 +387,7 @@ pub fn make(dev: &str, label: &str) -> Result<Shape, String> {
         put16(d, 12, free as u16);
         put16(d, 14, free_i as u16);
         put16(d, 16, if g == 0 { 2 } else { 0 });
+        put16(d, 18, if zeroed { 0x4 } else { 0 }); // INODE_ZEROED
         put16(d, 24, bcsum as u16);
         put16(d, 26, icsum as u16);
         put16(d, 28, free_i as u16); // itable_unused
@@ -458,8 +472,15 @@ pub fn make(dev: &str, label: &str) -> Result<Shape, String> {
 /// `mkfs DEV [LABEL]`.
 pub fn command(args: &[String]) -> Result<(), String> {
     let dev = args.first().ok_or("mkfs DEV [LABEL]")?;
-    let s = make(dev, args.get(1).map_or("", String::as_str))?;
-    println!("ext4 on {dev}: {} blocks of 4 KB, {} groups, {} inodes, a journal of {} MB", s.blocks, s.groups, s.ipg * s.groups, (s.journal * BS) >> 20);
+    let (s, zeroed) = make(dev, args.get(1).map_or("", String::as_str))?;
+    println!(
+        "ext4 on {dev}: {} blocks of 4 KB, {} groups, {} inodes, a journal of {} MB; inode tables {}",
+        s.blocks,
+        s.groups,
+        s.ipg * s.groups,
+        (s.journal * BS) >> 20,
+        if zeroed { "zeroed (discarded, read back as zeros)" } else { "left for the kernel to zero" }
+    );
     Ok(())
 }
 
@@ -487,12 +508,20 @@ mod tests {
             let f = std::fs::File::create(&p).unwrap();
             f.set_len(bytes).unwrap();
             drop(f);
-            make(p.to_str().unwrap(), "userdata").unwrap();
-            let e2fsck = ["/usr/sbin/e2fsck", "/sbin/e2fsck"].into_iter().find(|p| std::path::Path::new(p).exists());
-            let out = e2fsck.map(|e| std::process::Command::new(e).args(["-fn"]).arg(&p).output());
+            assert!(!make(p.to_str().unwrap(), "userdata").unwrap().1, "a file is not discarded");
+            check(&p, bytes);
+            // As on a discarded device: the tables marked zeroed (a new
+            // file reads zeros, so it is true here too).
+            build(p.to_str().unwrap(), "userdata", true).unwrap();
+            check(&p, bytes);
             let _ = std::fs::remove_file(&p);
-            let Some(Ok(out)) = out else { return };
-            assert!(out.status.success(), "{bytes}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         }
+    }
+
+    /// e2fsck -fn on the image, if this computer has it.
+    fn check(p: &std::path::Path, bytes: u64) {
+        let Some(e2fsck) = ["/usr/sbin/e2fsck", "/sbin/e2fsck"].into_iter().find(|e| std::path::Path::new(e).exists()) else { return };
+        let out = std::process::Command::new(e2fsck).args(["-fn"]).arg(p).output().unwrap();
+        assert!(out.status.success(), "{bytes}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     }
 }
