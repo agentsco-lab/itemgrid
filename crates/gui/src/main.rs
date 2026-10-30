@@ -5582,7 +5582,10 @@ fn board_action(ui: &Rc<Ui>, key: &str) {
                     Ok(plan) if !plan.stops.is_empty() => Ask::new("back to android", plan.stops.iter().flat_map(|s| wrapped(s)).take(6).collect()),
                     Ok(plan) => {
                         let mut ask = Ask::new("back to android", vec!["erases item".into(), "android as it came".into(), "10 min · cable in".into()]);
-                            ask.verb = "erase";
+                        ask.verb = "erase";
+                        // Your files copied here first, if asked (the owner's
+                        // wish, 2026-10-30): not by default.
+                        ask.choices = vec![("plain", "just go".into()), ("copy", "copy my files · 1 min".into())];
                         ask.go = Some(Rc::new(move |ui, choice, _| run_job(ui, Job::AndroidClean(Box::new(plan.clone()), choice == "copy"))));
                         ask
                     }
