@@ -303,11 +303,14 @@ fn main() {
             }
         }
         // Closed sockets let go of, and their sensors asked for again a
-        // little later (sensorfw drops a session now and then).
+        // little later (sensorfw drops a session now and then). The session
+        // stopped and released first: only dropped, it stayed started in
+        // sensorfw, writing a hundred readings a second to no socket (a
+        // handshake lost to sensorfwd still starting at boot, 2026-10-31).
         for (k, s) in kinds.iter().zip(sensors.iter_mut()) {
-            if s.as_ref().is_some_and(|x| x.dead) {
+            if let Some(x) = s.take_if(|x| x.dead) {
                 eprintln!("duo-motion: {} gone", k.name);
-                *s = None;
+                x.close();
                 reopen_at = Some(Instant::now() + Duration::from_secs(3));
             }
         }
