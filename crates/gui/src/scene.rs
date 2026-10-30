@@ -36,7 +36,7 @@ pub const JOB_ZOOM: f32 = 0.76;
 pub const JOB_DUO_RIGHT: f32 = 9.0;
 /// And the eye moved over the table (squares), so the words and the Duo
 /// sit in the page's middle.
-pub const JOB_PAN: (f32, f32) = (1.0, -3.5);
+pub const JOB_PAN: (f32, f32) = (1.0, -2.0);
 
 /// The parts laid out (their index is the part's number everywhere): the
 /// phone's words, the Duo, the word, the buttons, the menu, the credit.

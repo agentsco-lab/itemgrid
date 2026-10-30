@@ -7240,8 +7240,10 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                 k => journey::title(k),
             };
             // The title; then, under the squares: the stage, what happens in
-            // it (its first sentence), about how long it takes and how long
-            // is left (the owner, 2026-10-08).
+            // it (its first sentence: kept short, journey.rs) and how long is
+            // left (the owner, 2026-10-08; the stage's own "about a
+            // minute" gone, and the board's twelve lines with it - the
+            // owner, 2026-10-30: "the text needs reworking").
             let mut lines = jwrap(title);
             match &ended {
                 None => {
@@ -7250,14 +7252,8 @@ fn show_fold_now(ui: &Ui, angle: f64) {
                         lines.extend(jwrap(stage.title));
                         let first = stage.explain.split_once(". ").map_or(stage.explain.trim_end_matches('.'), |(a, _)| a);
                         lines.extend(jwrap(first));
-                        let about = match stage.secs {
-                            s if s < 50.0 => "under a minute".to_owned(),
-                            s if s < 90.0 => "about a minute".to_owned(),
-                            s => format!("about {} min", (s / 60.0).round()),
-                        };
-                        lines.extend(jwrap(&about));
                         let left = (journey::left(&stages, at, secs_in) / 60.0).ceil();
-                        lines.extend(jwrap(&if left <= 1.0 { "a minute left in all".to_owned() } else { format!("{left} min left in all") }));
+                        lines.extend(jwrap(&if left <= 1.0 { "a minute left".to_owned() } else { format!("{left} min left") }));
                     }
                     // What it is doing this moment: the job's last line, as
                     // the command line has it (the owner, 2026-10-29: "all
