@@ -1510,7 +1510,7 @@ fn build(app: &adw::Application) {
     let back_up_now = gtk::Button::builder().label("Back Up Now").valign(gtk::Align::Center).css_classes(["pill"]).build();
     backups_row.add_suffix(&back_up_now);
     repair_list.append(&backups_row);
-    let r_reinstall = repair_row("Reinstall item", "A fresh system from the latest release. You choose: keep your files and Wi-Fi, or erase everything. About 10 minutes.", "Reinstall…", false);
+    let r_reinstall = repair_row("Reinstall item", "A fresh system from the latest release. 10-35 minutes.", "Reinstall…", false);
     let r_restore = repair_row("Restore the whole system", "The phone exactly as it was in your last full backup. What is on it now goes. About 40 minutes.", "Restore…", true);
     let r_android = repair_row("Go back to Android", "Microsoft's Android, for a while. Everything is backed up first and the way back is tested. About 40 minutes.", "Android…", false);
     repair.append(&repair_list);
@@ -3212,7 +3212,6 @@ fn duo_moving(ui: &Ui, phone: &str) {
     ui.live_badge.set_visible(false);
     ui.duo_mode_label.set_label(match phone {
         "Restarting" => "Restarting…",
-        "TWRP" => "Recovery (TWRP)",
         "Starting" => "Starting…",
         other => other,
     });
@@ -8609,13 +8608,13 @@ fn erase_and_install(ui: &Rc<Ui>) {
         let _ = fresh;
         let body = format!(
             "{} - item {}, the port {}.\n\n\
-             The recovery starts, the way in is tested (nothing is erased if it fails), the phone's data partition is made anew and the new system written in checked parts; its first start grows it to fill the phone. The device data, the boot chain and the unlocked bootloader are not touched.\n\n\
-             Type {word} - this Duo's number - to go on.",
+             The phone is erased and the new system written. The device data, the boot chain and the unlocked bootloader stay.\n\n\
+             Type {word} - this Duo's number.",
             release.name, release.item, release.adaptation,
         );
-        let erase = gtk::CheckButton::builder().label("Erase everything - about 10 minutes").active(true).build();
-        let keep = gtk::CheckButton::builder().label("Keep my files, Wi-Fi networks and PIN - about 15 minutes").group(&erase).build();
-        let full = gtk::CheckButton::builder().label("Keep a full copy of this system on the computer - about 35 minutes").group(&erase).build();
+        let erase = gtk::CheckButton::builder().label("Erase everything · 10 min").active(true).build();
+        let keep = gtk::CheckButton::builder().label("Keep files, Wi-Fi and PIN · 15 min").group(&erase).build();
+        let full = gtk::CheckButton::builder().label("A full copy here first · 35 min").group(&erase).build();
         let choices = gtk::Box::new(gtk::Orientation::Vertical, 6);
         choices.append(&erase);
         choices.append(&keep);

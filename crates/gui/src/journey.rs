@@ -20,125 +20,79 @@ const fn st(title: &'static str, explain: &'static str, phone: &'static str, sta
     Stage { title, explain, phone, starts, secs }
 }
 
-const CHECKING: Stage = st(
-    "Getting ready",
-    "item/grid checks the image and the phone's health, and sets a safety catch: if anything goes wrong, the phone stops in its bootloader instead of trying again.",
-    "Linux",
-    &["checking the image", "checking the phone and the image", "the image is sound", "setting the safety catch", "into TWRP, from RAM"],
-    8.0,
-);
-const TO_BOOTLOADER: Stage = st(
-    "Restarting into the bootloader",
-    "The phone restarts into its bootloader. The screens go dark for a few seconds - that is expected.",
-    "Restarting",
-    &["restarting into the bootloader", "in the bootloader:", "starting it from memory"],
-    15.0,
-);
-const TWRP_UP: Stage = st(
-    "Starting the recovery",
-    "TWRP, a small repair system, starts from the computer's memory - nothing is written to the phone. It has no touch: leave the phone as it is.",
-    "TWRP",
-    &["starting it from memory", "waiting for the recovery", "the recovery is up"],
-    25.0,
-);
 const BACK_TO_LINUX: Stage = st(
-    "Restarting into Linux",
-    "The phone restarts into Linux. Enter the PIN when the lock screen appears.",
+    "Back to Linux",
+    "Enter the PIN on the lock screen.",
     "Restarting",
     &["leaving the recovery", "Linux is back", "starting the port"],
     40.0,
 );
 
+/// A job's stages: as few as tell it (the owner's, 2026-10-30: fewer and
+/// plainer), each a few words the window's board shows whole; the steps of
+/// a stage gathered under it, their times summed.
 pub fn stages(job: &str) -> Vec<Stage> {
     match job {
         "update" => vec![
-            st("Building item", "item is built from your tree on this computer.", "Linux", &["building item"], 90.0),
-            st("Installing", "The new item is copied to the phone and installed.", "Linux", &["installing it on the phone"], 25.0),
-            st("Restarting", "The phone restarts to run the new item. The screens go dark for a moment.", "Restarting", &["rebooting the phone", "the phone went down"], 60.0),
-            st("Starting item", "Linux is up again; item is starting.", "Linux", &["the phone is back"], 20.0),
+            st("Building item", "On this computer.", "Linux", &["building item"], 90.0),
+            st("Installing", "Copied to the phone and installed.", "Linux", &["installing it on the phone"], 25.0),
+            st("Restarting", "The screens go dark for a moment.", "Restarting", &["rebooting the phone", "the phone went down", "the phone is back"], 80.0),
         ],
-        "reboot" => vec![
-            st("Restarting", "The phone restarts. The screens go dark for a moment.", "Restarting", &["rebooting the phone", "the phone went down"], 60.0),
-            st("Starting item", "Linux is up again; item is starting.", "Linux", &["the phone is back"], 20.0),
-        ],
+        "reboot" => vec![st("Restarting", "The screens go dark for a moment.", "Restarting", &[""], 80.0)],
         "ramboot" => vec![
-            CHECKING,
-            TO_BOOTLOADER,
-            st("Starting the image from RAM", "The image is sent over USB and started once. Nothing is written to the phone; a restart brings the old system back.", "Starting", &["starting it from memory"], 12.0),
-            st("Waiting for it to start", "The image is starting up on the phone.", "Starting", &["waiting for"], 40.0),
+            st("Getting ready", "Nothing is written to the phone.", "Restarting", &[""], 23.0),
+            st("Starting the image", "A restart brings the old system back.", "Starting", &["starting it from memory", "waiting for"], 52.0),
         ],
         "recovery-exit" => vec![BACK_TO_LINUX],
         "full-backup" => vec![
-            CHECKING,
-            TO_BOOTLOADER,
-            TWRP_UP,
-            st("Copying the system", "Linux's whole system - about 90 GB, mostly empty space - is compressed on the phone and copied to this computer.", "TWRP", &["mounting userdata", "taking rootfs.img"], 620.0),
-            st("Checking the copy", "The phone and this computer each work out a fingerprint of the system; they must match exactly.", "TWRP", &["hashing rootfs.img"], 360.0),
-            st("Copying the rest", "Android apps' data and the other files on the data partition are copied too.", "TWRP", &["taking the Android container", "taking the rest of userdata"], 240.0),
+            st("Getting ready", "Nothing on the phone changes.", "Restarting", &[""], 48.0),
+            st("Copying everything", "About 90 GB, mostly empty, packed and checked.", "Recovery", &["mounting userdata", "taking rootfs.img", "hashing rootfs.img", "taking the Android container", "taking the rest of userdata"], 1220.0),
             BACK_TO_LINUX,
         ],
         "install-stock" => vec![
             // (Times as measured on the owner's Duo, 2026-10-30: 223 s in
-            // all, the image sent as its zstd. Each stage's first sentence
-            // is what the window's board says: two short lines at most.)
-            st("Getting ready", "The image checked, the phone into its bootloader.", "Bootloader", &["checking the image", "restarting into the bootloader", "into the bootloader", "unlocking"], 25.0),
-            st("Into the recovery", "A small repair system, started from memory.", "Restarting", &["into TWRP", "starting the recovery"], 25.0),
-            st("Putting item on", "The storage made anew, the system written and checked.", "Recovery", &["making userdata", "erasing the phone's data", "writing item", "putting "], 70.0),
-            st("First start", "item starts and grows to fill the phone.", "Restarting", &["starting item from the computer"], 60.0),
-            st("Its own boot", "item's boot written; the phone starts from it.", "Linux", &["writing boot", "restarting from the phone"], 45.0),
+            // all, the image sent as its zstd.)
+            st("Getting ready", "Nothing is erased yet.", "Bootloader", &[""], 50.0),
+            st("Writing item", "Erased, written, every byte checked.", "Recovery", &["making userdata", "erasing the phone's data", "writing item", "putting "], 70.0),
+            st("First start", "item grows to fill the phone.", "Restarting", &["starting item from the computer", "writing boot", "restarting from the phone"], 105.0),
         ],
         "android-clean" => vec![
-            st("Into the recovery", "A small repair system, started from memory.", "Restarting", &["into TWRP", "starting the recovery", "checking the image"], 30.0),
-            st("Erasing item", "item and everything in it erased.", "Recovery", &["zeroing"], 450.0),
-            st("Stock boot back", "The phone's own boot put back.", "Recovery", &["the stock boot", "writing"], 15.0),
-            st("Android starting", "Android sets itself up.", "Restarting", &["clearing the bootloader's note", "starting Android"], 30.0),
+            st("Erasing item", "Linux and everything in it.", "Recovery", &[""], 480.0),
+            st("Starting Android", "Android sets itself up.", "Restarting", &["the stock boot", "clearing the bootloader's note", "starting Android"], 45.0),
         ],
         "android-go" => vec![
-            st("Backing up everything", "Everything on the phone is copied to this computer first - or a fresh copy is checked - so the way back is certain.", "TWRP", &["checking ", "taking the whole system's backup first"], 1250.0),
-            st("Starting the recovery", "TWRP starts from RAM to do what Linux cannot do to itself.", "TWRP", &["=into TWRP"], 50.0),
-            st("Testing the way back", "512 MB sent and checked first: if it fails, nothing is erased.", "TWRP", &["trying the way back"], 30.0),
-            st("Erasing Linux's data", "The data partition is cleared so Android can start fresh. Your backup holds everything that was there.", "TWRP", &["zeroing metadata", "zeroing userdata"], 460.0),
-            TO_BOOTLOADER,
-            st("Starting Android", "Stock Android starts from RAM. Its first start sets itself up and opens the welcome screens.", "Android", &["starting it from memory", "waiting for Android"], 70.0),
+            st("Backing up", "Everything copied here, so you can come back.", "Linux", &[""], 1250.0),
+            // (Not "restarting into the bootloader": the backup says it too,
+            // and this stage is in reach of it.)
+            st("Erasing", "Tested first: if it fails, nothing is erased.", "Recovery", &["=into TWRP", "trying the way back", "zeroing metadata", "zeroing userdata"], 555.0),
+            st("Starting Android", "Its first start sets itself up.", "Android", &["waiting for Android"], 70.0),
         ],
-        "android-start" => vec![
-            TO_BOOTLOADER,
-            st("Starting Android", "Stock Android starts from RAM.", "Android", &["starting it from memory", "waiting for Android"], 45.0),
-        ],
+        "android-start" => vec![st("Starting Android", "From memory; nothing is written.", "Android", &[""], 60.0)],
         "android-back" => vec![
-            st("Getting ready", "The newest whole-system backup is chosen.", "Android", &["coming back from"], 2.0),
-            TO_BOOTLOADER,
-            TWRP_UP,
-            st("Preparing the data partition", "The data partition is made ready for Linux again. Android's data goes now.", "TWRP", &["making userdata ext4"], 20.0),
-            st("Putting Linux back", "The system goes back in 512 MB parts; each part is checked on the phone and sent again if it differs.", "TWRP", &["  image:"], 1500.0),
-            st("Checking the system", "The whole system on the phone is checked against the backup's fingerprint.", "TWRP", &["checking every byte"], 360.0),
-            st("Putting the rest back", "Android apps' data and the other files go back.", "TWRP", &["putting back"], 200.0),
-            st("Restarting into Linux", "The phone restarts into Linux - the first start takes a little longer. Enter the PIN when the lock screen appears.", "Restarting", &["clearing the bootloader's note", "starting the port"], 120.0),
+            st("Getting ready", "Android's data goes now.", "Restarting", &[""], 62.0),
+            st("Putting Linux back", "Each part checked as it goes.", "Recovery", &["  image:", "checking every byte", "putting back"], 2060.0),
+            st("First start", "Enter the PIN on the lock screen.", "Restarting", &["clearing the bootloader's note", "starting the port"], 120.0),
         ],
+        "android-trial" => vec![st("Testing the way back", "512 MB sent and checked.", "Recovery", &[""], 30.0)],
+        "restore" => vec![st("Restoring the boot chain", "Tried from memory, then written and read back.", "Restarting", &[""], 180.0)],
         "stock-download" => vec![
-            st("Downloading Android from Microsoft", "Microsoft's own package for this Duo - about 2.6 GB - comes straight from Microsoft's servers, asked for by its serial number. A break is no loss: it goes on from where it stopped.", "Linux", &["downloading"], 600.0),
-            st("Checking and preparing", "The package is checked, and the stock boot chain taken out of it against the package's own hashes - so a return to Android never depends on a backup.", "Linux", &["taking boot out"], 8.0),
+            st("Downloading", "Microsoft's package for this Duo, 2.6 GB. A break resumes.", "Linux", &[""], 600.0),
+            st("Checking", "Against Microsoft's own hashes.", "Linux", &["taking boot out"], 8.0),
         ],
         "install" | "install-keep" | "install-full" => {
-            let backup = match job {
-                "install-keep" => st("Keeping your files", "Your home, Wi-Fi and PIN copied here, for the new system.", "Linux", &["backing up your files", "backing up the device data"], 90.0),
-                "install-full" => st("Backing up everything", "The whole system copied here first, to come back exactly.", "TWRP", &["the whole system was backed up", "taking the whole system's backup first", "backing up the device data"], 1250.0),
-                _ => st("Getting ready", "Nothing kept: the phone starts afresh. Its radio data stays.", "Linux", &["nothing is kept", "backing up the device data"], 5.0),
+            let (ready, secs) = match job {
+                "install-keep" => ("Your files copied here first.", 105.0),
+                "install-full" => ("The whole system copied here first.", 1265.0),
+                _ => ("Nothing is erased yet.", 20.0),
             };
             vec![
-                st("Checking the image", "The image checked here, before anything happens.", "Linux", &["checking the image"], 15.0),
-                backup,
-                st("Starting the recovery", "A small repair system, started from memory.", "TWRP", &["=into TWRP", "starting the recovery"], 35.0),
-                st("Testing the way in", "512 MB sent and checked first: if it fails, nothing is erased.", "TWRP", &["testing the cable"], 30.0),
-                st("Putting the new system on", "The storage made anew, the system written.", "TWRP", &["erasing the phone's data", "writing item"], 90.0),
-                st("Checking it on the phone", "Every byte checked; anything kept goes back.", "TWRP", &["checking every byte on the phone"], 80.0),
-                st("First start", "item starts and grows to fill the phone.", "Starting", &["clearing the bootloader's note", "starting item:"], 180.0),
+                st("Getting ready", ready, "Linux", &[""], secs + 65.0),
+                st("Writing item", "Erased, written, every byte checked.", "Recovery", &["erasing the phone's data", "writing item"], 170.0),
+                st("First start", "item grows to fill the phone.", "Starting", &["clearing the bootloader's note", "starting item:"], 180.0),
             ]
         }
-        "android-trial" => vec![st("Testing the way back", "512 MB are sent to the phone and checked there.", "TWRP", &["trying the way back"], 30.0)],
-        "restore" => vec![st("Restoring the boot chain", "A changed boot is tried from RAM first; then each partition is written and read back.", "Restarting", &[""], 180.0)],
         // backup and anything new: one stage.
-        _ => vec![st("Backing up", "The boot chain, your home and settings are copied to this computer. The phone keeps working.", "Linux", &[""], 60.0)],
+        _ => vec![st("Backing up", "Your home and settings. The phone keeps working.", "Linux", &[""], 60.0)],
     }
 }
 
@@ -309,9 +263,11 @@ mod tests {
         assert_eq!(locate(&s, &lines), 0);
         let mut more = lines.clone();
         more.extend(["into TWRP", "checking the phone and the image to start", "restarting into the bootloader", "trying the way back (512 MB onto the phone, checked)"].iter().map(|l| l.to_string()));
-        assert_eq!(locate(&s, &more), 2);
+        assert_eq!(locate(&s, &more), 1);
         more.push("zeroing metadata (/dev/block/sda3) whole".into());
         more.push("restarting into the bootloader".into());
-        assert_eq!(locate(&s, &more), 4);
+        assert_eq!(locate(&s, &more), 1);
+        more.push("waiting for Android".into());
+        assert_eq!(locate(&s, &more), 2);
     }
 }
