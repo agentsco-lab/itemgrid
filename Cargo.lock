@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "duo-motion"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "endi"
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "item-recovery"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "fontdue",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "itemgrid-core",
  "libc",
@@ -1328,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bzip2",
  "chrono",
@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid-gui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-channel",
  "glow",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid-install"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "itemgrid-core",
  "serde_json",
@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "itemgrid-mcp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde_json",
 ]
