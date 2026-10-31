@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -187,11 +188,25 @@ pub fn wifi_addresses() -> Vec<String> {
     out
 }
 
+/// The phone known asleep (shut, off the cable): not looked for on the
+/// network. Each try is a TCP packet, and a packet for it is the radio's
+/// pattern to wake it: tried twice a second, it barely slept (1.8 %/h shut,
+/// 2026-10-31). The window says when (shut a while; a try now and then).
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+pub fn wifi_quiet(on: bool) {
+    QUIET.store(on, Ordering::Relaxed);
+}
+
+pub fn wifi_quieted() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
+
 /// Whether a known phone's ssh answers on the network at the address it
 /// had, at once (a connection opened and closed, 0.3 s at most each): to
 /// notice it back from sleep without a whole look.
 pub fn wifi_answers_quickly() -> bool {
-    known().iter().filter(|k| !k.address.is_empty()).any(|k| port_open(&k.address))
+    !wifi_quieted() && known().iter().filter(|k| !k.address.is_empty()).any(|k| port_open(&k.address))
 }
 
 /// A .local name to an address, quickly (2 s at most): nss-mdns through

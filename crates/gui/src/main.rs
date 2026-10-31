@@ -920,6 +920,9 @@ struct Ui {
     usb_was: std::cell::Cell<bool>,
     /// A look on its way (the quick ones after the link came wait for it).
     looking: std::cell::Cell<bool>,
+    /// Shut and asleep, when it was last looked for on the network
+    /// (wifi_quiet_now): none, one is due.
+    wifi_tried: std::cell::Cell<Option<std::time::Instant>>,
     /// Nothing done at the computer for a while (saver::rest_after_ms()): the
     /// phone let go (not followed, not looked for over Wi-Fi).
     resting: std::cell::Cell<bool>,
@@ -1732,6 +1735,7 @@ fn build(app: &adw::Application) {
         usb_was: std::cell::Cell::new(false),
         looking: std::cell::Cell::new(false),
         resting: std::cell::Cell::new(false),
+        wifi_tried: std::cell::Cell::new(None),
         lid_shut_at: std::cell::Cell::new(None),
         gravity_at: std::cell::Cell::new(None),
         last_angle: std::cell::Cell::new(None),
@@ -2707,8 +2711,12 @@ fn build(app: &adw::Application) {
     });
     window.connect_is_active_notify({
         let ui = Rc::downgrade(&ui);
-        move |_| {
+        move |w| {
             if let Some(ui) = ui.upgrade() {
+                // Come back to the window: asleep or not, looked for now.
+                if w.is_active() {
+                    ui.wifi_tried.set(None);
+                }
                 live_sync(&ui);
             }
         }
@@ -2726,7 +2734,11 @@ fn build(app: &adw::Application) {
         move || {
             let Some(ui) = ui.upgrade() else { return glib::ControlFlow::Break };
             let asleep = ui.state.borrow().host.is_none() && !ui.resting.get();
-            if asleep && !trying.get() && !ui.looking.get() {
+            let quiet = wifi_quiet_now(&ui);
+            if asleep && !trying.get() && !ui.looking.get() && !quiet {
+                if ui.shut_away.get() {
+                    ui.wifi_tried.set(Some(std::time::Instant::now()));
+                }
                 trying.set(true);
                 let trying = trying.clone();
                 glib::spawn_future_local(async move {
@@ -5156,6 +5168,26 @@ fn wall_step(ui: &Ui, frame_us: i64) -> bool {
     }
     ui.wall_move.set(Some(w));
     true
+}
+
+/// Shut off the cable a while (SHUT_AWAKE_S, it may be opened again at
+/// once), the phone is asleep: looked for on the network once each
+/// ASLEEP_TRY_S (wifi_tried: the quick try marks it), and at once when the
+/// window is come back to - each try wakes it (link::wifi_quiet, set here
+/// for the looks too). Says whether to keep quiet now.
+fn wifi_quiet_now(ui: &Ui) -> bool {
+    const SHUT_AWAKE_S: u64 = 20;
+    const ASLEEP_TRY_S: u64 = 300;
+    let shut_for = ui.shut_away.get().then(|| ui.lid_shut_at.get().map_or(u64::MAX, |t| t.elapsed().as_secs()));
+    let quiet = match shut_for {
+        Some(s) if s >= SHUT_AWAKE_S => ui.wifi_tried.get().is_some_and(|t| t.elapsed().as_secs() < ASLEEP_TRY_S),
+        _ => {
+            ui.wifi_tried.set(None);
+            false
+        }
+    };
+    itemgrid_core::link::wifi_quiet(quiet);
+    quiet
 }
 
 /// What the idle time (ms) at the computer means: the saver on or off;

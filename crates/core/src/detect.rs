@@ -101,8 +101,9 @@ pub fn detect() -> Seen {
         return Seen { mode, via: serial.to_owned() };
     }
     // Off the cable: on the network, where the cable showed it (link.rs) -
-    // unless ITEMGRID_NO_WIFI=1 (a battery test: a look over Wi-Fi wakes it).
-    if std::env::var_os("ITEMGRID_NO_WIFI").is_some() {
+    // unless ITEMGRID_NO_WIFI=1 (a battery test: a look over Wi-Fi wakes it)
+    // or it is known asleep (link::wifi_quiet).
+    if std::env::var_os("ITEMGRID_NO_WIFI").is_some() || crate::link::wifi_quieted() {
         return Seen { mode: Mode::Gone, via: String::new() };
     }
     // The addresses it had first, their port tried at once (asleep, ssh
